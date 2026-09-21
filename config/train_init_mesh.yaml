@@ -1,0 +1,43 @@
+﻿DATASET:
+    train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']
+    test_list: ['3dpw', '3dpw-pc', '3dpw-oc', '3dpw-crowd']
+    input_joint_set: 'human36'
+    target_joint_set: 'human36'
+    workers: 8
+    use_gt_input: False
+    seqlen: 1
+    stride: 1
+    noise: 0
+
+MODEL:
+    name: 'ARTS'
+    resnet_type: 50
+    pretrained_backbone: False
+    hpe_dim: 256
+    hpe_dep: 3
+    joint_dim: 64
+    vertx_dim: 64
+    joint_loss_weight: 0.001
+    shape_loss_weight: 0.06
+    pose_loss_weight: 0.06
+    posenet_pretrained: False
+
+TRAIN:
+    print_freq: 20
+    batch_size: 32
+    shuffle: True
+    begin_epoch: 1
+    end_epoch: 20
+    edge_loss_start: 2
+    scheduler: 'cosine'
+    lr: 0.0001
+    lr_step: [5, 10, 15]
+    lr_factor: 0.95
+    warmup_epochs: 1
+    min_lr: 0.000001
+    optimizer: 'adam'
+    wandb: False
+
+TEST:
+    batch_size: 64
+    shuffle: False

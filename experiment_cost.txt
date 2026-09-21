@@ -1,0 +1,51 @@
+==> Loading checkpoint
+Fetch model weight from ./experiment/pretrained/mesh_3dpw.pth.tar
+
+=============================================
+  Total params     : 103.07 M
+  Trainable params : params: 102.80
+  GFLOPs (approx)  : 1.79  [B=1, seqlen=16]
+=============================================
+
+Warming up...
+Measuring FPS...
+
+=============================================
+  FPS     : 35.16
+  Latency : 28.44 ms/frame
+=============================================
+(arts) miruware@miruware:/mnt/9b3333d5-412e-4b
+
+Fetch model weight from ./experiment/ARTS_Demo_Model/checkpoint/best.pth.tar
+
+=============================================
+  Total params     : 102.97 M
+  Trainable params : 102.97 M
+  GFLOPs (approx)  : 2.70G  [B=1, seqlen=16]
+==========> FLOPs: 2.83 G | Params: 102.97 M <==========
+=============================================
+
+Warming up...
+Measuring FPS...
+
+=============================================
+  FPS     : 21.83
+  Latency : 45.80 ms/frame
+=============================================
+
+Fetch model weight from ./experiment/GTSD/best.pth.tar
+
+=============================================
+  Total params     : 69.62 M
+  Trainable params : 69.62 M
+  GFLOPs (approx)  : 4.03G   [B=1, seqlen=16]
+==========> FLOPs: 4.17 G | Params: 69.62 M <==========
+=============================================
+
+Warming up...
+Measuring FPS...
+
+=============================================
+  FPS     : 54.09
+  Latency : 18.49 ms/frame
+=============================================
