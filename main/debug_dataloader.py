@@ -176,7 +176,63 @@ for batch_idx, (inputs_b, targets_b, meta_b) in enumerate(loader):
             
         out_path = f'debug_vis_{img_count}.jpg'
         cv2.imwrite(out_path, img_bgr)
-        print(f"  Da luu anh truc quan hoa vao file: {out_path}")
+        
+        # --- 3D SKELETON VISUALIZATION ---
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        
+        fig = plt.figure(figsize=(6, 6))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        if 'orig_joint_cam' in targets_b:
+            joint_3d = targets_b['orig_joint_cam'][b].numpy() # (17, 3)
+            
+            # H36M Skeleton Edges (17 joints)
+            skeleton = [
+                (0, 1), (1, 2), (2, 3), # R_Leg
+                (0, 4), (4, 5), (5, 6), # L_Leg
+                (0, 7), (7, 8), (8, 9), (9, 10), # Spine & Head
+                (8, 14), (14, 15), (15, 16), # R_Arm
+                (8, 11), (11, 12), (12, 13)  # L_Arm
+            ]
+            
+            # Extract x, y, z
+            # Note: in camera coords, Y is down. For visualization, we flip Y.
+            x = joint_3d[:, 0]
+            y = -joint_3d[:, 1]
+            z = joint_3d[:, 2]
+            
+            # Plot joints
+            ax.scatter(x, z, y, c='r', marker='o', s=20)
+            
+            # Plot bones
+            for edge in skeleton:
+                p1, p2 = edge
+                ax.plot([x[p1], x[p2]], [z[p1], z[p2]], [y[p1], y[p2]], c='b')
+                
+            # Set labels
+            ax.set_xlabel('X')
+            ax.set_ylabel('Depth (Z)')
+            ax.set_zlabel('Y (Flipped)')
+            ax.set_title('3D Skeleton (Camera Coords)')
+            
+            # Make axes scale equal
+            max_range = np.array([x.max()-x.min(), y.max()-y.min(), z.max()-z.min()]).max() / 2.0
+            mid_x = (x.max()+x.min()) * 0.5
+            mid_y = (y.max()+y.min()) * 0.5
+            mid_z = (z.max()+z.min()) * 0.5
+            ax.set_xlim(mid_x - max_range, mid_x + max_range)
+            ax.set_ylim(mid_z - max_range, mid_z + max_range)
+            ax.set_zlim(mid_y - max_range, mid_y + max_range)
+            
+            # Save 3D figure
+            out_3d_path = f'debug_vis_3d_{img_count}.jpg'
+            plt.savefig(out_3d_path)
+            plt.close(fig)
+            print(f"  Da luu anh 2D vao {out_path} va 3D vao {out_3d_path}")
+        else:
+            print(f"  Da luu anh 2D vao file: {out_path}")
         
         img_count += 1
 
