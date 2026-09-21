@@ -160,6 +160,25 @@ for batch_idx, (inputs_b, targets_b, meta_b) in enumerate(loader):
         # Denormalize joints tu [-1, 1] ve pixel [0, 256]
         joints_px = (joints + 1) / 2.0 * 256.0
         
+        # H36M Skeleton Edges (17 joints)
+        skeleton = [
+            (0, 1), (1, 2), (2, 3), # R_Leg
+            (0, 4), (4, 5), (5, 6), # L_Leg
+            (0, 7), (7, 8), (8, 9), (9, 10), # Spine & Head
+            (8, 14), (14, 15), (15, 16), # R_Arm
+            (8, 11), (11, 12), (12, 13)  # L_Arm
+        ]
+        
+        # Draw bones first
+        for edge in skeleton:
+            p1, p2 = edge
+            v1, v2 = int(joints_mask[p1, 0]), int(joints_mask[p2, 0])
+            
+            if v1 == 1 and v2 == 1:
+                x1, y1 = int(joints_px[p1, 0]), int(joints_px[p1, 1])
+                x2, y2 = int(joints_px[p2, 0]), int(joints_px[p2, 1])
+                cv2.line(img_bgr, (x1, y1), (x2, y2), (255, 255, 0), thickness=2) # Xanh bien / Cyan
+        
         # Ve tung diem len anh
         for i in range(len(joints_px)):
             x, y = int(joints_px[i, 0]), int(joints_px[i, 1])
