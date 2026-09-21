@@ -450,3 +450,19 @@ def get_loss(faces):
            SMPLLoss(), PoseLoss()
 
     return loss
+
+class AutomaticWeightedLoss(nn.Module):
+    """Automatically weighted multi-task loss (from JOTR).
+    Learns a weight for each loss term to balance them.
+    """
+    def __init__(self, num=4):
+        super(AutomaticWeightedLoss, self).__init__()
+        params = torch.ones(num, requires_grad=True, dtype=torch.float32)
+        self.params = nn.Parameter(params)
+
+    def forward(self, loss_dict):
+        if not hasattr(self, 'keys'):
+            self.keys = sorted(list(loss_dict.keys()))
+        for i, key in enumerate(self.keys):
+            loss_dict[key] = 0.5 / (self.params[i] ** 2) * loss_dict[key] + torch.log(1 + self.params[i] ** 2)
+        return loss_dict

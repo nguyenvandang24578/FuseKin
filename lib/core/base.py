@@ -7,7 +7,7 @@ from collections import Counter
 import models
 from data_final.dataset import MultipleDatasets
 from core.config import cfg
-from core.loss import JOTRCoordLoss, JOTRParamLoss
+from core.loss import JOTRCoordLoss, JOTRParamLoss, AutomaticWeightedLoss
 from funcs_utils import get_optimizer, load_checkpoint, get_scheduler, count_parameters, lr_check
 from utils.jotr_dataset import get_test_dataset as get_jotr_test_dataset
 from utils.jotr_dataset import get_train_dataset as get_jotr_train_dataset
@@ -85,6 +85,7 @@ def prepare_network(args, load_dir='', is_train=True):
 
             loss_history = checkpoint['train_log']
             test_error_history = checkpoint['test_log']
+            # AWL state will be loaded in Trainer.__init__ after AWL is created
             cfg.TRAIN.begin_epoch = checkpoint['epoch'] + 1
             print('===> resume from epoch {:d}, current lr: {:.0e}, milestones: {}, lr factor: {:.0e}'
                   .format(cfg.TRAIN.begin_epoch, curr_lr, lr_state['milestones'], lr_state['gamma']))
@@ -111,6 +112,19 @@ class Trainer:
 
         self.jotr_coord_loss = JOTRCoordLoss()
         self.jotr_param_loss = JOTRParamLoss()
+        self.awl = AutomaticWeightedLoss(4).cuda()
+        self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
+        # Restore AWL weights if resuming
+        if hasattr(args, 'resume_training') and args.resume_training:
+            import os
+            from funcs_utils import load_checkpoint as _load_ckpt
+            try:
+                ckpt = _load_ckpt(load_dir=os.path.join(cfg.checkpoint_dir), pick_best=False)
+                if 'awl_state_dict' in ckpt:
+                    self.awl.load_state_dict(ckpt['awl_state_dict'])
+                    print('===> AWL weights restored from checkpoint')
+            except:
+                pass
 
         if cfg.TRAIN.wandb:
             wandb.init(config=cfg,
@@ -153,15 +167,22 @@ class Trainer:
 
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
             
-            loss_body_joint_cam = self.jotr_coord_loss(
-                pred_joint_img, gt_orig_joint_cam, orig_joint_valid, is_3d).mean()
+            loss_body_joint_cam = 5 * self.jotr_coord_loss(
+                pred_joint_img, gt_orig_joint_cam, orig_joint_valid * is_3d[:, None, None]).mean()
             loss_smpl_joint_cam = self.jotr_coord_loss(
-                pred_pose, gt_fit_joint_cam, fit_joint_trunc, is_3d).mean()
+                pred_pose, gt_fit_joint_cam, fit_joint_trunc * is_valid_fit[:, None, None]).mean()
             fit_pose_valid = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
             fit_shape_valid = is_valid_fit[:, None]
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
-            loss = loss_body_joint_cam + loss_smpl_joint_cam + smpl_pose_loss + smpl_shape_loss
+            loss_dict = {
+                'body_joint_cam': loss_body_joint_cam,
+                'smpl_joint_cam': loss_smpl_joint_cam,
+                'smpl_pose': smpl_pose_loss,
+                'smpl_shape': smpl_shape_loss,
+            }
+            loss_dict = self.awl(loss_dict)
+            loss = sum(loss_dict.values())
 
             # update weights
             self.optimizer.zero_grad()

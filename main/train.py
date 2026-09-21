@@ -85,6 +85,7 @@ for epoch in range(cfg.TRAIN.begin_epoch, cfg.TRAIN.end_epoch + 1):
         'model_state_dict': check_data_pararell(trainer.model.state_dict()),  # 
         'optim_state_dict': trainer.optimizer.state_dict(),
         'scheduler_state_dict': trainer.lr_scheduler.state_dict(),
+        'awl_state_dict': trainer.awl.state_dict(),
         'train_log': trainer.loss_history,
         'test_log': trainer.error_history
     }, epoch, is_best)
