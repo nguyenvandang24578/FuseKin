@@ -270,7 +270,7 @@ class PW3D(torch.utils.data.Dataset):
         save_image(th_img.float().div(255), './debug/vis_3dpw_oc/3dpw_oc_{}.jpg'.format(idx))
         """
 
-        img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split)
+        img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split, exclude_flip=True)
         img = self.transform(img.astype(np.float32))/255.
 
         """
