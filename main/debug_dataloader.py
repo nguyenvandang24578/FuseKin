@@ -136,44 +136,52 @@ print(f"\n{'-'*50}")
 print("  [Visualizing] Luu anh ket qua de kiem tra 2D keypoints")
 print(f"{'-'*50}")
 
+img_count = 0
 for batch_idx, (inputs_b, targets_b, meta_b) in enumerate(loader):
-    # Lay anh dau tien cua batch (C, H, W)
-    img_tensor = inputs_b['img'][0].numpy()  # float32 in [0, 1]
-    
-    # Chuyen (C, H, W) -> (H, W, C), va scale len [0, 255]
-    img_np = np.transpose(img_tensor, (1, 2, 0))
-    img_np = (img_np * 255).astype(np.uint8)
-    
-    # Chuyen RGB (cua ToTensor) sang BGR de luu bang cv2
-    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-    
-    # Lay joints 2D va mask
-    joints = inputs_b['joints'][0].numpy()       # (17, 2) in [-1, 1]
-    joints_mask = inputs_b['joints_mask'][0].numpy() # (17, 1) in {0, 1}
+    batch_size = inputs_b['img'].shape[0]
+    for b in range(batch_size):
+        if img_count >= 10:
+            break
+            
+        # Lay anh thu b cua batch (C, H, W)
+        img_tensor = inputs_b['img'][b].numpy()  # float32 in [0, 1]
+        
+        # Chuyen (C, H, W) -> (H, W, C), va scale len [0, 255]
+        img_np = np.transpose(img_tensor, (1, 2, 0))
+        img_np = (img_np * 255).astype(np.uint8)
+        
+        # Chuyen RGB (cua ToTensor) sang BGR de luu bang cv2
+        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+        
+        # Lay joints 2D va mask
+        joints = inputs_b['joints'][b].numpy()       # (17, 2) in [-1, 1]
+        joints_mask = inputs_b['joints_mask'][b].numpy() # (17, 1) in {0, 1}
 
-    # Denormalize joints tu [-1, 1] ve pixel [0, 256]
-    # Vi output_hm_shape = 64, va scale cua anh = 256 => factor = 256
-    joints_px = (joints + 1) / 2.0 * 256.0
-    
-    # Ve tung diem len anh
-    for i in range(len(joints_px)):
-        x, y = int(joints_px[i, 0]), int(joints_px[i, 1])
-        valid = int(joints_mask[i, 0])
+        # Denormalize joints tu [-1, 1] ve pixel [0, 256]
+        joints_px = (joints + 1) / 2.0 * 256.0
         
-        # Color: Xanh la neu valid (1), Do neu invalid/bi che (0)
-        color = (0, 255, 0) if valid == 1 else (0, 0, 255)
+        # Ve tung diem len anh
+        for i in range(len(joints_px)):
+            x, y = int(joints_px[i, 0]), int(joints_px[i, 1])
+            valid = int(joints_mask[i, 0])
+            
+            # Color: Xanh la neu valid (1), Do neu invalid/bi che (0)
+            color = (0, 255, 0) if valid == 1 else (0, 0, 255)
+            
+            # Ve hinh tron
+            cv2.circle(img_bgr, (x, y), radius=4, color=color, thickness=-1)
+            
+            # In so thu tu cua khop de de theo doi
+            cv2.putText(img_bgr, str(i), (x+5, y+5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+            
+        out_path = f'debug_vis_{img_count}.jpg'
+        cv2.imwrite(out_path, img_bgr)
+        print(f"  Da luu anh truc quan hoa vao file: {out_path}")
         
-        # Ve hinh tron
-        cv2.circle(img_bgr, (x, y), radius=4, color=color, thickness=-1)
-        
-        # In so thu tu cua khop de de theo doi
-        cv2.putText(img_bgr, str(i), (x+5, y+5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-        
-    out_path = 'debug_vis.jpg'
-    cv2.imwrite(out_path, img_bgr)
-    print(f"  Da luu anh truc quan hoa vao file: {out_path} ! Ban co the mo de xem.")
-    
-    break
+        img_count += 1
+
+    if img_count >= 10:
+        break
 
 print(f"\n{'='*50}")
 print("  HOAN THANH VISUALIZE!")
