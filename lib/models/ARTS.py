@@ -124,3 +124,4 @@ class ARTS(nn.Module):
 def get_model(num_joint, embed_dim, depth):
     model = ARTS(num_joint, embed_dim, depth)
     return model
+
