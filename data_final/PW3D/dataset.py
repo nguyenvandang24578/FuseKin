@@ -224,6 +224,34 @@ class PW3D(torch.utils.data.Dataset):
         # import pdb;pdb.set_trace()
         # get gt img joint from smpl coordinates
         smpl_mesh_cam, smpl_joint_cam = self.get_smpl_coord(smpl_param)
+
+        # Unit/origin diagnostic for the raw SMPL output. This is intentionally
+        # read-only: do not change the /1000 conversion until the raw SMPL
+        # convention has been verified from these values.
+        if self.data_split == 'train' and idx == 0:
+            raw_root = smpl_joint_cam[self.root_joint_idx]
+            raw_joint_rootrel = smpl_joint_cam - raw_root[None, :]
+            bone_lengths = np.linalg.norm(
+                raw_joint_rootrel[1:] - raw_joint_rootrel[0:1], axis=1
+            )
+            print(
+                '[PW3D raw SMPL unit check] '
+                f'mesh min={smpl_mesh_cam.min():.6f}, '
+                f'mesh max={smpl_mesh_cam.max():.6f}, '
+                f'mesh std={smpl_mesh_cam.std():.6f} | '
+                f'joint min={smpl_joint_cam.min():.6f}, '
+                f'joint max={smpl_joint_cam.max():.6f}, '
+                f'joint std={smpl_joint_cam.std():.6f} | '
+                f'root={raw_root.tolist()} | '
+                f'root-rel mean_abs={np.abs(raw_joint_rootrel).mean():.6f}, '
+                f'root-rel std={raw_joint_rootrel.std():.6f}, '
+                f'bone median={np.median(bone_lengths):.6f}'
+            )
+            print(
+                '[PW3D raw SMPL trans check] '
+                f'trans={np.asarray(smpl_param["trans"], dtype=np.float32).tolist()}'
+            )
+
         smpl_coord_img = cam2pixel(smpl_joint_cam, cam_param['focal'], cam_param['princpt'])
         joint_coord_img = smpl_coord_img
         joint_valid = np.ones_like(joint_coord_img[:, :1], dtype=np.float32)
