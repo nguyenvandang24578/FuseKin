@@ -92,11 +92,13 @@ class ARTS(nn.Module):
             pose2d = pose2d.unsqueeze(1)  # (B, 1, J, C)
 
         # --- MotionBERT Lifting (2D -> 3D) ---
-        # DSTformer expects input shape (B, T, J, C) with T up to maxlen=243
-        # Since FuseKin is single-image (seqlen=1), we duplicate the frame to 243
-        # to preserve all pretrained temporal embeddings.
-        # (same trick used by MotionBERT authors for single-frame inference)
-        mb_input = pose2d.repeat(1, _MB_MAXLEN, 1, 1)  # (B, 243, J, C)
+        # DSTformer expects exactly 3 channels: (x, y, confidence)
+        # Always take first 2 channels then append confidence=1
+        xy = pose2d[..., :2]                                    # (B, 1, J, 2)
+        conf = torch.ones(*xy.shape[:-1], 1, device=xy.device)  # (B, 1, J, 1)
+        pose2d_3ch = torch.cat([xy, conf], dim=-1)              # (B, 1, J, 3)
+        # Duplicate single frame to maxlen=243 to preserve pretrained temporal embeddings
+        mb_input = pose2d_3ch.repeat(1, _MB_MAXLEN, 1, 1)      # (B, 243, J, 3)
         pose3d_seq = self.pose_lifter(mb_input)         # (B, 243, J, 3)  -- DSTformer forward()
         # Take the centre frame (matching MotionBERT data_stride=81, centre idx=121)
         centre = _MB_MAXLEN // 2                        # = 121
