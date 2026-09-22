@@ -59,7 +59,7 @@ cfg.focal = (5000, 5000)
 cfg.princpt = (cfg.input_img_shape[1] / 2, cfg.input_img_shape[0] / 2)
 
 ###############SMPL mean data#################
-cfg.DATASET.BASE_DATA_DIR = 'data/base_data'
+cfg.DATASET.BASE_DATA_DIR = 'data_final/base_data'
 ##############################################
 
 """ Model """

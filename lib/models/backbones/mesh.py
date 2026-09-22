@@ -58,7 +58,7 @@ def get_graph_params(filename, nsize=1):
 
 class Mesh(object):
     """Mesh object that is used for handling certain graph operations."""
-    def __init__(self, filename='data/base_data/mesh_downsampling.npz',
+    def __init__(self, filename='data_final/base_data/mesh_downsampling.npz',
                  num_downsampling=1, nsize=1, device=torch.device('cuda')):
         self._A, self._U, self._D = get_graph_params(filename=filename, nsize=nsize)
         self._U = [u.to(device) for u in self._U]

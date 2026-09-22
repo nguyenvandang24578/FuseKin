@@ -39,7 +39,7 @@ from utils.demo_utils import (
 )
 
 
-BASE_DATA_DIR = 'data/base_data'
+BASE_DATA_DIR = 'data_final/base_data'
 MIN_NUM_FRAMES = 25
 random.seed(1)
 torch.manual_seed(1)

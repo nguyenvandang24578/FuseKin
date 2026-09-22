@@ -7,9 +7,16 @@ import torch.nn.functional as F
 from core.config import cfg
 from models.backbones.mesh import Mesh
 from models.spin import RegressorSpin
-from models.CFE import LearnableCoefficient
 
 BASE_DATA_DIR = cfg.DATASET.BASE_DATA_DIR
+class LearnableCoefficient(nn.Module):
+    def __init__(self):
+        super(LearnableCoefficient, self).__init__()
+        self.bias = nn.Parameter(torch.FloatTensor([1.0]), requires_grad=True)
+
+    def forward(self, x):
+        out = x * self.bias
+        return out
 
 class RGBJointCrossTransformer(nn.Module):
     """

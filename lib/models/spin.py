@@ -11,9 +11,9 @@ import torchvision.models.resnet as resnet
 from geometry import rot6d_to_rotmat, rotation_matrix_to_angle_axis
 from models.smpl_mps import SMPL
 
-SMPL_MODEL_DIR = 'data/base_data'
-SMPL_MEAN_PARAMS = 'data/base_data/smpl_mean_params.npz'
-BASE_DATA_DIR = 'data/base_data'
+SMPL_MODEL_DIR = 'data_final/base_data'
+SMPL_MEAN_PARAMS = 'data_final/base_data/smpl_mean_params.npz'
+BASE_DATA_DIR = 'data_final/base_data'
 
 class Bottleneck(nn.Module):
     """
