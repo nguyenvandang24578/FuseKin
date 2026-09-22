@@ -67,46 +67,58 @@ class ARTS(nn.Module):
 
         if cfg.MODEL.name == 'teacher':
             self.teacher_model = Teacher(num_joint=num_joint, embed_dim=embed_dim)
+            # Freeze backbone + MotionBERT: chỉ train Teacher fusion
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+            for param in self.pose_lifter.parameters():
+                param.requires_grad = False
+            self.backbone.eval()
+            self.pose_lifter.eval()
+            print('[ARTS] Frozen backbone + MotionBERT for Teacher training')
         else:
             self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim*2)
 
     def forward(self, img, pose2d, is_train=True):
-        legacy_feature_input = img.dim() not in (4, 5)
-        if legacy_feature_input:
-            img_feat = pose2d
-            pose2d = img
-            feature_map = None
-            if img_feat.dim() == 2:
-                img_feat = img_feat.unsqueeze(1)
-            batch_size = pose2d.shape[0]
-            sequence_length = pose2d.shape[1] if pose2d.dim() == 4 else 1
-        elif img.dim() == 5:
-            batch_size, sequence_length = img.shape[:2]
-            backbone_input = img.reshape(batch_size * sequence_length, *img.shape[2:])
-            feature_map, img_feat = self.backbone(backbone_input)
-            feature_map = feature_map.reshape(batch_size, sequence_length, *feature_map.shape[1:])
-            img_feat = img_feat.reshape(batch_size, sequence_length, -1)
-        else:
-            batch_size, sequence_length = img.shape[0], 1
-            backbone_input = img
-            feature_map, img_feat = self.backbone(backbone_input)
-            img_feat = img_feat.reshape(batch_size, 1, -1)
+        # Nếu train Teacher, không cần gradient cho backbone + MotionBERT
+        _no_grad = torch.no_grad() if (cfg.MODEL.name == 'teacher' and is_train) else torch.enable_grad()
+        
+        with _no_grad:
+            legacy_feature_input = img.dim() not in (4, 5)
+            if legacy_feature_input:
+                img_feat = pose2d
+                pose2d = img
+                feature_map = None
+                if img_feat.dim() == 2:
+                    img_feat = img_feat.unsqueeze(1)
+                batch_size = pose2d.shape[0]
+                sequence_length = pose2d.shape[1] if pose2d.dim() == 4 else 1
+            elif img.dim() == 5:
+                batch_size, sequence_length = img.shape[:2]
+                backbone_input = img.reshape(batch_size * sequence_length, *img.shape[2:])
+                feature_map, img_feat = self.backbone(backbone_input)
+                feature_map = feature_map.reshape(batch_size, sequence_length, *feature_map.shape[1:])
+                img_feat = img_feat.reshape(batch_size, sequence_length, -1)
+            else:
+                batch_size, sequence_length = img.shape[0], 1
+                backbone_input = img
+                feature_map, img_feat = self.backbone(backbone_input)
+                img_feat = img_feat.reshape(batch_size, 1, -1)
 
-        if pose2d.dim() == 3:
-            pose2d = pose2d.unsqueeze(1)  # (B, 1, J, C)
+            if pose2d.dim() == 3:
+                pose2d = pose2d.unsqueeze(1)  # (B, 1, J, C)
 
-        # --- MotionBERT Lifting (2D -> 3D) ---
-        # DSTformer expects exactly 3 channels: (x, y, confidence)
-        # Always take first 2 channels then append confidence=1
-        xy = pose2d[..., :2]                                    # (B, 1, J, 2)
-        conf = torch.ones(*xy.shape[:-1], 1, device=xy.device)  # (B, 1, J, 1)
-        pose2d_3ch = torch.cat([xy, conf], dim=-1)              # (B, 1, J, 3)
-        # Duplicate single frame to maxlen=243 to preserve pretrained temporal embeddings
-        mb_input = pose2d_3ch.repeat(1, _MB_MAXLEN, 1, 1)      # (B, 243, J, 3)
-        pose3d_seq = self.pose_lifter(mb_input)         # (B, 243, J, 3)  -- DSTformer forward()
-        # Take the centre frame (matching MotionBERT data_stride=81, centre idx=121)
-        centre = _MB_MAXLEN // 2                        # = 121
-        pose3d = pose3d_seq[:, centre, :, :]            # (B, J, 3)
+            # --- MotionBERT Lifting (2D -> 3D) ---
+            # DSTformer expects exactly 3 channels: (x, y, confidence)
+            # Always take first 2 channels then append confidence=1
+            xy = pose2d[..., :2]                                    # (B, 1, J, 2)
+            conf = torch.ones(*xy.shape[:-1], 1, device=xy.device)  # (B, 1, J, 1)
+            pose2d_3ch = torch.cat([xy, conf], dim=-1)              # (B, 1, J, 3)
+            # Duplicate single frame to maxlen=243 to preserve pretrained temporal embeddings
+            mb_input = pose2d_3ch.repeat(1, _MB_MAXLEN, 1, 1)      # (B, 243, J, 3)
+            pose3d_seq = self.pose_lifter(mb_input)         # (B, 243, J, 3)  -- DSTformer forward()
+            # Take the centre frame (matching MotionBERT data_stride=81, centre idx=121)
+            centre = _MB_MAXLEN // 2                        # = 121
+            pose3d = pose3d_seq[:, centre, :, :]            # (B, J, 3)
 
         # Reshape to match what pose_mesh_coevo expects: (B, seqlen, J, 3)
         pose3d = pose3d.unsqueeze(1).repeat(1, cfg.DATASET.seqlen, 1, 1)  # (B, seqlen, J, 3)
