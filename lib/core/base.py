@@ -355,6 +355,29 @@ class Teacher_Trainer:
                         f'orig min={gt_orig_joint_cam.min().item():.6f}, '
                         f'orig max={gt_orig_joint_cam.max().item():.6f}'
                     )
+
+                    # These values are captured before the dataset applies its
+                    # final /1000 conversion. Comparing them with fit_joint_cam
+                    # tells us directly whether that conversion is appropriate.
+                    raw_std = meta['raw_smpl_rootrel_std']
+                    raw_mean_abs = meta['raw_smpl_rootrel_mean_abs']
+                    raw_bone_median = meta['raw_smpl_bone_median']
+                    raw_mesh_std = meta['raw_smpl_mesh_std']
+                    raw_joint_std = meta['raw_smpl_joint_std']
+                    raw_trans = meta['raw_smpl_trans']
+                    raw_to_fit_ratio = raw_std.float().mean().item() / max(
+                        gt_fit_joint_cam.std().item(), 1e-12
+                    )
+                    print(
+                        f'[Teacher raw SMPL stats][epoch {epoch}] '
+                        f'rootrel std(raw)={raw_std.float().mean().item():.6f}, '
+                        f'rootrel mean_abs(raw)={raw_mean_abs.float().mean().item():.6f}, '
+                        f'bone median(raw)={raw_bone_median.float().mean().item():.6f}, '
+                        f'joint std(raw)={raw_joint_std.float().mean().item():.6f}, '
+                        f'mesh std(raw)={raw_mesh_std.float().mean().item():.6f}, '
+                        f'raw/fit std ratio={raw_to_fit_ratio:.2f}, '
+                        f'trans sample0={raw_trans[0].detach().cpu().tolist()}'
+                    )
                     print(
                         f'[Teacher valid mask][epoch {epoch}] '
                         f'ratio={valid_ratio:.6f}, count={valid_count:.0f}/'
