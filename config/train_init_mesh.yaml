@@ -1,6 +1,6 @@
 ﻿DATASET:
-    train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']
-    test_list: ['3dpw', '3dpw-pc', '3dpw-oc', '3dpw-crowd']
+    train_list: ['3dpw-train']
+    test_list: ['3dpw']
     input_joint_set: 'human36'
     target_joint_set: 'human36'
     workers: 8

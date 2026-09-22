@@ -12,6 +12,7 @@ Chay tu thu muc goc:
 """
 import os, sys
 sys.path.append('./lib')
+sys.path.append('./')
 
 import argparse
 import warnings
