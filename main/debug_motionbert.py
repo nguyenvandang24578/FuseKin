@@ -166,10 +166,12 @@ def run_motionbert(model, joints_2d_batch, device):
 
     Returns: (B, J, 3) numpy array -- predicted 3D joints
     """
-    B, J, _ = joints_2d_batch.shape
-    # Append confidence=1 for all joints
+    B, J, C = joints_2d_batch.shape
+    # Always take x,y (first 2 channels) then append confidence=1
+    # MotionBERT always expects exactly 3 channels: (x, y, confidence)
+    xy = joints_2d_batch[..., :2]                              # (B, J, 2)
     conf = torch.ones(B, J, 1, device=device)
-    pose2d_3ch = torch.cat([joints_2d_batch, conf], dim=-1)   # (B, J, 3)
+    pose2d_3ch = torch.cat([xy, conf], dim=-1)                 # (B, J, 3)
 
     # Duplicate single frame to 243 to activate full temporal embedding
     mb_input = pose2d_3ch.unsqueeze(1).repeat(1, _MB_MAXLEN, 1, 1)  # (B, 243, J, 3)
@@ -282,6 +284,7 @@ for batch_idx, (inputs_b, targets_b, meta_b) in enumerate(loader):
 print(f"\n{'='*55}")
 print(f"  DONE! {img_count} images saved to: {args.out_dir}/")
 print(f"{'='*55}\n")
+
 
 
 
