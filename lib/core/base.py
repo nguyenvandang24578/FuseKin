@@ -332,6 +332,10 @@ class Teacher_Trainer:
                     gt_mean_abs = gt_fit_joint_cam.abs().mean().item()
                     pred_mean_abs = pred_pose.abs().mean().item()
                     pred_rootrel_mean_abs = pred_pose_rootrel.abs().mean().item()
+                    valid_mask = fit_joint_trunc * is_valid_fit[:, None, None]
+                    valid_ratio = valid_mask.float().mean().item()
+                    valid_count = valid_mask.sum().item()
+
                     print(
                         f'[Teacher coord check][epoch {epoch}] '
                         f'GT root={gt_root_abs:.6f}, '
@@ -340,6 +344,38 @@ class Teacher_Trainer:
                         f'mean_abs: GT={gt_mean_abs:.6f}, '
                         f'pred(raw)={pred_mean_abs:.6f}, '
                         f'pred(root-rel)={pred_rootrel_mean_abs:.6f}'
+                    )
+                    print(
+                        f'[Teacher target stats][epoch {epoch}] '
+                        f'fit min={gt_fit_joint_cam.min().item():.6f}, '
+                        f'fit max={gt_fit_joint_cam.max().item():.6f}, '
+                        f'fit std={gt_fit_joint_cam.std().item():.6f} | '
+                        f'orig mean_abs={gt_orig_joint_cam.abs().mean().item():.6f}, '
+                        f'orig std={gt_orig_joint_cam.std().item():.6f}, '
+                        f'orig min={gt_orig_joint_cam.min().item():.6f}, '
+                        f'orig max={gt_orig_joint_cam.max().item():.6f}'
+                    )
+                    print(
+                        f'[Teacher valid mask][epoch {epoch}] '
+                        f'ratio={valid_ratio:.6f}, count={valid_count:.0f}/'
+                        f'{valid_mask.numel():.0f}, '
+                        f'is_valid_fit_mean={is_valid_fit.float().mean().item():.6f}'
+                    )
+                    print(
+                        f'[Teacher prediction stats][epoch {epoch}] '
+                        f'raw min={pred_pose.min().item():.6f}, '
+                        f'raw max={pred_pose.max().item():.6f}, '
+                        f'raw std={pred_pose.std().item():.6f}, '
+                        f'root-rel min={pred_pose_rootrel.min().item():.6f}, '
+                        f'root-rel max={pred_pose_rootrel.max().item():.6f}, '
+                        f'root-rel std={pred_pose_rootrel.std().item():.6f}'
+                    )
+                    print(
+                        f'[Teacher sample 0][epoch {epoch}] '
+                        f'gt_root={gt_fit_joint_cam[0, 0].detach().cpu().tolist()}, '
+                        f'pred_root={pred_pose[0, 0].detach().cpu().tolist()}, '
+                        f'gt_joint1={gt_fit_joint_cam[0, 1].detach().cpu().tolist()}, '
+                        f'pred_joint1_rootrel={pred_pose_rootrel[0, 1].detach().cpu().tolist()}'
                     )
                     if not torch.isfinite(pred_pose).all():
                         raise FloatingPointError(
