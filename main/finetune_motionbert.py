@@ -18,8 +18,7 @@ from MotionBERT.lib.model.loss import loss_mpjpe, n_mpjpe, loss_velocity, \
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cfg", type=str, default="config/train_init_mesh.yaml", help="Path to the FuseKin config file.")
-    parser.add_argument("--mb_cfg", type=str, default="config/finetune_motionbert_pw3d.yaml", help="Path to the MotionBERT config file.")
+    parser.add_argument("--cfg", type=str, default="config/finetune_motionbert_pw3d.yaml", help="Path to the unified config file (DATASET + MOTIONBERT).")
     parser.add_argument('--pretrained', default='', type=str, help='pretrained checkpoint path (e.g. MotionBERT/checkpoint/pretrain/MB_release.bin)')
     opts = parser.parse_args()
     return opts
@@ -96,12 +95,15 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
 def main():
     opts = parse_args()
     
-    # Load FuseKin Config (for Dataloader)
+    # Load Unified Config
+    with open(opts.cfg, 'r') as f:
+        full_cfg = yaml.safe_load(f)
+    
+    # FuseKin Config (for Dataloader) — uses the DATASET section
     update_config(opts.cfg)
     
-    # Load MotionBERT Config
-    with open(opts.mb_cfg, 'r') as f:
-        mb_cfg = edict(yaml.safe_load(f))
+    # MotionBERT Config — uses the MOTIONBERT section
+    mb_cfg = edict(full_cfg['MOTIONBERT'])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")

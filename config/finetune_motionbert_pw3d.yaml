@@ -1,29 +1,47 @@
-# General  
-finetune: True
+# ======================================================
+# FuseKin — MotionBERT Finetuning on 3DPW (Single Config)
+# ======================================================
 
-# Traning 
-epochs: 60
-checkpoint_frequency: 10
-batch_size: 32 
-dropout: 0.0
-learning_rate: 0.0002
-weight_decay: 0.01
-lr_decay: 0.99
+# --- FuseKin Dataset Configuration ---
+DATASET:
+    train_list: ['3dpw-train']
+    test_list: ['3dpw']
+    input_joint_set: 'human36'
+    target_joint_set: 'human36'
+    workers: 8
+    use_gt_input: False
+    seqlen: 1
+    stride: 1
+    noise: 0
 
-# Model
-maxlen: 243
-dim_feat: 512
-mlp_ratio: 2
-depth: 5
-dim_rep: 512
-num_heads: 8
-att_fuse: True
-num_joints: 17
+# --- MotionBERT Configuration (100% faithful to MB_ft_h36m.yaml) ---
+MOTIONBERT:
+    # General
+    finetune: True
 
-# Loss
-lambda_3d_velocity: 20.0
-lambda_scale: 0.5
-lambda_lv: 0.0
-lambda_lg: 0.0
-lambda_a: 0.0
-lambda_av: 0.0
+    # Training
+    epochs: 60
+    checkpoint_frequency: 10
+    batch_size: 32
+    dropout: 0.0
+    learning_rate: 0.0002
+    weight_decay: 0.01
+    lr_decay: 0.99
+
+    # Model (DSTformer)
+    maxlen: 243
+    dim_feat: 512
+    mlp_ratio: 2
+    depth: 5
+    dim_rep: 512
+    num_heads: 8
+    att_fuse: True
+    num_joints: 17
+
+    # Loss weights
+    lambda_3d_velocity: 20.0
+    lambda_scale: 0.5
+    lambda_lv: 0.0
+    lambda_lg: 0.0
+    lambda_a: 0.0
+    lambda_av: 0.0
