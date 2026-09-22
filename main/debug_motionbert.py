@@ -156,10 +156,11 @@ def draw_3d_skeleton(ax, joint_3d, color_joint='r', color_bone='b', title=''):
     ax.set_title(title, fontsize=10)
 
 
-def run_motionbert(model, joints_2d_batch, device):
+def run_motionbert(model, joints_2d_batch, joints_mask_batch, device):
     """
     Run MotionBERT inference on a batch.
     joints_2d_batch: (B, J, 2) tensor -- normalised 2D joints from dataloader
+    joints_mask_batch: (B, J, 1) tensor -- mask for joints
 
     MotionBERT input convention (ref: MotionBERT/train.py :: train_epoch):
       shape = (N, T, J, C)  where C=3 (x, y, confidence)
@@ -173,7 +174,7 @@ def run_motionbert(model, joints_2d_batch, device):
     xy = joints_2d_batch[..., :2]                              # (B, J, 2)
     # joints_2d_batch is ALREADY normalized to [-1, 1] by Human36M17Dataset wrapper.
 
-    conf = torch.ones(B, J, 1, device=device)
+    conf = joints_mask_batch
     pose2d_3ch = torch.cat([xy, conf], dim=-1)                 # (B, J, 3)
 
     # Duplicate single frame to 243 to activate full temporal embedding
@@ -231,7 +232,8 @@ for batch_idx, (inputs_b, targets_b, meta_b) in enumerate(loader):
         break
 
     joints_2d_batch = inputs_b['joints'].to(device)             # (B, J, 2)
-    pred_3d_batch   = run_motionbert(model_mb, joints_2d_batch, device)  # (B, J, 3)
+    joints_mask_batch = inputs_b['joints_mask'].to(device)      # (B, J, 1)
+    pred_3d_batch   = run_motionbert(model_mb, joints_2d_batch, joints_mask_batch, device)  # (B, J, 3)
 
     batch_size = inputs_b['img'].shape[0]
     for b in range(batch_size):
