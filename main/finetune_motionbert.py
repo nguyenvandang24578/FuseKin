@@ -108,15 +108,11 @@ def main():
 
     # Prepare Dataset
     print("Loading 3DPW dataset...")
-    dataset_list, dataloader_list = get_train_dataset(opts, ['3dpw-train'], is_train=True)
-    train_loader = dataloader_list
-    
-    if isinstance(dataloader_list, list):
-        train_loader = dataloader_list[0]
+    train_dataset = get_train_dataset('3dpw-train', opts)
         
-    # Overwrite batch size according to MotionBERT config
+    # Create DataLoader with MotionBERT batch size
     train_loader = DataLoader(
-        dataset=train_loader.dataset,
+        dataset=train_dataset,
         batch_size=mb_cfg.batch_size,
         shuffle=True,
         num_workers=cfg.DATASET.workers,
