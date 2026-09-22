@@ -52,10 +52,13 @@ shutil.copyfile(src='./lib/models/Core_model.py', dst=output_model_dir)
 output_model_dir = os.path.join(cfg.checkpoint_dir, 'ARTS.py')
 shutil.copyfile(src='./lib/models/ARTS.py', dst=output_model_dir)
 
+output_model_dir = os.path.join(cfg.checkpoint_dir, 'teacher.py')
+shutil.copyfile(src='./lib/models/teacher.py', dst=output_model_dir)
+
 output_model_dir = os.path.join(cfg.checkpoint_dir, 'base.py')
 shutil.copyfile(src='./lib/core/base.py', dst=output_model_dir)
 
-from core.base import Trainer, Tester, LiftTrainer, LiftTester
+from core.base import Trainer, Tester, LiftTrainer, LiftTester, Teacher_Trainer, Teacher_Tester
 
 if cfg.MODEL.name == 'ARTS':
     trainer = Trainer(args, load_dir='./experiment/exp_04-26_09_16/checkpoint/best.pth.tar')
@@ -63,6 +66,9 @@ if cfg.MODEL.name == 'ARTS':
 elif cfg.MODEL.name == 'PoseEst':
     trainer = LiftTrainer(args, load_dir='')
     tester = LiftTester(args)  # if not args.debug else None
+elif cfg.MODEL.name == 'teacher':
+    trainer = Teacher_Trainer(args, load_dir='')
+    tester = Teacher_Tester(args)
 
 print("===> Start training...")
 
@@ -80,14 +86,16 @@ for epoch in range(cfg.TRAIN.begin_epoch, cfg.TRAIN.end_epoch + 1):
     trainer.error_history['surface'].append(tester.surface_error)
     trainer.error_history['joint'].append(tester.joint_error)
 
-    save_checkpoint({
+    ckpt = {
         'epoch': epoch,
         'model_state_dict': check_data_pararell(trainer.model.state_dict()),  # 
         'optim_state_dict': trainer.optimizer.state_dict(),
         'scheduler_state_dict': trainer.lr_scheduler.state_dict(),
-        'awl_state_dict': trainer.awl.state_dict(),
         'train_log': trainer.loss_history,
         'test_log': trainer.error_history
-    }, epoch, is_best)
+    }
+    if hasattr(trainer, 'awl'):
+        ckpt['awl_state_dict'] = trainer.awl.state_dict()
+    save_checkpoint(ckpt, epoch, is_best)
 
-print('Training Finished! All logs were saved in ', cfg.checkpoint_dir)
+print('Training Finished! All logs were saved in ', cfg.checkpoint_dir)

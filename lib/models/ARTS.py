@@ -5,6 +5,7 @@ from core.config import cfg as cfg
 from models import Multimodel
 from models.backbones.resnet import ResNetBackbone
 from models.DSTformer import DSTformer
+from models.teacher import Teacher
 
 import os
 os.environ["WANDB_API_KEY"] = 'KEY'
@@ -64,7 +65,10 @@ class ARTS(nn.Module):
             missing, unexpected = self.pose_lifter.load_state_dict(new_state_dict, strict=False)
             print(f'[ARTS] MotionBERT loaded. Missing: {len(missing)}, Unexpected: {len(unexpected)}')
 
-        self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim*2)
+        if cfg.MODEL.name == 'teacher':
+            self.teacher_model = Teacher(num_joint=num_joint, embed_dim=embed_dim)
+        else:
+            self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim*2)
 
     def forward(self, img, pose2d, is_train=True):
         legacy_feature_input = img.dim() not in (4, 5)
@@ -106,6 +110,31 @@ class ARTS(nn.Module):
 
         # Reshape to match what pose_mesh_coevo expects: (B, seqlen, J, 3)
         pose3d = pose3d.unsqueeze(1).repeat(1, cfg.DATASET.seqlen, 1, 1)  # (B, seqlen, J, 3)
+
+        if cfg.MODEL.name == 'teacher':
+            # teacher_model expect: joints=(B, 17, 3), img_feats=(B, 2048, H, W)
+            if feature_map.dim() == 5:
+                B, T, C, H, W = feature_map.shape
+                feat_map_2d = feature_map.reshape(B * T, C, H, W)
+                pose3d_1d = pose3d.reshape(B * T, pose3d.shape[2], 3)
+            else:
+                feat_map_2d = feature_map                 # (B, 2048, H, W)
+                pose3d_1d = pose3d[:, 0]                  # (B, J, 3) - lấy frame đầu vì seqlen=1
+            
+            teacher_out_list = self.teacher_model(joints=pose3d_1d, img_feats=feat_map_2d, is_train=is_train)
+            # RegressorSpin trả về list[dict], lấy phần tử cuối cùng
+            teacher_out = teacher_out_list[-1]
+            # Các tensor có shape (B, seqlen=1, ...), squeeze chiều seqlen ra
+            theta = teacher_out['theta'][:, -1]          # (B, 85) = [cam(3), pose(72), shape(10)]
+            verts = teacher_out['verts'][:, -1]           # (B, 6890, 3)
+            kp_3d = teacher_out['kp_3d']                  # (B, J, 3) - đã không có seqlen
+            output = {
+                'joint_img': kp_3d,
+                'smpl_mesh_cam': verts,
+                'smpl_pose': theta[:, 3:75],
+                'smpl_shape': theta[:, 75:],
+            }
+            return output
 
         evo_pose, init_smpl_pose, init_smpl_shape, final_mesh, smploutput = self.pose_mesh_coevo(pose3d / 1000, img_feat, pose2d, is_train=is_train)
 
