@@ -147,11 +147,11 @@ class Trainer:
             # convert to cuda
             input_image = inputs['img'].cuda().float()
             # Slice 30 joints -> 17 joints matching ARTS expected input
-            input_pose = inputs['joints'][:, self.smpl_to_h36m_idx].cuda().float()
-            gt_orig_joint_cam = targets['orig_joint_cam'][:, self.smpl_to_h36m_idx].cuda()
-            gt_fit_joint_cam = targets['fit_joint_cam'][:, self.smpl_to_h36m_idx].cuda()
-            orig_joint_valid = meta['orig_joint_valid'][:, self.smpl_to_h36m_idx].cuda()
-            fit_joint_trunc = meta['fit_joint_trunc'][:, self.smpl_to_h36m_idx].cuda()
+            input_pose = inputs['joints'][:, self.smpl_to_h36m_idx].cuda().float() # keypoint 2D đầu vào
+            gt_orig_joint_cam = targets['orig_joint_cam'][:, self.smpl_to_h36m_idx].cuda() #Đây là tọa độ 3D thực tế đo được từ các cảm biến
+            gt_fit_joint_cam = targets['fit_joint_cam'][:, self.smpl_to_h36m_idx].cuda() # tọa độ 3D sinh ra từ smpl prj
+            orig_joint_valid = meta['orig_joint_valid'][:, self.smpl_to_h36m_idx].cuda() #mask, = 0 thì k tính loss
+            fit_joint_trunc = meta['fit_joint_trunc'][:, self.smpl_to_h36m_idx].cuda() # mask
             
             gt_smplpose = targets['pose_param'].cuda()
             gt_smplshape = targets['shape_param'].cuda()
