@@ -171,11 +171,8 @@ def run_motionbert(model, joints_2d_batch, device):
     # Always take x,y (first 2 channels) then append confidence=1
     # MotionBERT always expects exactly 3 channels: (x, y, confidence)
     xy = joints_2d_batch[..., :2]                              # (B, J, 2)
-    # FuseKin dataloader returns joints in heatmap space [0, 64].
-    # MotionBERT expects inputs normalized to [-1, 1].
-    # PRINT TO DEBUG WHAT THE MIN/MAX ACTUALLY IS
-    print('joints_2d min:', joints_2d_batch.min().item(), 'max:', joints_2d_batch.max().item())
-    xy = xy / 32.0 - 1.0
+    # joints_2d_batch is ALREADY normalized to [-1, 1] by Human36M17Dataset wrapper.
+
     conf = torch.ones(B, J, 1, device=device)
     pose2d_3ch = torch.cat([xy, conf], dim=-1)                 # (B, J, 3)
 
@@ -290,6 +287,7 @@ for batch_idx, (inputs_b, targets_b, meta_b) in enumerate(loader):
 print(f"\n{'='*55}")
 print(f"  DONE! {img_count} images saved to: {args.out_dir}/")
 print(f"{'='*55}\n")
+
 
 
 
