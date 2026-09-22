@@ -346,7 +346,8 @@ class PW3D(torch.utils.data.Dataset):
                 [np.sin(np.deg2rad(-rot)), np.cos(np.deg2rad(-rot)), 0],
                 [0, 0, 1]], dtype=np.float32)
                 
-                orig_joint_cam = np.dot(rot_aug_mat, orig_joint_cam.transpose(1,0)).transpose(1,0) / 1000 # milimeter to meter
+                # SMPL_Layer already returns meters; keep rotation, remove only duplicate /1000.
+                orig_joint_cam = np.dot(rot_aug_mat, orig_joint_cam.transpose(1,0)).transpose(1,0)
                 
                 smpl_pose = np.array(smpl_param['pose'], dtype=np.float32).reshape(-1,3)
                 root_pose = smpl_pose[self.root_joint_idx,:]
@@ -358,7 +359,8 @@ class PW3D(torch.utils.data.Dataset):
                 smpl_shape = np.array(smpl_param['shape'], dtype=np.float32)
 
                 smpl_joint_cam = smpl_joint_cam - smpl_joint_cam[self.root_joint_idx,None] # root-relative
-                smpl_joint_cam = np.dot(rot_aug_mat, smpl_joint_cam.transpose(1,0)).transpose(1,0) / 1000 # milimeter to meter
+                # SMPL_Layer already returns meters; keep rotation, remove only duplicate /1000.
+                smpl_joint_cam = np.dot(rot_aug_mat, smpl_joint_cam.transpose(1,0)).transpose(1,0)
 
                 # SMPL pose parameter validity
                 smpl_param_valid = np.ones((self.smpl.orig_joint_num, 3), dtype=np.float32)
