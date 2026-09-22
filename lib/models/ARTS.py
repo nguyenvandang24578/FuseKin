@@ -13,11 +13,11 @@ os.environ["WANDB_MODE"] = "offline"
 # MotionBERT-Lite hyperparameters (matching MotionBERT/configs/pretrain/MB_lite.yaml)
 _MB_DIM_IN   = 3
 _MB_DIM_OUT  = 3       # Output 3D joint coords directly (same as MotionBERT Pose3D task)
-_MB_DIM_FEAT   = 256     # MB-Lite uses 256, full MotionBERT uses 512
+_MB_DIM_FEAT   = 512     # Full MotionBERT
 _MB_DIM_REP  = 512
 _MB_DEPTH    = 5
 _MB_NUM_HEADS = 8
-_MB_MLP_RATIO  = 4       # MB-Lite uses 4, full MotionBERT uses 2
+_MB_MLP_RATIO  = 2       # Full MotionBERT
 _MB_MAXLEN   = 243     # MotionBERT was trained with 243-frame sequences
 _MB_NUM_JOINTS = 17
 _MB_ATT_FUSE = True
@@ -126,4 +126,5 @@ class ARTS(nn.Module):
 def get_model(num_joint, embed_dim, depth):
     model = ARTS(num_joint, embed_dim, depth)
     return model
+
 

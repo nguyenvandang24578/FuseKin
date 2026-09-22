@@ -56,11 +56,11 @@ from models.DSTformer import DSTformer
 # Hyperparams matching configs/pretrain/MB_lite.yaml in MotionBERT repo (MotionBERT-Lite)
 _MB_DIM_IN     = 3
 _MB_DIM_OUT    = 3       # Direct 3D joint output
-_MB_DIM_FEAT   = 256     # MB-Lite uses 256, full MotionBERT uses 512
+_MB_DIM_FEAT   = 512     # Full MotionBERT
 _MB_DIM_REP    = 512
 _MB_DEPTH      = 5
 _MB_NUM_HEADS  = 8
-_MB_MLP_RATIO  = 4       # MB-Lite uses 4, full MotionBERT uses 2
+_MB_MLP_RATIO  = 2       # Full MotionBERT
 _MB_MAXLEN     = 243
 _MB_NUM_JOINTS = 17
 _MB_ATT_FUSE   = True
@@ -285,6 +285,7 @@ for batch_idx, (inputs_b, targets_b, meta_b) in enumerate(loader):
 print(f"\n{'='*55}")
 print(f"  DONE! {img_count} images saved to: {args.out_dir}/")
 print(f"{'='*55}\n")
+
 
 
 
