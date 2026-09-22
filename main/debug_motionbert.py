@@ -95,7 +95,7 @@ def load_checkpoint(model, chk_path):
         if k.startswith('module.'):
             k = k[7:]
         new_state_dict[k] = v
-    missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
+    missing, unexpected = model.load_state_dict(new_state_dict, strict=True)
     print(f'  Checkpoint loaded. Missing keys: {len(missing)}, Unexpected: {len(unexpected)}')
     return model
 
@@ -173,6 +173,8 @@ def run_motionbert(model, joints_2d_batch, device):
     xy = joints_2d_batch[..., :2]                              # (B, J, 2)
     # FuseKin dataloader returns joints in heatmap space [0, 64].
     # MotionBERT expects inputs normalized to [-1, 1].
+    # PRINT TO DEBUG WHAT THE MIN/MAX ACTUALLY IS
+    print('joints_2d min:', joints_2d_batch.min().item(), 'max:', joints_2d_batch.max().item())
     xy = xy / 32.0 - 1.0
     conf = torch.ones(B, J, 1, device=device)
     pose2d_3ch = torch.cat([xy, conf], dim=-1)                 # (B, J, 3)
@@ -288,6 +290,8 @@ for batch_idx, (inputs_b, targets_b, meta_b) in enumerate(loader):
 print(f"\n{'='*55}")
 print(f"  DONE! {img_count} images saved to: {args.out_dir}/")
 print(f"{'='*55}\n")
+
+
 
 
 
