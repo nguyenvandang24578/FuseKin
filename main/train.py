@@ -1,5 +1,6 @@
 import os, sys
 sys.path.append('./lib')
+sys.path.append('./')
 import argparse
 from core.config import cfg, update_config
 
@@ -98,4 +99,4 @@ for epoch in range(cfg.TRAIN.begin_epoch, cfg.TRAIN.end_epoch + 1):
         ckpt['awl_state_dict'] = trainer.awl.state_dict()
     save_checkpoint(ckpt, epoch, is_best)
 
-print('Training Finished! All logs were saved in ', cfg.checkpoint_dir)
+print('Training Finished! All logs were saved in ', cfg.checkpoint_dir)
