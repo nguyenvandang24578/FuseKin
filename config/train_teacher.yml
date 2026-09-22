@@ -1,5 +1,5 @@
 DATASET:
-  train_list: ['Human36M']
+  train_list: ['3dpw-train']
   test_list: ['3dpw']
   input_joint_set: 'human36'
   target_joint_set: 'human36'
@@ -13,7 +13,7 @@ MODEL:
   resnet_type: 50
   hpe_dim: 512
   hpe_dep: 5
-  motionbert_pretrained: './data/base_data/MB_ft_h36m.bin'
+  motionbert_pretrained: './experiment/pretrained/full/best_epoch.bin'
 
 TRAIN:
   print_freq: 20
@@ -28,7 +28,7 @@ TRAIN:
   warmup_epochs: 1
   min_lr: 0.000001
   optimizer: 'adam'
-  wandb: False
+  wandb: True
 
 TEST:
   batch_size: 32

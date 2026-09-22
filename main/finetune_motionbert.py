@@ -22,6 +22,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cfg", type=str, default="config/finetune_motionbert_pw3d.yaml", help="Path to the unified config file (DATASET + MOTIONBERT).")
     parser.add_argument('--pretrained', default='', type=str, help='pretrained checkpoint path (e.g. MotionBERT/checkpoint/pretrain/MB_release.bin)')
+    parser.add_argument('--gpu', type=str, default='0,1', help='assign multi-gpus by comma concat, e.g. "0,1" or "0,1,2,3"')
     opts = parser.parse_args()
     return opts
 
@@ -97,14 +98,20 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
 def main():
     opts = parse_args()
     
+    # Configure GPUs
+    if opts.gpu:
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(opts.gpu)
+        print(f"Work on GPU(s): {opts.gpu}")
+
     # Load Unified Config — update_config handles both DATASET and MOTIONBERT sections
     update_config(opts.cfg)
     
     # MotionBERT hyperparameters from the MOTIONBERT section
     mb_cfg = cfg.MOTIONBERT
 
+    num_gpus = torch.cuda.device_count()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    print(f"Using device: {device} (Total GPUs active: {num_gpus})")
 
     # Prepare Dataset
     print("Loading 3DPW dataset...")
@@ -139,6 +146,7 @@ def main():
     if torch.cuda.is_available():
         model = nn.DataParallel(model)
         model = model.cuda()
+        print(f"Model wrapped in DataParallel on {num_gpus} GPU(s)")
 
     # Load Pretrained (same as train.py L260-272)
     if opts.pretrained:
