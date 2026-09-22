@@ -104,6 +104,31 @@ cfg.AUG = edict()
 cfg.AUG.flip = False
 cfg.AUG.rotate_factor = 0
 
+""" MotionBERT Finetuning """
+cfg.MOTIONBERT = edict()
+cfg.MOTIONBERT.finetune = True
+cfg.MOTIONBERT.epochs = 60
+cfg.MOTIONBERT.checkpoint_frequency = 10
+cfg.MOTIONBERT.batch_size = 32
+cfg.MOTIONBERT.dropout = 0.0
+cfg.MOTIONBERT.learning_rate = 0.0002
+cfg.MOTIONBERT.weight_decay = 0.01
+cfg.MOTIONBERT.lr_decay = 0.99
+cfg.MOTIONBERT.maxlen = 243
+cfg.MOTIONBERT.dim_feat = 512
+cfg.MOTIONBERT.mlp_ratio = 2
+cfg.MOTIONBERT.depth = 5
+cfg.MOTIONBERT.dim_rep = 512
+cfg.MOTIONBERT.num_heads = 8
+cfg.MOTIONBERT.att_fuse = True
+cfg.MOTIONBERT.num_joints = 17
+cfg.MOTIONBERT.lambda_3d_velocity = 20.0
+cfg.MOTIONBERT.lambda_scale = 0.5
+cfg.MOTIONBERT.lambda_lv = 0.0
+cfg.MOTIONBERT.lambda_lg = 0.0
+cfg.MOTIONBERT.lambda_a = 0.0
+cfg.MOTIONBERT.lambda_av = 0.0
+
 """ Test Detail """
 cfg.TEST = edict()
 cfg.TEST.batch_size = 64

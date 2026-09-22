@@ -1,4 +1,6 @@
-import os
+import os, sys
+sys.path.append('./lib')
+sys.path.append('./')
 import argparse
 import yaml
 from easydict import EasyDict as edict
@@ -12,7 +14,7 @@ import time
 # FuseKin imports
 from lib.core.config import update_config, cfg
 from lib.utils.jotr_dataset import get_train_dataset
-from MotionBERT.lib.model.DSTformer import DSTformer
+from models.DSTformer import DSTformer
 from MotionBERT.lib.model.loss import loss_mpjpe, n_mpjpe, loss_velocity, \
     loss_limb_var, loss_limb_gt, loss_angle, loss_angle_velocity
 
@@ -95,15 +97,11 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
 def main():
     opts = parse_args()
     
-    # Load Unified Config
-    with open(opts.cfg, 'r') as f:
-        full_cfg = yaml.safe_load(f)
-    
-    # FuseKin Config (for Dataloader) — uses the DATASET section
+    # Load Unified Config — update_config handles both DATASET and MOTIONBERT sections
     update_config(opts.cfg)
     
-    # MotionBERT Config — uses the MOTIONBERT section
-    mb_cfg = edict(full_cfg['MOTIONBERT'])
+    # MotionBERT hyperparameters from the MOTIONBERT section
+    mb_cfg = cfg.MOTIONBERT
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
