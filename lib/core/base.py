@@ -315,10 +315,46 @@ class Teacher_Trainer:
             pred_smplpose = model_output['smpl_pose']
             pred_smplshape = model_output['smpl_shape']
 
+            # Regress H36M joints from the predicted SMPL mesh.
+            # gt_fit_joint_cam is root-relative (the dataset subtracts the
+            # pelvis before returning it), so normalize the prediction in the
+            # same coordinate system before computing the joint loss.
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
-            
+            pred_pose_rootrel = pred_pose - pred_pose[:, 0:1, :]
+
+            # Coordinate-system diagnostic: print once per epoch, on the first
+            # batch, so we can verify that GT and prediction use the same origin.
+            if i == 0:
+                with torch.no_grad():
+                    gt_root_abs = gt_fit_joint_cam[:, 0, :].abs().mean().item()
+                    pred_root_abs = pred_pose[:, 0, :].abs().mean().item()
+                    pred_rootrel_abs = pred_pose_rootrel[:, 0, :].abs().mean().item()
+                    gt_mean_abs = gt_fit_joint_cam.abs().mean().item()
+                    pred_mean_abs = pred_pose.abs().mean().item()
+                    pred_rootrel_mean_abs = pred_pose_rootrel.abs().mean().item()
+                    print(
+                        f'[Teacher coord check][epoch {epoch}] '
+                        f'GT root={gt_root_abs:.6f}, '
+                        f'pred root(raw)={pred_root_abs:.6f}, '
+                        f'pred root(root-rel)={pred_rootrel_abs:.6f} | '
+                        f'mean_abs: GT={gt_mean_abs:.6f}, '
+                        f'pred(raw)={pred_mean_abs:.6f}, '
+                        f'pred(root-rel)={pred_rootrel_mean_abs:.6f}'
+                    )
+                    if not torch.isfinite(pred_pose).all():
+                        raise FloatingPointError(
+                            'Non-finite values detected in pred_pose during Teacher training.'
+                        )
+                    if not torch.isfinite(gt_fit_joint_cam).all():
+                        raise FloatingPointError(
+                            'Non-finite values detected in gt_fit_joint_cam.'
+                        )
+
             loss_smpl_joint_cam = self.jotr_coord_loss(
-                pred_pose, gt_fit_joint_cam, fit_joint_trunc * is_valid_fit[:, None, None]).mean()
+                pred_pose_rootrel,
+                gt_fit_joint_cam,
+                fit_joint_trunc * is_valid_fit[:, None, None]
+            ).mean()
             fit_pose_valid = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
             fit_shape_valid = is_valid_fit[:, None]
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()

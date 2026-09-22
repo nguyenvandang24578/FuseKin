@@ -468,7 +468,7 @@ class PW3D(torch.utils.data.Dataset):
             mesh_error = np.sqrt(np.sum((mesh_gt_cam - mesh_out_cam) ** 2, 1)).mean() * 1000
             eval_result['mpvpe'].append(mesh_error)
 
-            if cfg.render:
+            if getattr(cfg, 'render', False):
                 img = cv2.imread(annot['img_path'])
                 mesh_cam_render = out['mesh_cam_render']
                 bbox = out['bbox']
