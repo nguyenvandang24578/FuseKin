@@ -28,7 +28,7 @@ TRAIN:
   warmup_epochs: 1
   min_lr: 0.000001
   optimizer: 'adam'
-  wandb: True
+  wandb: False
 
 TEST:
   batch_size: 32
