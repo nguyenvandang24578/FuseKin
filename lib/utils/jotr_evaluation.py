@@ -1,5 +1,5 @@
 import torch
-
+from tqdm import tqdm
 
 def evaluate_3dpw_subset(model, dataset, loader, device='cuda'):
     model.eval()
@@ -7,7 +7,8 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda'):
     sample_index = 0
 
     with torch.no_grad():
-        for inputs, targets, _ in loader:
+        progress = tqdm(loader, desc='Testing 3DPW', leave=False)
+        for inputs, targets, _ in progress:
             model_inputs = {
                 key: value.to(device) if torch.is_tensor(value) else value
                 for key, value in inputs.items()
