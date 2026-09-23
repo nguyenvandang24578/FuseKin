@@ -16,10 +16,11 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda'):
             }
             target_mesh_tensor = targets['smpl_mesh_cam'].to(device).float()
 
-            # Teacher evaluation also uses GT 3D joints. PW3D test provides GT
+            # Teacher evaluation uses GT 3D joints. PW3D test provides GT
             # mesh, so derive H36M-17 GT joints and root-center them to match
-            # Teacher training input.
-            if hasattr(dataset, 'h36m_joint_regressor'):
+            # Teacher training input. Student evaluation uses 2D joints.
+            from core.config import cfg
+            if cfg.MODEL.name == 'teacher' and hasattr(dataset, 'h36m_joint_regressor'):
                 h36m_regressor = torch.as_tensor(
                     dataset.h36m_joint_regressor,
                     device=device,

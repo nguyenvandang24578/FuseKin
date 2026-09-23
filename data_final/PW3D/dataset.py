@@ -460,10 +460,6 @@ class PW3D(torch.utils.data.Dataset):
             # h36m joint from gt mesh
             mesh_gt_cam = out['smpl_mesh_cam_target']
             pose_coord_gt_h36m = np.dot(self.h36m_joint_regressor, mesh_gt_cam)
-            # debug
-            root_h36m_gt = pose_coord_gt_h36m[self.h36m_root_joint_idx, :]
-            pose_gt_img = cam2pixel(pose_coord_gt_h36m, annot['cam_param']['focal'], annot['cam_param']['princpt'])
-            pose_gt_img = transform_joint_to_other_db(pose_gt_img, self.h36m_joints_name, self.smpl.graph_joints_name)
 
             pose_coord_gt_h36m = pose_coord_gt_h36m - pose_coord_gt_h36m[self.h36m_root_joint_idx, None]  # root-relative
             pose_coord_gt_h36m = pose_coord_gt_h36m[self.h36m_eval_joint, :]

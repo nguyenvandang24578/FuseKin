@@ -57,17 +57,20 @@ class ARTS(nn.Module):
         self.pose_lifter = self._build_motionbert()
         self._load_motionbert_if_configured()
 
-        if self.mode == self.TEACHER_NAME:
-            self.teacher_model = Teacher(num_joint=num_joint, embed_dim=embed_dim)
-            self._freeze_teacher_inputs()
-            print('[ARTS] Mode=teacher: using image + GT 3D joints. Backbone and MotionBERT are frozen.')
-        elif self.mode in self.STUDENT_NAMES:
+        if self.mode in ['teacher', 'student']:
+            self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim)
+            if self.mode == 'teacher':
+                self._freeze_teacher_inputs()
+                print('[ARTS] Mode=teacher: using image + GT 3D joints. Backbone and MotionBERT are frozen.')
+            else:
+                print('[ARTS] Mode=student: using image + 2D joints -> MotionBERT -> Teacher(smpl_model).')
+        elif self.mode == 'ARTS':
             self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim * 2)
-            print(f'[ARTS] Mode={self.mode}: using image + 2D joints -> MotionBERT -> student mesh model.')
+            print(f'[ARTS] Mode=ARTS: using image + 2D joints -> MotionBERT -> student mesh model (pose_mesh_coevo).')
         else:
             raise ValueError(
                 f'Unsupported cfg.MODEL.name={self.mode!r}. '
-                f'Expected {self.TEACHER_NAME!r} or one of {sorted(self.STUDENT_NAMES)}.'
+                f'Expected teacher, student, or ARTS.'
             )
 
     def _build_motionbert(self):
@@ -119,32 +122,18 @@ class ARTS(nn.Module):
         """Return spatial feature maps and global image tokens from image input.
 
         Args:
-            img: (B, 3, H, W) or (B, T, 3, H, W)
+            img: (B, 3, H, W)
 
         Returns:
-            feature_map:
-                (B, 2048, h, w) for image input, or
-                (B, T, 2048, h, w) for sequence input.
-            img_feat:
-                (B, 1, 2048) or (B, T, 2048), global-pooled ResNet features.
+            feature_map: (B, 2048, h, w)
+            img_feat: (B, 1, 2048), global-pooled ResNet features.
         """
-        if img.dim() == 5:
-            batch_size, sequence_length = img.shape[:2]
-            backbone_input = img.reshape(batch_size * sequence_length, *img.shape[2:])
-            feature_map, img_feat = self.backbone(backbone_input)
-            feature_map = feature_map.reshape(batch_size, sequence_length, *feature_map.shape[1:])
-            img_feat = img_feat.reshape(batch_size, sequence_length, -1)
-            return feature_map, img_feat
+        batch_size = img.shape[0]
+        feature_map, img_feat = self.backbone(img)
+        img_feat = img_feat.reshape(batch_size, 1, -1)
+        return feature_map, img_feat
 
-        if img.dim() == 4:
-            batch_size = img.shape[0]
-            feature_map, img_feat = self.backbone(img)
-            img_feat = img_feat.reshape(batch_size, 1, -1)
-            return feature_map, img_feat
 
-        raise ValueError(
-            f'ARTS expects image input with shape (B,3,H,W) or (B,T,3,H,W), got {tuple(img.shape)}'
-        )
 
     def _lift_2d_to_3d_with_motionbert(self, pose2d):
         """Student path: lift 2D joints to one-frame 3D joints using MotionBERT.
@@ -185,17 +174,9 @@ class ARTS(nn.Module):
         with torch.no_grad():
             feature_map, _ = self._extract_image_features(img)
 
-        if feature_map.dim() == 5:
-            B, T, C, H, W = feature_map.shape
-            feat_map_2d = feature_map.reshape(B * T, C, H, W)
-            pose3d_1d = gt_pose3d.unsqueeze(1).repeat(1, T, 1, 1).reshape(B * T, gt_pose3d.shape[1], 3)
-        else:
-            feat_map_2d = feature_map
-            pose3d_1d = gt_pose3d
-
-        teacher_out = self.teacher_model(
-            joints=pose3d_1d,
-            img_feats=feat_map_2d,
+        teacher_out = self.smpl_model(
+            joints=gt_pose3d,
+            img_feats=feature_map,
             is_train=is_train,
         )[-1]
 
@@ -211,33 +192,48 @@ class ARTS(nn.Module):
         }
 
     def _forward_student(self, img, pose2d, is_train=True):
-        """Student/legacy ARTS mode: image + 2D joints -> MotionBERT -> mesh."""
+        """Student mode: image + 2D joints -> MotionBERT -> Teacher architecture."""
+        feature_map, _ = self._extract_image_features(img)
+        pose3d = self._lift_2d_to_3d_with_motionbert(pose2d)  # (B, J, 3)
+
+        student_out = self.smpl_model(
+            joints=pose3d,
+            img_feats=feature_map,
+            is_train=is_train,
+        )[-1]
+
+        theta = student_out['theta'][:, -1]
+        verts = student_out['verts'][:, -1]
+        kp_3d = student_out['kp_3d']
+
+        return {
+            'joint_img': kp_3d,
+            'smpl_mesh_cam': verts,
+            'smpl_pose': theta[:, 3:75],
+            'smpl_shape': theta[:, 75:],
+        }
+
+    def _forward_arts(self, img, pose2d, is_train=True):
+        """ARTS mode: image + 2D joints -> MotionBERT -> coevo mesh model."""
         feature_map, img_feat = self._extract_image_features(img)
         pose3d = self._lift_2d_to_3d_with_motionbert(pose2d)  # (B, J, 3)
 
         # Legacy student co-evolution module expects temporal pose input.
         pose3d_seq = pose3d.unsqueeze(1).repeat(1, cfg.DATASET.seqlen, 1, 1)
 
-        # NOTE: kept from the old student code. If MotionBERT is trained to output
-        # meters instead of millimeters, this /1000 should be revisited.
-        evo_pose, init_smpl_pose, init_smpl_shape, final_mesh, smploutput = self.pose_mesh_coevo(
+        # Lấy dict output từ model thay vì tuple
+        out = self.pose_mesh_coevo(
             pose3d_seq / 1000,
             img_feat,
-            pose2d,
             is_train=is_train,
         )
 
         pose3d_mid = pose3d_seq[:, cfg.DATASET.seqlen // 2]
-        final_theta = smploutput[-1]['theta']
-        if final_theta.dim() == 3:
-            final_theta = final_theta[:, -1]
-
-        return {
-            'joint_img': pose3d_mid,
-            'smpl_mesh_cam': final_mesh,
-            'smpl_pose': final_theta[:, 3:75],
-            'smpl_shape': final_theta[:, 75:],
-        }
+        
+        # Thêm các key cần thiết vào output để tính loss ở Trainer
+        out['joint_img'] = pose3d_mid
+        
+        return out
 
     def forward(self, img, joints, is_train=True):
         """Dispatch by cfg.MODEL.name.
@@ -245,14 +241,18 @@ class ARTS(nn.Module):
         Teacher:
             ``joints`` = GT 3D joints, shape (B,17,3), meters, root-relative.
 
-        Student / ARTS:
-            ``joints`` = 2D joints, shape (B,J,2/3) or (B,T,J,2/3).
+        Student:
+            ``joints`` = 2D joints, shape (B,J,2/3) or (B,T,J,2/3). Uses Teacher architecture.
+            
+        ARTS:
+            ``joints`` = 2D joints, shape (B,J,2/3) or (B,T,J,2/3). Uses pose_mesh_coevo architecture.
         """
-        if self.mode == self.TEACHER_NAME:
+        if self.mode == 'teacher':
             return self._forward_teacher(img, joints, is_train=is_train)
-
-        if self.mode in self.STUDENT_NAMES:
+        elif self.mode == 'student':
             return self._forward_student(img, joints, is_train=is_train)
+        elif self.mode == 'ARTS':
+            return self._forward_arts(img, joints, is_train=is_train)
 
         raise RuntimeError(f'Unsupported ARTS mode: {self.mode!r}')
 

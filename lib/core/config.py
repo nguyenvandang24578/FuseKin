@@ -58,9 +58,16 @@ cfg.output_hm_shape = (64, 64, 64)
 cfg.bbox_3d_size = 2
 cfg.focal = (5000, 5000)
 cfg.princpt = (cfg.input_img_shape[1] / 2, cfg.input_img_shape[0] / 2)
+cfg.camera_3d_size = cfg.bbox_3d_size  # alias for get_camera_trans
+
+# Copy camera params to cfg.DATASET for Multimodel access
+cfg.DATASET.focal = cfg.focal
+cfg.DATASET.princpt = cfg.princpt
+cfg.DATASET.camera_3d_size = cfg.camera_3d_size
 
 ###############SMPL mean data#################
 cfg.DATASET.BASE_DATA_DIR = 'data_final/base_data'
+cfg.human_model_path = osp.join(cfg.root_dir, 'data_final', 'base_data', 'human_model_files')
 ##############################################
 
 """ Model """
@@ -81,7 +88,7 @@ cfg.MODEL.pose_loss_weight = 0.06
 cfg.MODEL.posenet_pretrained = False
 cfg.MODEL.motionbert_pretrained = ''
 cfg.MODEL.posenet_path = './experiment/pretrained/pose_3dpw.pth.tar'
-
+cfg.MODEL.TEACHER = './experiment/teacher/checkpoint'
 
 """ Train Detail """
 cfg.TRAIN = edict()

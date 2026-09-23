@@ -39,16 +39,14 @@ NUM_JOINTS = 24
 
 def build_H_init_no_root(num_nodes=24, num_edges=5):
     """
-    H_init - 5 hyperedge (KHONG con hyperedge rieng cho root, root duoc xu
-    ly rieng qua RootBroadcast). 5 chain xuat phat tu root:
-      0: Torso+Head (tru root)  : 3,6,9,12,13,14,15
-      1: Left Arm  : 16,18,20,22
-      2: Right Arm : 17,19,21,23
-      3: Left Leg  : 1,4,7,10
-      4: Right Leg : 2,5,8,11
-    Joint 0 (root) co hang toan so 0 trong H_init -> Dv[root]=0 (+eps) ->
-    sau chuan hoa G[root,:]=G[:,root]=0 -> root khong tham gia hyper-mix,
-    dung nhu thiet ke (root duoc xu ly rieng o nhanh RootChain).
+    H_init - 5 hyperedge (KHONG con hyperedge rieng cho root). 5 chain:
+      0: Torso+Head : 3,6,9,12,13,14,15
+      1: Left Arm   : 16,18,20,22
+      2: Right Arm  : 17,19,21,23
+      3: Left Leg   : 1,4,7,10
+      4: Right Leg  : 2,5,8,11
+    Joint 0 (root) co hang toan so 0 -> khong tham gia hyper-mix,
+    duoc xu ly rieng o nhanh RootChainProp.
     """
     H = torch.zeros(num_nodes, num_edges)
     for i in [3, 6, 9, 12, 13, 14, 15]: H[i, 0] = 1.0   # Torso+Head
@@ -60,88 +58,79 @@ def build_H_init_no_root(num_nodes=24, num_edges=5):
 
 
 def compute_G_batched(H, eps=1e-8):
-    """G = Dv^{-1/2} H De^{-1} H^T Dv^{-1/2}, batched. H: (K, N, E), luon >= 0."""
+    """G = Dv^{-1/2} H De^{-1} H^T Dv^{-1/2}, batched. H: (B, N, E), luon >= 0."""
     H = H.clamp(min=0.0)
-    Dv = H.sum(dim=-1) + eps                       # (K, N)
+    Dv = H.sum(dim=-1) + eps                        # (B, N)
     Dv_inv_sqrt = Dv.pow(-0.5)
-    De = H.sum(dim=1) + eps                          # (K, E)
+    De = H.sum(dim=1) + eps                          # (B, E)
     De_inv = De.pow(-1)
     H_De = H * De_inv.unsqueeze(1)
-    G = torch.bmm(H_De, H.transpose(1, 2))            # (K, N, N)
+    G = torch.bmm(H_De, H.transpose(1, 2))           # (B, N, N)
     G = Dv_inv_sqrt.unsqueeze(-1) * G * Dv_inv_sqrt.unsqueeze(1)
     return G
 
 
 # ============================================================
-# Nhanh A: RootChain — cha->con (1-hop) + root broadcast toi ca 5 chain
+# Nhanh A: RootChainProp — cha->con (1-hop)
 # ============================================================
 class RootChainProp(nn.Module):
     """
     Voi moi khop i != root: h_i_new = W_self(h_i) + W_parent(h_parent(i))
-        (chi 1-hop, dung 'gather' truc tiep theo bang PARENT — khong dung
-        graph Laplacian phuc tap cho quan he 1-1 nay)
-    Voi root (joint 0): h_0_new = W_self(h_0)  (khong co cha)
-    Sau do: root BROADCAST (FiLM) toi toan bo 23 khop con lai — day la
-    'duong tat' bat buoc de thong tin root toi duoc ca khop xa nhat
-    (vd toi ban tay can 8-hop trong tree that) chi trong 1 layer, thay vi
-    phai doi nhieu layer moi 'ngam' toi.
+        (chi 1-hop, dung 'gather' truc tiep theo bang PARENT)
+    Voi root (joint 0)    : h_0_new = W_root(h_0)  (khong co cha)
+
+    Input/Output: (B, 24, C)
     """
 
     def __init__(self, dim_in, dim_out):
         super().__init__()
-        self.W_self = nn.Linear(dim_in, dim_out)
+        self.W_self   = nn.Linear(dim_in, dim_out)
         self.W_parent = nn.Linear(dim_in, dim_out)
-
-        # Root xu ly rieng: co the dung 1 linear khac de khong bi rang buoc
-        # phai giong cach cap nhat cua cac khop thuong (root khong co "cha")
-        self.W_root = nn.Linear(dim_in, dim_out)
-
-        # FiLM broadcast đã bị tắt — outer FiLM (Multimodel) đã inject
-        # global context cho tất cả 24 khớp rồi, không cần broadcast lại.
+        self.W_root   = nn.Linear(dim_in, dim_out)
 
         parent_idx = torch.tensor(
             [p if p >= 0 else 0 for p in PARENT], dtype=torch.long
-        )  # (24,) - root tam gan idx 0 (chinh no), se bi mask ve 0 sau
+        )  # (24,) — root tam gan idx 0 (chinh no), se bi mask ve 0 sau
         self.register_buffer('parent_idx', parent_idx)
 
         child_mask = torch.tensor(
             [0.0 if p < 0 else 1.0 for p in PARENT]
-        ).view(1, 1, NUM_JOINTS, 1)  # (1,1,24,1) - root=0, con lai=1
+        ).view(1, NUM_JOINTS, 1)  # (1, 24, 1) — root=0, con lai=1
         self.register_buffer('child_mask', child_mask)
 
     def forward(self, x):
-        """x: (B, T, 24, C) -> out: (B, T, 24, C_out)"""
-        b, t, v, c = x.shape
-
-        # --- cha -> con (1-hop), dung gather theo PARENT ---
-        h_parent = x[:, :, self.parent_idx, :]              # (B,T,24,C) - hang root la x[...,0,:]
+        """x: (B, 24, C) -> (B, 24, C_out)"""
+        h_parent = x[:, self.parent_idx, :]                   # (B, 24, C)
         local = self.W_self(x) + self.child_mask * self.W_parent(h_parent)
-        # joint 0: child_mask=0 -> local[0] = W_self(x0) (chua co dong gop tu W_root)
 
-        root_feat = self.W_root(x[:, :, 0, :])               # (B, T, C_out)
+        root_feat = self.W_root(x[:, 0, :])                   # (B, C_out)
         local = local.clone()
-        local[:, :, 0, :] = root_feat                          # root dung nhanh rieng
-
-        # FiLM broadcast đã tắt — chỉ giữ parent→child 1-hop propagation
+        local[:, 0, :] = root_feat
         return local
 
 
 # ============================================================
-# Nhanh B: Adaptive Hyper (xuyen-chain, KHONG bao gom root)
+# Nhanh B: AdaptiveHyperNoRoot — xuyen-chain, KHONG bao gom root
 # ============================================================
 class AdaptiveHyperNoRoot(nn.Module):
     """
     Bat tuong tac xuyen-chain (vd 2 tay cham nhau) ma nhanh RootChain
-    (chi lan truyen doc theo 1 chain) khong nam duoc. Root bi loai khoi
-    H_init/M/S (xem build_H_init_no_root) vi ban chat thong ke khac biet.
+    (chi lan truyen doc theo 1 chain) khong nam duoc.
+    Root bi loai khoi H_init/M/S vi ban chat thong ke khac biet.
+
+    H_tilde = beta0*H_init + beta1*M + beta2*S
+      - H_init : cau truc co dinh (5 chain)
+      - M       : ma tran hoc duoc, khoi tao bang H_init
+      - S       : phu thuoc du lieu (similarity-based, per sample)
+
+    Input/Output: (B, 24, C)
     """
 
-    def __init__(self, dim_in, dim_out, num_edges=5, per_frame_S=True):
+    def __init__(self, dim_in, dim_out, num_edges=5):
         super().__init__()
-        self.per_frame_S = per_frame_S
 
         H_init = build_H_init_no_root(NUM_JOINTS, num_edges)
-        self.register_buffer('H_init', H_init)                          # (24, E)
+        self.register_buffer('H_init', H_init)                 # (24, E)
 
         self.M_raw = nn.Parameter(self._inverse_softplus(H_init.clone()))
 
@@ -160,58 +149,40 @@ class AdaptiveHyperNoRoot(nn.Module):
         return torch.log(torch.expm1(x))
 
     def _compute_S(self, x):
-        """x: (B,T,24,C) -> S: (B*T, 24, E) neu per_frame_S else (B,24,E)"""
-        b, t, v, c = x.shape
-        if self.per_frame_S:
-            xf = x.reshape(b * t, v, c)
-            q = self.phi1(xf)                      # (BT, N, C)
-            k = self.phi2(xf).transpose(1, 2)       # (BT, C, N)
-            sim = torch.bmm(q, k) / sqrt(c)          # (BT, N, N)
-            H_init_exp = self.H_init.unsqueeze(0).expand(b * t, -1, -1)
-        else:
-            xf = x.mean(dim=1)                      # (B, N, C) - gop theo T truoc
-            q = self.phi1(xf)
-            k = self.phi2(xf).transpose(1, 2)
-            sim = torch.bmm(q, k) / sqrt(c)
-            H_init_exp = self.H_init.unsqueeze(0).expand(b, -1, -1)
+        """
+        x: (B, 24, C) -> S: (B, 24, E)
+        Tinh do tuong dong giua cac khop, chieu huong thong tin theo H_init.
+        """
+        b, v, c = x.shape
+        q   = self.phi1(x)                                     # (B, 24, C)
+        k   = self.phi2(x).transpose(1, 2)                     # (B, C, 24)
+        sim = torch.bmm(q, k) / sqrt(c)                        # (B, 24, 24)
 
-        S = torch.bmm(sim, H_init_exp)
-        S = torch.softmax(S, dim=-1)
-        # FIX: du H_init[root]=0, S[root] van co the khac 0 vi no duoc tinh
-        # tu similarity giua root va CAC KHOP KHAC (khong phai hang cua
-        # chinh root trong H_init). Mask tuong minh de dam bao root khong
-        # tham gia hyper-branch, dung nhu thiet ke (root duoc xu ly rieng
-        # o RootChainProp).
+        H_init_exp = self.H_init.unsqueeze(0).expand(b, -1, -1)
+        S = torch.softmax(torch.bmm(sim, H_init_exp), dim=-1)  # (B, 24, E)
+
+        # Mask root: dam bao root khong tham gia hyper-branch
         S = S.clone()
         S[:, 0, :] = 0.0
         return S
 
     def forward(self, x):
-        """x: (B,T,24,C) -> out: (B,T,24,C_out)"""
-        b, t, v, c = x.shape
-        S = self._compute_S(x)                        # (K,24,E)
-        K = S.shape[0]
+        """x: (B, 24, C) -> out: (B, 24, C_out), H_tilde: (B, 24, E)"""
+        b, v, c = x.shape
+        S = self._compute_S(x)                                 # (B, 24, E)
 
         beta0 = F.softplus(self.beta0_raw)
         beta1 = F.softplus(self.beta1_raw)
         beta2 = F.softplus(self.beta2_raw)
-        M = F.softplus(self.M_raw)
+        M     = F.softplus(self.M_raw)
 
-        H_init_exp = self.H_init.unsqueeze(0).expand(K, -1, -1)
-        M_exp = M.unsqueeze(0).expand(K, -1, -1)
-        H_tilde = beta0 * H_init_exp + beta1 * M_exp + beta2 * S   # (K,24,E)
+        H_init_exp = self.H_init.unsqueeze(0).expand(b, -1, -1)
+        M_exp      = M.unsqueeze(0).expand(b, -1, -1)
+        H_tilde    = beta0 * H_init_exp + beta1 * M_exp + beta2 * S  # (B, 24, E)
 
-        G = compute_G_batched(H_tilde)                  # (K,24,24)
-
-        if self.per_frame_S:
-            xf = x.reshape(b * t, v, c)
-            xh = torch.bmm(G, xf)                         # (BT,24,C)
-            xh = xh.reshape(b, t, v, c)
-        else:
-            xmean = x.mean(dim=1)                          # (B,24,C)
-            xh = torch.bmm(G, xmean).unsqueeze(1).expand(-1, t, -1, -1)
-
-        out = self.conv_hyper(xh)                          # (B,T,24,C_out)
+        G   = compute_G_batched(H_tilde)                       # (B, 24, 24)
+        xh  = torch.bmm(G, x)                                  # (B, 24, C)
+        out = self.conv_hyper(xh)                              # (B, 24, C_out)
         return out, H_tilde
 
 
@@ -220,42 +191,43 @@ class AdaptiveHyperNoRoot(nn.Module):
 # ============================================================
 class HYPERGCv2(nn.Module):
     """
-    Input/Output: (B, T, 24, dim) — khop truc tiep voi pose_token hien tai,
-    khong can permute.
+    Input/Output: (B, 24, C)
 
-    out = ReLU(BN( alpha_a * RootChain(x) + alpha_b * AdaptiveHyper(x) + U(x) ))
+    out = ReLU( LayerNorm( alpha_chain * RootChain(x)
+                          + alpha_hyper * AdaptiveHyper(x)
+                          + U(x) ) )
           (+ residual x neu dim_in == dim_out)
     """
 
-    def __init__(self, dim_in, dim_out, num_edges=5, per_frame_S=True):
+    def __init__(self, dim_in, dim_out, num_edges=5):
         super().__init__()
-        self.dim_in = dim_in
+        self.dim_in  = dim_in
         self.dim_out = dim_out
 
-        self.root_chain = RootChainProp(dim_in, dim_out)
-        self.adaptive_hyper = AdaptiveHyperNoRoot(dim_in, dim_out, num_edges, per_frame_S)
+        self.root_chain     = RootChainProp(dim_in, dim_out)
+        self.adaptive_hyper = AdaptiveHyperNoRoot(dim_in, dim_out, num_edges)
 
         self.alpha_chain_raw = nn.Parameter(torch.tensor(1.0))
         self.alpha_hyper_raw = nn.Parameter(torch.tensor(1.0))
 
-        self.U = nn.Linear(dim_in, dim_out)
-        self.batch_norm = nn.LayerNorm(dim_out)  # LayerNorm ổn định hơn BN1d khi T thay đổi
-        self.relu = nn.ReLU()
+        self.U          = nn.Linear(dim_in, dim_out)
+        self.layer_norm = nn.LayerNorm(dim_out)
+        self.relu       = nn.ReLU()
 
     def forward(self, x):
-        """x: (B, T, 24, C_in)"""
-        a_chain = self.root_chain(x)                    # (B,T,24,C_out)
-        a_hyper, H_tilde = self.adaptive_hyper(x)         # (B,T,24,C_out)
+        """x: (B, 24, C_in) -> out: (B, 24, C_out), aux: dict"""
+        a_chain              = self.root_chain(x)              # (B, 24, C_out)
+        a_hyper, H_tilde     = self.adaptive_hyper(x)         # (B, 24, C_out)
 
         agg = self.alpha_chain_raw * a_chain + self.alpha_hyper_raw * a_hyper
 
         if self.dim_in == self.dim_out:
-            out = self.relu(x + self.batch_norm(agg + self.U(x)))
+            out = self.relu(x + self.layer_norm(agg + self.U(x)))
         else:
-            out = self.relu(self.batch_norm(agg + self.U(x)))
+            out = self.relu(self.layer_norm(agg + self.U(x)))
 
         aux = {
-            'H_tilde': H_tilde.detach(),
+            'H_tilde'    : H_tilde.detach(),          # (B, 24, E)
             'alpha_chain': self.alpha_chain_raw.item(),
             'alpha_hyper': self.alpha_hyper_raw.item(),
         }
@@ -267,34 +239,40 @@ class HYPERGCv2(nn.Module):
 # ============================================================
 if __name__ == '__main__':
     torch.manual_seed(0)
-    B, T, V, C_in, C_out = 2, 8, 24, 512, 512
+    B, V, C_in, C_out = 2, 24, 512, 512
 
-    layer = HYPERGCv2(C_in, C_out, num_edges=5, per_frame_S=True)
-    x = torch.randn(B, T, V, C_in)
+    layer = HYPERGCv2(C_in, C_out, num_edges=5)
+    x = torch.randn(B, V, C_in)
     out, aux = layer(x)
-    assert out.shape == (B, T, V, C_out), out.shape
+
+    assert out.shape == (B, V, C_out), f"Shape sai: {out.shape}"
     assert not torch.isnan(out).any(), "NaN trong output!"
-    print(f"OK: out.shape={tuple(out.shape)}, alpha_chain={aux['alpha_chain']:.3f}, "
+    print(f"OK: out.shape={tuple(out.shape)}, "
+          f"alpha_chain={aux['alpha_chain']:.3f}, "
           f"alpha_hyper={aux['alpha_hyper']:.3f}")
 
-    # Kiem tra: gradient co chay ve ca 2 nhanh khong
+    # Kiem tra gradient chay ve ca 2 nhanh
     loss = out.sum()
     loss.backward()
     g_chain = layer.root_chain.W_self.weight.grad.abs().sum().item()
     g_hyper = layer.adaptive_hyper.conv_hyper.weight.grad.abs().sum().item()
-    print(f"grad RootChain.W_self = {g_chain:.4f}, grad AdaptiveHyper.conv_hyper = {g_hyper:.4f}")
-    assert g_chain > 0 and g_hyper > 0, "Mot trong 2 nhanh khong nhan gradient!"
+    print(f"grad RootChain.W_self={g_chain:.4f}, "
+          f"grad AdaptiveHyper.conv_hyper={g_hyper:.4f}")
+    assert g_chain > 0 and g_hyper > 0, "Mot nhanh khong nhan gradient!"
 
-    # Kiem tra: root row/col cua H_tilde phai ~0 (root bi loai khoi hyperedge)
-    H_tilde = aux['H_tilde']
-    print(f"H_tilde[root=0] sum = {H_tilde[:, 0, :].abs().sum().item():.6f} (ky vong ~0)")
+    # Kiem tra root row cua H_tilde ~0 (root bi loai khoi hyperedge)
+    H_tilde = aux['H_tilde']                         # (B, 24, E)
+    print(f"H_tilde[root=0] sum = {H_tilde[:, 0, :].abs().sum().item():.6f} "
+          f"(ky vong ~0)")
 
-    # Kiem tra: xoa het thong tin cac khop khac ngoai root, xem root
-    # broadcast co thuc su lan truyen khong (sanity cho RootChainProp)
-    x2 = torch.zeros(B, T, V, C_in)
-    x2[:, :, 0, :] = torch.randn(B, T, C_in)  # chi root co tin hieu
-    out2 = layer.root_chain(x2)
-    nonzero_children = (out2[:, :, 1:, :].abs().sum(dim=-1) > 1e-6).float().mean().item()
-    print(f"Ty le khop con nhan duoc tin hieu tu root (ky vong ~1.0): {nonzero_children:.3f}")
+    # Kiem tra chi 3 khop con truc tiep cua root (1,2,3) nhan tin hieu
+    x2 = torch.zeros(B, V, C_in)
+    x2[:, 0, :] = torch.randn(B, C_in)
+    with torch.no_grad():
+        out2 = layer.root_chain(x2)
+    direct_children = [i for i, p in enumerate(PARENT) if p == 0]   # [1, 2, 3]
+    signal = out2[:, direct_children, :].abs().sum(dim=-1).mean().item()
+    print(f"Tin hieu trung binh tai 3 khop con truc tiep cua root "
+          f"(joint 1,2,3): {signal:.4f} (ky vong > 0)")
 
     print("\nTat ca sanity check PASS.")

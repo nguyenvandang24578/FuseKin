@@ -24,19 +24,19 @@ MODEL:
 
 TRAIN:
     print_freq: 20
-    batch_size: 32
+    batch_size: 64
     shuffle: True
     begin_epoch: 1
-    end_epoch: 20
+    end_epoch: 30
     edge_loss_start: 2
-    scheduler: 'cosine'
+    scheduler: 'step'
     lr: 0.0001
-    lr_step: [5, 10, 15]
-    lr_factor: 0.95
+    lr_step: [8, 15, 23]
+    lr_factor: 0.7
     warmup_epochs: 1
     min_lr: 0.000001
     optimizer: 'adam'
-    wandb: False
+    wandb: True
 
 TEST:
     batch_size: 64

@@ -137,7 +137,7 @@ class Teacher(nn.Module):
         
         # Output projection cho regressorspin (nhận concat 2 vector 512 -> 1024)
         self.out_proj = nn.Linear(embed_dim * 2, 2048)
-    def forward(self, joints, img_feats, is_train=True, J_regressor=None):
+    def forward(self, joints, img_feats, is_train=True, J_regressor=None, return_features=False):
         # Chiếu img_feats từ 2048 kênh xuống 512 kênh
         img_feats = self.img_proj(img_feats)
         bs, c, h, w = img_feats.shape
@@ -174,6 +174,8 @@ class Teacher(nn.Module):
 
         output = self.regressorspin(img_feats_trans, is_train=is_train, J_regressor=J_regressor)
         
+        if return_features:
+            return output, concat_feat
         return output
 # ============================================================
 # Factory

@@ -41,32 +41,24 @@ torch.cuda.manual_seed_all(args.seed)
 torch.backends.cudnn.benchmark = False
 torch.backends.cudnn.deterministic = True
 
-output_model_dir = os.path.join(cfg.checkpoint_dir, 'Multimodel.py')
-shutil.copyfile(src='./lib/models/Multimodel.py', dst=output_model_dir)
+files_to_backup = [
+    './lib/models/Multimodel.py',
+    './lib/models/ARTS.py',
+    './lib/models/teacher.py',
+    './lib/models/hypergcn.py',
+    './lib/models/common.py',
+    './lib/core/base.py',
+    './lib/core/config.py',
+]
+for file_path in files_to_backup:
+    if os.path.exists(file_path):
+        shutil.copyfile(src=file_path, dst=os.path.join(cfg.checkpoint_dir, os.path.basename(file_path)))
 
-output_model_dir = os.path.join(cfg.checkpoint_dir, 'PoseEstimation.py')
-shutil.copyfile(src='./lib/models/PoseEstimation.py', dst=output_model_dir)
-
-output_model_dir = os.path.join(cfg.checkpoint_dir, 'Core_model.py')
-shutil.copyfile(src='./lib/models/Core_model.py', dst=output_model_dir)
-
-output_model_dir = os.path.join(cfg.checkpoint_dir, 'ARTS.py')
-shutil.copyfile(src='./lib/models/ARTS.py', dst=output_model_dir)
-
-output_model_dir = os.path.join(cfg.checkpoint_dir, 'teacher.py')
-shutil.copyfile(src='./lib/models/teacher.py', dst=output_model_dir)
-
-output_model_dir = os.path.join(cfg.checkpoint_dir, 'base.py')
-shutil.copyfile(src='./lib/core/base.py', dst=output_model_dir)
-
-from core.base import Trainer, Tester, LiftTrainer, LiftTester, Teacher_Trainer, Teacher_Tester
+from core.base import Trainer, Tester, Teacher_Trainer, Teacher_Tester
 
 if cfg.MODEL.name == 'ARTS':
     trainer = Trainer(args, load_dir='./experiment/exp_04-26_09_16/checkpoint/best.pth.tar')
     tester = Tester(args)  # if not args.debug else None
-elif cfg.MODEL.name == 'PoseEst':
-    trainer = LiftTrainer(args, load_dir='')
-    tester = LiftTester(args)  # if not args.debug else None
 elif cfg.MODEL.name == 'teacher':
     trainer = Teacher_Trainer(args, load_dir='')
     tester = Teacher_Tester(args)

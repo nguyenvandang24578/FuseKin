@@ -14,7 +14,11 @@ from utils.jotr_dataset import get_train_dataset as get_jotr_train_dataset
 from utils.jotr_evaluation import evaluate_3dpw_subset
 def get_dataloader(args, dataset_names, is_train):
     dataset_split = 'TRAIN' if is_train else 'TEST'
-    batch_per_dataset = cfg[dataset_split].batch_size // len(dataset_names)
+    if is_train:
+        batch_per_dataset = cfg[dataset_split].batch_size // len(dataset_names)
+    else:
+        batch_per_dataset = cfg[dataset_split].batch_size
+        
     dataset_list, dataloader_list = [], []
 
     print(f"==> Preparing {dataset_split} Dataloader...")
@@ -27,7 +31,7 @@ def get_dataloader(args, dataset_names, is_train):
         dataloader = DataLoader(dataset,
                                 batch_size=batch_per_dataset,
                                 shuffle=cfg[dataset_split].shuffle,
-                                num_workers=(cfg.DATASET.workers if is_train else getattr(cfg.DATASET, 'test_workers', 0)),
+                                num_workers=cfg.DATASET.workers,
                                 pin_memory=False)
         dataloader_list.append(dataloader)
 
@@ -112,7 +116,7 @@ class Trainer:
 
         self.jotr_coord_loss = JOTRCoordLoss()
         self.jotr_param_loss = JOTRParamLoss()
-        self.awl = AutomaticWeightedLoss(4).cuda()
+        self.awl = AutomaticWeightedLoss(5).cuda()
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
         # Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
@@ -138,9 +142,6 @@ class Trainer:
         self.model.train()
 
         lr_check(self.optimizer, epoch)
-        for i, pg in enumerate(self.optimizer.param_groups):
-            group_name = ['SPIN', 'Fresh'][i] if i < 2 else f'Group{i}'
-            print(f"  [{group_name}] lr={pg['lr']:.2e} | params={sum(p.numel() for p in pg['params']):,}")
         running_loss = 0.0
         batch_generator = tqdm(self.batch_generator)
         for i, (inputs, targets, meta) in enumerate(batch_generator):
@@ -166,14 +167,22 @@ class Trainer:
             pred_smplshape = model_output['smpl_shape']
 
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
-            # Root-relative: gt_fit_joint_cam is already root-relative in the dataset
-            # (pelvis subtracted). Align pred_pose to the same coordinate system.
-            pred_pose_rootrel = pred_pose - pred_pose[:, 0:1, :]
-
+            
             loss_body_joint_cam = 5 * self.jotr_coord_loss(
                 pred_joint_img, gt_orig_joint_cam, orig_joint_valid * is_3d[:, None, None]).mean()
             loss_smpl_joint_cam = self.jotr_coord_loss(
-                pred_pose_rootrel, gt_fit_joint_cam, fit_joint_trunc * is_valid_fit[:, None, None]).mean()
+                pred_pose, gt_fit_joint_cam, fit_joint_trunc * is_valid_fit[:, None, None]).mean()
+            
+            # Tính thêm loss 2D projection
+            pred_joint_proj = model_output.get('joint_proj')
+            gt_orig_joint_img_30 = targets['orig_joint_img'].cuda()
+            orig_joint_trunc_30 = meta['orig_joint_trunc'].cuda()
+            loss_body_joint_proj = self.jotr_coord_loss(
+                pred_joint_proj, 
+                gt_orig_joint_img_30[:, :, :2], 
+                orig_joint_trunc_30
+            ).mean() if pred_joint_proj is not None else torch.tensor(0.0).cuda()
+
             fit_pose_valid = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
             fit_shape_valid = is_valid_fit[:, None]
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
@@ -183,6 +192,7 @@ class Trainer:
                 'smpl_joint_cam': loss_smpl_joint_cam,
                 'smpl_pose': smpl_pose_loss,
                 'smpl_shape': smpl_shape_loss,
+                'body_joint_proj': loss_body_joint_proj,
             }
             loss_dict = self.awl(loss_dict)
             loss = sum(loss_dict.values())
@@ -200,6 +210,7 @@ class Trainer:
                         'train_loss/smpl_joint_cam': loss_smpl_joint_cam.detach(),
                         'train_loss/smpl_pose': smpl_pose_loss.detach(),
                         'train_loss/smpl_shape': smpl_shape_loss.detach(),
+                        'train_loss/body_joint_proj': loss_body_joint_proj.detach(),
                     }
                 )
 
@@ -207,6 +218,7 @@ class Trainer:
                 total_loss = loss.detach()
                 batch_generator.set_description(
                     f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
+                    f'proj2d: {loss_body_joint_proj.item():.3f} '
                     f'body3d: {loss_body_joint_cam.item():.3f} '
                     f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
                     f'smpl: {(smpl_pose_loss + smpl_shape_loss).item():.3f} '
@@ -402,6 +414,211 @@ class Teacher_Trainer:
         print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}')
 
 class Teacher_Tester:
+    def __init__(self, args, load_dir=''):
+        self.val_loaders, self.val_datasets, self.model, _, _, _, _, _ = \
+            prepare_network(args, load_dir=load_dir, is_train=False)
+        self.print_freq = cfg.TRAIN.print_freq
+        if self.model:
+            self.model = torch.nn.DataParallel(self.model).cuda()
+        self.surface_error = 9999.9
+        self.joint_error = 9999.9
+
+    def test(self, epoch, current_model=None):
+        if current_model:
+            self.model = current_model
+        self.model.eval()
+        results = {}
+        for dataset_name, dataset, loader in zip(
+                cfg.DATASET.test_list, self.val_datasets, self.val_loaders):
+            metrics = evaluate_3dpw_subset(self.model, dataset, loader)
+            results[dataset_name] = metrics
+            print(
+                f'{dataset_name}: MPJPE={metrics["mpjpe"]:.2f}, '
+                f'PA-MPJPE={metrics["pa_mpjpe"]:.2f}, '
+                f'MPVPE={metrics["mpvpe"]:.2f}'
+            )
+
+        if results:
+            self.joint_error = sum(item['mpjpe'] for item in results.values()) / len(results)
+            self.surface_error = sum(item['mpvpe'] for item in results.values()) / len(results)
+        return results
+
+class Student_Trainer:
+    def __init__(self, args, load_dir):
+        self.batch_generator, self.dataset_list, self.model, self.loss, self.optimizer, self.lr_scheduler, self.loss_history, self.error_history\
+            = prepare_network(args, load_dir=load_dir, is_train=True)
+
+        self.main_dataset = self.dataset_list[0]
+        self.print_freq = cfg.TRAIN.print_freq
+
+        self.J_regressor = eval(f'torch.Tensor(self.main_dataset.joint_regressor_{cfg.DATASET.target_joint_set}).cuda()')
+        
+        # Mapping from SMPL 30 joints (Dataloader output) to H36M 17 joints (ARTS input)
+        smpl_joints = self.main_dataset.joints_name
+        h36m_joints = ('Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck', 'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist')
+        self.smpl_to_h36m_idx = [smpl_joints.index(name) for name in h36m_joints]
+
+        self.model = torch.nn.DataParallel(self.model).cuda()
+
+        self.jotr_coord_loss = JOTRCoordLoss()
+        self.jotr_param_loss = JOTRParamLoss()
+        self.awl = AutomaticWeightedLoss(5).cuda()
+        self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
+        # Restore AWL weights if resuming
+        if hasattr(args, 'resume_training') and args.resume_training:
+            import os
+            from funcs_utils import load_checkpoint as _load_ckpt
+            try:
+                ckpt = _load_ckpt(load_dir=os.path.join(cfg.checkpoint_dir), pick_best=False)
+                if 'awl_state_dict' in ckpt:
+                    self.awl.load_state_dict(ckpt['awl_state_dict'])
+                    print('===> AWL weights restored from checkpoint')
+            except:
+                pass
+
+        if cfg.TRAIN.wandb:
+            wandb.init(config=cfg,
+                   project=cfg.MODEL.name,
+                   name='ARTS/' + cfg.output_dir.split('/')[-1],
+                   dir=cfg.output_dir,
+                   job_type="training",
+                   reinit=True)
+
+    def train(self, epoch):
+        self.model.train()
+
+        lr_check(self.optimizer, epoch)
+        running_loss = 0.0
+        batch_generator = tqdm(self.batch_generator)
+        for i, (inputs, targets, meta) in enumerate(batch_generator):
+            # convert to cuda
+            input_image = inputs['img'].cuda().float()
+            input_pose2d = inputs['joints'][:, self.smpl_to_h36m_idx].cuda().float()
+            gt_orig_joint_cam = targets['orig_joint_cam'][:, self.smpl_to_h36m_idx].cuda() 
+            gt_fit_joint_cam = targets['fit_joint_cam'][:, self.smpl_to_h36m_idx].cuda() 
+            orig_joint_valid = meta['orig_joint_valid'][:, self.smpl_to_h36m_idx].cuda() 
+            fit_joint_trunc = meta['fit_joint_trunc'][:, self.smpl_to_h36m_idx].cuda() 
+            
+            gt_smplpose = targets['pose_param'].cuda()
+            gt_smplshape = targets['shape_param'].cuda()
+            is_3d = meta['is_3D'].cuda()
+            is_valid_fit = meta['is_valid_fit'].cuda()
+            
+            # Feed 2D pose to model (which routes to MotionBERT in Student mode)
+            model_output = self.model(input_image, input_pose2d, is_train=True)
+
+            pred_mesh = model_output['smpl_mesh_cam']
+            pred_smplpose = model_output['smpl_pose']
+            pred_smplshape = model_output['smpl_shape']
+
+            # Regress H36M joints from the predicted SMPL mesh.
+            pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
+            pred_pose_rootrel = pred_pose - pred_pose[:, 0:1, :]
+
+            if i == 0:
+                with torch.no_grad():
+                    gt_root_abs = gt_fit_joint_cam[:, 0, :].abs().mean().item()
+                    pred_root_abs = pred_pose[:, 0, :].abs().mean().item()
+                    pred_rootrel_abs = pred_pose_rootrel[:, 0, :].abs().mean().item()
+                    gt_mean_abs = gt_fit_joint_cam.abs().mean().item()
+                    pred_mean_abs = pred_pose.abs().mean().item()
+                    pred_rootrel_mean_abs = pred_pose_rootrel.abs().mean().item()
+                    valid_mask = fit_joint_trunc * is_valid_fit[:, None, None]
+                    valid_ratio = valid_mask.float().mean().item()
+                    valid_count = valid_mask.sum().item()
+                    raw_std = meta['raw_smpl_rootrel_std']
+                    raw_mean_abs = meta['raw_smpl_rootrel_mean_abs']
+                    raw_bone_median = meta['raw_smpl_bone_median']
+                    raw_mesh_std = meta['raw_smpl_mesh_std']
+                    raw_joint_std = meta['raw_smpl_joint_std']
+                    raw_trans = meta['raw_smpl_trans']
+                    raw_to_fit_ratio = raw_std.float().mean().item() / max(
+                        gt_fit_joint_cam.std().item(), 1e-12
+                    )
+                    if not torch.isfinite(pred_pose).all():
+                        raise FloatingPointError(
+                            'Non-finite values detected in pred_pose during Student training.'
+                        )
+                    if not torch.isfinite(gt_fit_joint_cam).all():
+                        raise FloatingPointError(
+                            'Non-finite values detected in gt_fit_joint_cam.'
+                        )
+
+            loss_smpl_joint_cam = self.jotr_coord_loss(
+                pred_pose_rootrel,
+                gt_fit_joint_cam,
+                fit_joint_trunc * is_valid_fit[:, None, None]
+            ).mean()
+
+            # Lấy thêm outputs từ model
+            pred_joint_proj = model_output.get('joint_proj')
+            pred_joint_cam = model_output.get('joint_cam')
+            
+            gt_orig_joint_img = targets['orig_joint_img'].cuda()
+            orig_joint_trunc = meta['orig_joint_trunc'].cuda()
+            gt_orig_joint_cam_30 = targets['orig_joint_cam'].cuda()
+            orig_joint_valid_30 = meta['orig_joint_valid'].cuda()
+
+            # Tính loss body_joint_proj (2D)
+            loss_body_joint_proj = self.jotr_coord_loss(
+                pred_joint_proj, 
+                gt_orig_joint_img[:, :, :2], 
+                orig_joint_trunc
+            ).mean() if pred_joint_proj is not None else torch.tensor(0.0).cuda()
+
+            # Tính loss body_joint_cam (3D)
+            loss_body_joint_cam = self.jotr_coord_loss(
+                pred_joint_cam, 
+                gt_orig_joint_cam_30, 
+                orig_joint_valid_30 * is_3d[:, None, None]
+            ).mean() if pred_joint_cam is not None else torch.tensor(0.0).cuda()
+
+            fit_pose_valid = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
+            fit_shape_valid = is_valid_fit[:, None]
+            smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
+            smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
+            loss_dict = {
+                'smpl_joint_cam': loss_smpl_joint_cam,
+                'smpl_pose': smpl_pose_loss,
+                'smpl_shape': smpl_shape_loss,
+                'body_joint_proj': loss_body_joint_proj,
+                'body_joint_cam': loss_body_joint_cam,
+            }
+            loss_dict = self.awl(loss_dict)
+            loss = sum(loss_dict.values())
+
+            # update weights
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            # log
+            running_loss += float(loss.detach().item())
+            if cfg.TRAIN.wandb:
+                wandb.log(
+                    {
+                        'train_loss/smpl_joint_cam': loss_smpl_joint_cam.detach(),
+                        'train_loss/smpl_pose': smpl_pose_loss.detach(),
+                        'train_loss/smpl_shape': smpl_shape_loss.detach(),
+                        'train_loss/body_joint_proj': loss_body_joint_proj.detach(),
+                        'train_loss/body_joint_cam': loss_body_joint_cam.detach(),
+                    }
+                )
+
+            if i % self.print_freq == 0:
+                total_loss = loss.detach()
+                batch_generator.set_description(
+                    f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
+                    f'proj2d: {loss_body_joint_proj.item():.3f} '
+                    f'body3d: {loss_body_joint_cam.item():.3f} '
+                    f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
+                    f'smpl: {(smpl_pose_loss + smpl_shape_loss).item():.3f} '
+                    f'tl: {total_loss.item():.3f}'
+                )
+
+        self.loss_history.append(running_loss / len(batch_generator))
+        print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}')
+
+class Student_Tester:
     def __init__(self, args, load_dir=''):
         self.val_loaders, self.val_datasets, self.model, _, _, _, _, _ = \
             prepare_network(args, load_dir=load_dir, is_train=False)
