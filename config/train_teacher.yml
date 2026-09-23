@@ -13,7 +13,7 @@ MODEL:
   resnet_type: 50
   hpe_dim: 512
   hpe_dep: 5
-  motionbert_pretrained: './experiment/pretrained/full/best_epoch.bin'
+  motionbert_pretrained: './experiment/pretrained/best_epoch.bin'
 
 TRAIN:
   print_freq: 20

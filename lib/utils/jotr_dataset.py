@@ -12,6 +12,7 @@ from utils.h36m_adapter import HUMAN36M_JOINTS, convert_smpl_to_human36m
 
 
 TRAIN_DATASETS = {
+    "3dpw": PW3D,
     'Human36M': Human36M,
     'MuCo': MuCo,
     'MSCOCO': MSCOCO,
@@ -82,7 +83,14 @@ class Human36M17Dataset(Dataset):
 
 
 def get_train_dataset(name, args):
-    return Human36M17Dataset(TRAIN_DATASETS[name](transforms.ToTensor(), 'train'))
+    if '3dpw' in name or name == 'PW3D':
+        # Đối với PW3D, phải truyền data_name (ví dụ '3dpw-train')
+        data_name = name if name in ['3dpw', '3dpw-train'] else '3dpw-train'
+        return Human36M17Dataset(PW3D(transforms.ToTensor(), data_name=data_name))
+    else:
+        # Các dataset còn lại thì truyền 'train'
+        return Human36M17Dataset(TRAIN_DATASETS[name](transforms.ToTensor(), 'train'))
+
 
 
 def get_test_dataset(name, args):

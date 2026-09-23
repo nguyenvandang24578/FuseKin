@@ -27,7 +27,7 @@ def get_dataloader(args, dataset_names, is_train):
         dataloader = DataLoader(dataset,
                                 batch_size=batch_per_dataset,
                                 shuffle=cfg[dataset_split].shuffle,
-                                num_workers=cfg.DATASET.workers,
+                                num_workers=(cfg.DATASET.workers if is_train else getattr(cfg.DATASET, 'test_workers', 0)),
                                 pin_memory=False)
         dataloader_list.append(dataloader)
 
@@ -51,7 +51,7 @@ def prepare_network(args, load_dir='', is_train=True):
     J_regressor = eval(f'torch.Tensor(main_dataset.joint_regressor_{cfg.DATASET.input_joint_set})')
     if is_train or load_dir:
         print(f"==> Preparing {cfg.MODEL.name} MODEL...")
-        if cfg.MODEL.name in ['ARTS', 'teacher']:
+        if cfg.MODEL.name in ['ARTS', 'teacher', 'student']:
             model = models.ARTS.get_model(num_joint=17, embed_dim=cfg.MODEL.hpe_dim, depth=cfg.MODEL.hpe_dep)
         elif cfg.MODEL.name == 'PoseEst':
             model = models.PoseEstimation.get_model(num_joint=main_dataset.joint_num, embed_dim=cfg.MODEL.hpe_dim, depth=cfg.MODEL.hpe_dep, pretrained=False)
@@ -147,10 +147,10 @@ class Trainer:
             # convert to cuda
             input_image = inputs['img'].cuda().float()
             # Slice 30 joints -> 17 joints matching ARTS expected input
-            input_pose = inputs['joints'][:, self.smpl_to_h36m_idx].cuda().float() # keypoint 2D đầu vào
-            gt_orig_joint_cam = targets['orig_joint_cam'][:, self.smpl_to_h36m_idx].cuda() #Đây là tọa độ 3D thực tế đo được từ các cảm biến
-            gt_fit_joint_cam = targets['fit_joint_cam'][:, self.smpl_to_h36m_idx].cuda() # tọa độ 3D sinh ra từ smpl prj
-            orig_joint_valid = meta['orig_joint_valid'][:, self.smpl_to_h36m_idx].cuda() #mask, = 0 thì k tính loss
+            input_pose = inputs['joints'][:, self.smpl_to_h36m_idx].cuda().float() # keypoint 2D Ä‘áº§u vÃ o
+            gt_orig_joint_cam = targets['orig_joint_cam'][:, self.smpl_to_h36m_idx].cuda() #ÄÃ¢y lÃ  tá»a Ä‘á»™ 3D thá»±c táº¿ Ä‘o Ä‘Æ°á»£c tá»« cÃ¡c cáº£m biáº¿n
+            gt_fit_joint_cam = targets['fit_joint_cam'][:, self.smpl_to_h36m_idx].cuda() # tá»a Ä‘á»™ 3D sinh ra tá»« smpl prj
+            orig_joint_valid = meta['orig_joint_valid'][:, self.smpl_to_h36m_idx].cuda() #mask, = 0 thÃ¬ k tÃ­nh loss
             fit_joint_trunc = meta['fit_joint_trunc'][:, self.smpl_to_h36m_idx].cuda() # mask
             
             gt_smplpose = targets['pose_param'].cuda()
@@ -166,11 +166,14 @@ class Trainer:
             pred_smplshape = model_output['smpl_shape']
 
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
-            
+            # Root-relative: gt_fit_joint_cam is already root-relative in the dataset
+            # (pelvis subtracted). Align pred_pose to the same coordinate system.
+            pred_pose_rootrel = pred_pose - pred_pose[:, 0:1, :]
+
             loss_body_joint_cam = 5 * self.jotr_coord_loss(
                 pred_joint_img, gt_orig_joint_cam, orig_joint_valid * is_3d[:, None, None]).mean()
             loss_smpl_joint_cam = self.jotr_coord_loss(
-                pred_pose, gt_fit_joint_cam, fit_joint_trunc * is_valid_fit[:, None, None]).mean()
+                pred_pose_rootrel, gt_fit_joint_cam, fit_joint_trunc * is_valid_fit[:, None, None]).mean()
             fit_pose_valid = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
             fit_shape_valid = is_valid_fit[:, None]
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
@@ -266,7 +269,7 @@ class Teacher_Trainer:
 
         self.jotr_coord_loss = JOTRCoordLoss()
         self.jotr_param_loss = JOTRParamLoss()
-        self.awl = AutomaticWeightedLoss(4).cuda()
+        self.awl = AutomaticWeightedLoss(3).cuda()
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
         # Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
@@ -297,11 +300,9 @@ class Teacher_Trainer:
         for i, (inputs, targets, meta) in enumerate(batch_generator):
             # convert to cuda
             input_image = inputs['img'].cuda().float()
-            # Slice 30 joints -> 17 joints matching ARTS expected input
-            input_pose = inputs['joints'][:, self.smpl_to_h36m_idx].cuda().float() # keypoint 2D đầu vào
-            gt_orig_joint_cam = targets['orig_joint_cam'][:, self.smpl_to_h36m_idx].cuda() #Đây là tọa độ 3D thực tế đo được từ các cảm biến
-            gt_fit_joint_cam = targets['fit_joint_cam'][:, self.smpl_to_h36m_idx].cuda() # tọa độ 3D sinh ra từ smpl prj
-            orig_joint_valid = meta['orig_joint_valid'][:, self.smpl_to_h36m_idx].cuda() #mask, = 0 thì k tính loss
+            gt_orig_joint_cam = targets['orig_joint_cam'][:, self.smpl_to_h36m_idx].cuda() #ÄÃ¢y lÃ  tá»a Ä‘á»™ 3D thá»±c táº¿ Ä‘o Ä‘Æ°á»£c tá»« cÃ¡c cáº£m biáº¿n
+            gt_fit_joint_cam = targets['fit_joint_cam'][:, self.smpl_to_h36m_idx].cuda() # tá»a Ä‘á»™ 3D sinh ra tá»« smpl prj
+            orig_joint_valid = meta['orig_joint_valid'][:, self.smpl_to_h36m_idx].cuda() #mask, = 0 thÃ¬ k tÃ­nh loss
             fit_joint_trunc = meta['fit_joint_trunc'][:, self.smpl_to_h36m_idx].cuda() # mask
             
             gt_smplpose = targets['pose_param'].cuda()
@@ -309,7 +310,8 @@ class Teacher_Trainer:
             is_3d = meta['is_3D'].cuda()
             is_valid_fit = meta['is_valid_fit'].cuda()
             
-            model_output = self.model(input_image, input_pose, is_train=True)
+            teacher_gt_pose3d = gt_fit_joint_cam  # (B, 17, 3), meters, root-relative
+            model_output = self.model(input_image, teacher_gt_pose3d, is_train=True)
 
             pred_mesh = model_output['smpl_mesh_cam']
             pred_smplpose = model_output['smpl_pose']
@@ -335,30 +337,8 @@ class Teacher_Trainer:
                     valid_mask = fit_joint_trunc * is_valid_fit[:, None, None]
                     valid_ratio = valid_mask.float().mean().item()
                     valid_count = valid_mask.sum().item()
-
-                    print(
-                        f'[Teacher coord check][epoch {epoch}] '
-                        f'GT root={gt_root_abs:.6f}, '
-                        f'pred root(raw)={pred_root_abs:.6f}, '
-                        f'pred root(root-rel)={pred_rootrel_abs:.6f} | '
-                        f'mean_abs: GT={gt_mean_abs:.6f}, '
-                        f'pred(raw)={pred_mean_abs:.6f}, '
-                        f'pred(root-rel)={pred_rootrel_mean_abs:.6f}'
-                    )
-                    print(
-                        f'[Teacher target stats][epoch {epoch}] '
-                        f'fit min={gt_fit_joint_cam.min().item():.6f}, '
-                        f'fit max={gt_fit_joint_cam.max().item():.6f}, '
-                        f'fit std={gt_fit_joint_cam.std().item():.6f} | '
-                        f'orig mean_abs={gt_orig_joint_cam.abs().mean().item():.6f}, '
-                        f'orig std={gt_orig_joint_cam.std().item():.6f}, '
-                        f'orig min={gt_orig_joint_cam.min().item():.6f}, '
-                        f'orig max={gt_orig_joint_cam.max().item():.6f}'
-                    )
-
-                    # These values are captured before the dataset applies its
-                    # final /1000 conversion. Comparing them with fit_joint_cam
-                    # tells us directly whether that conversion is appropriate.
+                    # Dataset raw SMPL stats. raw/fit ratio should stay near 1.0
+                    # after fixing the old duplicate /1000 scale conversion.
                     raw_std = meta['raw_smpl_rootrel_std']
                     raw_mean_abs = meta['raw_smpl_rootrel_mean_abs']
                     raw_bone_median = meta['raw_smpl_bone_median']
@@ -367,38 +347,6 @@ class Teacher_Trainer:
                     raw_trans = meta['raw_smpl_trans']
                     raw_to_fit_ratio = raw_std.float().mean().item() / max(
                         gt_fit_joint_cam.std().item(), 1e-12
-                    )
-                    print(
-                        f'[Teacher raw SMPL stats][epoch {epoch}] '
-                        f'rootrel std(raw)={raw_std.float().mean().item():.6f}, '
-                        f'rootrel mean_abs(raw)={raw_mean_abs.float().mean().item():.6f}, '
-                        f'bone median(raw)={raw_bone_median.float().mean().item():.6f}, '
-                        f'joint std(raw)={raw_joint_std.float().mean().item():.6f}, '
-                        f'mesh std(raw)={raw_mesh_std.float().mean().item():.6f}, '
-                        f'raw/fit std ratio={raw_to_fit_ratio:.2f}, '
-                        f'trans sample0={raw_trans[0].detach().cpu().tolist()}'
-                    )
-                    print(
-                        f'[Teacher valid mask][epoch {epoch}] '
-                        f'ratio={valid_ratio:.6f}, count={valid_count:.0f}/'
-                        f'{valid_mask.numel():.0f}, '
-                        f'is_valid_fit_mean={is_valid_fit.float().mean().item():.6f}'
-                    )
-                    print(
-                        f'[Teacher prediction stats][epoch {epoch}] '
-                        f'raw min={pred_pose.min().item():.6f}, '
-                        f'raw max={pred_pose.max().item():.6f}, '
-                        f'raw std={pred_pose.std().item():.6f}, '
-                        f'root-rel min={pred_pose_rootrel.min().item():.6f}, '
-                        f'root-rel max={pred_pose_rootrel.max().item():.6f}, '
-                        f'root-rel std={pred_pose_rootrel.std().item():.6f}'
-                    )
-                    print(
-                        f'[Teacher sample 0][epoch {epoch}] '
-                        f'gt_root={gt_fit_joint_cam[0, 0].detach().cpu().tolist()}, '
-                        f'pred_root={pred_pose[0, 0].detach().cpu().tolist()}, '
-                        f'gt_joint1={gt_fit_joint_cam[0, 1].detach().cpu().tolist()}, '
-                        f'pred_joint1_rootrel={pred_pose_rootrel[0, 1].detach().cpu().tolist()}'
                     )
                     if not torch.isfinite(pred_pose).all():
                         raise FloatingPointError(

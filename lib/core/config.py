@@ -20,7 +20,7 @@ cfg = edict()
 cfg.cur_dir = osp.dirname(os.path.abspath(__file__))
 cfg.root_dir = osp.join(cfg.cur_dir, '../../')
 cfg.data_dir = './data'
-cfg.smpl_dir = osp.join(cfg.root_dir, 'smplpytorch')
+cfg.smpl_path = osp.join(cfg.root_dir, 'smplpytorch')
 cfg.mano_dir = osp.join(cfg.root_dir, 'manopth')
 KST = datetime.timezone(datetime.timedelta(hours=8))
 save_folder = 'exp_' + str(datetime.datetime.now(tz=KST))[5:-16]
@@ -50,8 +50,9 @@ cfg.DATASET.stride = 1
 cfg.DATASET.noise = 0
 cfg.DATASET.jotr_data_root = os.environ.get(
     'JOTR_DATA_ROOT',
-    osp.abspath(osp.join(cfg.root_dir, '..', '..', 'JOTR', 'data')),
+    osp.abspath(osp.join(cfg.root_dir, 'data_final')),
 )
+cfg.use_gt_info = True
 cfg.input_img_shape = (256, 256)
 cfg.output_hm_shape = (64, 64, 64)
 cfg.bbox_3d_size = 2
