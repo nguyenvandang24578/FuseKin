@@ -510,7 +510,7 @@ class PW3D(torch.utils.data.Dataset):
                 cv2.destroyAllWindows()
                 cv2.waitKey(1)
 
-            if cfg.vis:
+            if getattr(cfg, 'vis', False):
                 img = cv2.imread(annot['img_path'])
                 bbox_to_vis = out['bbox']
 
