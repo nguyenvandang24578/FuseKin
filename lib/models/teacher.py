@@ -174,7 +174,7 @@ class Teacher(nn.Module):
         output = self.regressorspin(img_feats_trans, is_train=is_train, J_regressor=J_regressor)
         
         if return_features:
-            return output, concat_feat
+            return output, {'joint_out': joint_out, 'concat_feat': concat_feat}
         return output
 # ============================================================
 # Factory

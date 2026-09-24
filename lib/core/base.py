@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import wandb
 from tqdm import tqdm
 from torch.utils.data import DataLoader
@@ -454,19 +455,67 @@ class Teacher_Tester:
             self.joint_error = sum(item['mpjpe'] for item in results.values()) / len(results)
             self.surface_error = sum(item['mpvpe'] for item in results.values()) / len(results)
         return results
-def load_model_weights(model, ckpt_path):
-    ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+import pickle
+
+class _NumpyCompatUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        # ckpt lưu bằng NumPy 2.x, môi trường đang là NumPy 1.x
+        if module.startswith('numpy._core'):
+            module = module.replace('numpy._core', 'numpy.core', 1)
+        return super().find_class(module, name)
+
+class _PickleShim:
+    Unpickler = _NumpyCompatUnpickler
+    load = pickle.load
+    Pickler = pickle.Pickler
+    dump = pickle.dump
+def load_model_weights(model, ckpt_path, skip_prefixes=('pose_lifter.',)):
+    ckpt = torch.load(ckpt_path, map_location='cpu',
+                      pickle_module=_PickleShim, weights_only=False)
     state = ckpt
     if isinstance(ckpt, dict):
         for k in ('model_state_dict', 'state_dict', 'model'):
             if k in ckpt:
                 state = ckpt[k]
                 break
+
+    # 1) bỏ prefix 'module.' (DataParallel)
     state = {(k[7:] if k.startswith('module.') else k): v for k, v in state.items()}
-    missing, unexpected = model.load_state_dict(state, strict=False)
-    print(f'[Teacher] loaded: missing={len(missing)}, unexpected={len(unexpected)}')
+
+    # 2) ckpt cũ lưu module này là 'teacher_model.', code hiện tại là 'smpl_model.'
+    old_p, new_p = 'teacher_model.', 'smpl_model.'
+    state = {(new_p + k[len(old_p):] if k.startswith(old_p) else k): v
+             for k, v in state.items()}
+
+    # 3) lọc: bỏ pose_lifter, bỏ key lệch shape
+    own = model.state_dict()
+    filtered, skipped, shape_bad = {}, [], []
+    for k, v in state.items():
+        if k.startswith(skip_prefixes):
+            skipped.append(k)
+        elif k in own and own[k].shape != v.shape:
+            shape_bad.append((k, tuple(v.shape), tuple(own[k].shape)))
+        else:
+            filtered[k] = v
+
+    # 4) nạp
+    missing, unexpected = model.load_state_dict(filtered, strict=False)
+    missing = [k for k in missing if not k.startswith(skip_prefixes)]
+
+    print(f'[Teacher] loaded {len(filtered)} tensors, skipped {len(skipped)} {skip_prefixes}')
+    print(f'[Teacher] missing={len(missing)}, unexpected={len(unexpected)}, '
+          f'shape_mismatch={len(shape_bad)}')
+    if shape_bad:
+        print('  shape mismatch (5 đầu):', shape_bad[:5])
     if missing:
-        print('  missing (5 key đầu):', missing[:5])
+        print('  MISSING   (10 đầu):', sorted(missing)[:10])
+    if unexpected:
+        print('  UNEXPECTED(10 đầu):', sorted(unexpected)[:10])
+
+    # 5) dừng ngay nếu teacher nạp chưa đủ
+    assert not shape_bad, f'Có key lệch shape: {shape_bad[:3]}'
+    assert not [k for k in missing if k.startswith(('smpl_model.', 'backbone.'))], \
+        f'Teacher chưa nạp đủ smpl_model/backbone: {missing[:5]}'
     return model
 class Student_Trainer:
     def __init__(self, args, load_dir):
@@ -488,9 +537,9 @@ class Student_Trainer:
 
         resume = hasattr(args, 'resume_training') and args.resume_training
         if not resume:
-            # Khởi tạo student từ trọng số teacher (chỉ module smpl_model)
             self.model.smpl_model.load_state_dict(self.teacher.smpl_model.state_dict())
-            print('===> Student smpl_model initialized from Teacher')
+            self.model.backbone.load_state_dict(self.teacher.backbone.state_dict())
+            print('===> Student smpl_model + backbone initialized from Teacher')
 
         self.teacher = torch.nn.DataParallel(self.teacher).cuda()
         self.teacher.eval()
@@ -550,16 +599,16 @@ class Student_Trainer:
             is_3d = meta['is_3D'].cuda()
             is_valid_fit = meta['is_valid_fit'].cuda()
             
-            print(f"Input Pose2D Shape: {input_pose2d.shape}")
-            print(f"input_image shape: {input_image.shape}")
-            print(f"gt_orig_joint_cam shape: {gt_orig_joint_cam.shape}")
-            print(f"gt_fit_joint_cam shape: {gt_fit_joint_cam.shape}")
-            print(f"orig_joint_valid shape: {orig_joint_valid.shape}")
-            print(f"fit_joint_trunc shape: {fit_joint_trunc.shape}")
-            print(f"gt_smplpose shape: {gt_smplpose.shape}")
-            print(f"gt_smplshape shape: {gt_smplshape.shape}")
-            print(f"is_3d shape: {is_3d.shape}")
-            print(f"is_valid_fit shape: {is_valid_fit.shape}")
+            # print(f"Input Pose2D Shape: {input_pose2d.shape}")
+            # print(f"input_image shape: {input_image.shape}")
+            # print(f"gt_orig_joint_cam shape: {gt_orig_joint_cam.shape}")
+            # print(f"gt_fit_joint_cam shape: {gt_fit_joint_cam.shape}")
+            # print(f"orig_joint_valid shape: {orig_joint_valid.shape}")
+            # print(f"fit_joint_trunc shape: {fit_joint_trunc.shape}")
+            # print(f"gt_smplpose shape: {gt_smplpose.shape}")
+            # print(f"gt_smplshape shape: {gt_smplshape.shape}")
+            # print(f"is_3d shape: {is_3d.shape}")
+            # print(f"is_valid_fit shape: {is_valid_fit.shape}")
             # Feed 2D pose to model (which routes to MotionBERT in Student mode)
             model_output = self.model(input_image, input_pose2d, is_train=True)
 
@@ -567,9 +616,9 @@ class Student_Trainer:
             pred_smplpose = model_output['smpl_pose']
             pred_smplshape = model_output['smpl_shape']
 
-            print(f"pred_mesh shape: {pred_mesh.shape}")
-            print(f"pred_smplpose shape: {pred_smplpose.shape}")
-            print(f"pred_smplshape shape: {pred_smplshape.shape}")
+            # print(f"pred_mesh shape: {pred_mesh.shape}")
+            # print(f"pred_smplpose shape: {pred_smplpose.shape}")
+            # print(f"pred_smplshape shape: {pred_smplshape.shape}")
             # Regress H36M joints from the predicted SMPL mesh.
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
             pred_pose_rootrel = pred_pose - pred_pose[:, 0:1, :]
@@ -577,16 +626,12 @@ class Student_Trainer:
             # ---------- teacher forward (GT 3D làm đầu vào, không grad) ----------
             with torch.no_grad():
                 t_out = self.teacher(input_image, gt_fit_joint_cam, is_train=False)
-                t_mesh = t_out['smpl_mesh_cam']
-                t_pose = torch.matmul(self.J_regressor[None, :, :], t_mesh)
-                t_pose_rootrel = t_pose - t_pose[:, 0:1, :]
-                t_mesh_rootrel = t_mesh - t_pose[:, 0:1, :]
 
-            # ---------- loss mềm: student bắt chước teacher ----------
-            kd_joint = (pred_pose_rootrel - t_pose_rootrel).abs().mean()
-            kd_pose = (pred_smplpose - t_out['smpl_pose']).abs().mean()
-            kd_shape = (pred_smplshape - t_out['smpl_shape']).abs().mean()
-            kd_loss = kd_joint + kd_pose + kd_shape
+            # ---------- loss mềm: student bắt chước teacher (tầng feature) ----------
+            s_feat = model_output['feat']
+            t_feat = t_out['feat'].detach()
+            kd_feat = (1 - (F.normalize(s_feat, dim=-1) * F.normalize(t_feat, dim=-1)).sum(-1)).mean()
+            kd_loss = kd_feat
 
             # ---------------------------------------------------------
 
@@ -597,23 +642,23 @@ class Student_Trainer:
             ).mean()
 
             # Lấy thêm outputs từ model
-            pred_joint_proj = model_output.get('joint_proj')
+            # pred_joint_proj = model_output.get('joint_proj')
             
             gt_orig_joint_img = targets['orig_joint_img'].cuda()
             orig_joint_trunc = meta['orig_joint_trunc'].cuda()
             gt_orig_joint_cam_30 = targets['orig_joint_cam'].cuda()
             orig_joint_valid_30 = meta['orig_joint_valid'].cuda()
-            print(f"pred_joint_proj shape: {pred_joint_proj.shape}")
-            print(f"gt_orig_joint_img shape: {gt_orig_joint_img.shape}")
-            print(f"orig_joint_trunc shape: {orig_joint_trunc.shape}")
-            print(f"gt_orig_joint_cam_30 shape: {gt_orig_joint_cam_30.shape}")
-            print(f"orig_joint_valid_30 shape: {orig_joint_valid_30.shape}")
+            # print(f"pred_joint_proj shape: {pred_joint_proj.shape}")
+            # print(f"gt_orig_joint_img shape: {gt_orig_joint_img.shape}")
+            # print(f"orig_joint_trunc shape: {orig_joint_trunc.shape}")
+            # print(f"gt_orig_joint_cam_30 shape: {gt_orig_joint_cam_30.shape}")
+            # print(f"orig_joint_valid_30 shape: {orig_joint_valid_30.shape}")
             # Tính loss body_joint_proj (2D)
-            loss_body_joint_proj = self.jotr_coord_loss(
-                pred_joint_proj, 
-                gt_orig_joint_img[:, :, :2], 
-                orig_joint_trunc
-            ).mean() if pred_joint_proj is not None else torch.tensor(0.0).cuda()
+            # loss_body_joint_proj = self.jotr_coord_loss(
+            #     pred_joint_proj, 
+            #     gt_orig_joint_img[:, :, :2], 
+            #     orig_joint_trunc
+            # ).mean() if pred_joint_proj is not None else torch.tensor(0.0).cuda()
 
             fit_pose_valid = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
             fit_shape_valid = is_valid_fit[:, None]
@@ -639,7 +684,9 @@ class Student_Trainer:
                         'train_loss/smpl_joint_cam': loss_smpl_joint_cam.detach(),
                         'train_loss/smpl_pose': smpl_pose_loss.detach(),
                         'train_loss/smpl_shape': smpl_shape_loss.detach(),
-                        'train_loss/body_joint_proj': loss_body_joint_proj.detach()
+                        'train_loss/kd_feat': kd_feat.detach(),
+                        'train_loss/hard_total': hard_loss.detach(),
+                        'train_loss/total': loss.detach(),
                     }
                 )
 
@@ -647,9 +694,9 @@ class Student_Trainer:
                 total_loss = loss.detach()
                 batch_generator.set_description(
                     f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
-                    f'proj2d: {loss_body_joint_proj.item():.3f} '
                     f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
                     f'smpl: {(smpl_pose_loss + smpl_shape_loss).item():.3f} '
+                    f'kd_feat: {kd_feat.item():.3f} '
                     f'tl: {total_loss.item():.3f}'
                 )
 

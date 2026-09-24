@@ -108,12 +108,17 @@ class ARTS(nn.Module):
         with torch.no_grad():
             feature_map, _ = self.get_image_features(image)
 
-        smpl_output = self.smpl_model(
+        out, feats = self.smpl_model(
             joints=gt_pose_3d,
             img_feats=feature_map,
             is_train=is_train,
-        )[-1]
-        return self.format_smpl_output(smpl_output)
+            return_features=True
+        )
+        smpl_output = out[-1]
+        result = self.format_smpl_output(smpl_output)
+        result['feat'] = feats['joint_out']
+        result['feat_global'] = feats['concat_feat']
+        return result
 
     def forward_student(self, image, pose_2d, is_train):
         with torch.no_grad():
@@ -121,12 +126,17 @@ class ARTS(nn.Module):
             pose_3d = self.lift_2d_to_3d(pose_2d) / 1000      # mm -> m
             pose_3d = pose_3d - pose_3d[:, 0:1, :]            # root-relative như đầu vào teacher
 
-        smpl_output = self.smpl_model(
+        out, feats = self.smpl_model(
             joints=pose_3d,
             img_feats=feature_map,
             is_train=is_train,
-        )[-1]
-        return self.format_smpl_output(smpl_output)
+            return_features=True
+        )
+        smpl_output = out[-1]
+        result = self.format_smpl_output(smpl_output)
+        result['feat'] = feats['joint_out']
+        result['feat_global'] = feats['concat_feat']
+        return result
 
     def forward_arts(self, image, pose_2d, is_train):
         with torch.no_grad():
