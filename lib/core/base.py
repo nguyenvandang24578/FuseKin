@@ -3,6 +3,7 @@ import wandb
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from collections import Counter
+import copy
 
 import models
 from data_final.dataset import MultipleDatasets
@@ -453,7 +454,20 @@ class Teacher_Tester:
             self.joint_error = sum(item['mpjpe'] for item in results.values()) / len(results)
             self.surface_error = sum(item['mpvpe'] for item in results.values()) / len(results)
         return results
-
+def load_model_weights(model, ckpt_path):
+    ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+    state = ckpt
+    if isinstance(ckpt, dict):
+        for k in ('model_state_dict', 'state_dict', 'model'):
+            if k in ckpt:
+                state = ckpt[k]
+                break
+    state = {(k[7:] if k.startswith('module.') else k): v for k, v in state.items()}
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    print(f'[Teacher] loaded: missing={len(missing)}, unexpected={len(unexpected)}')
+    if missing:
+        print('  missing (5 key đầu):', missing[:5])
+    return model
 class Student_Trainer:
     def __init__(self, args, load_dir):
         self.batch_generator, self.dataset_list, self.model, self.loss, self.optimizer, self.lr_scheduler, self.loss_history, self.error_history\
@@ -463,7 +477,25 @@ class Student_Trainer:
         self.print_freq = cfg.TRAIN.print_freq
 
         self.J_regressor = eval(f'torch.Tensor(self.main_dataset.joint_regressor_{cfg.DATASET.target_joint_set}).cuda()')
+#---------------------------------------------------------------------------------
+        teacher_ckpt = cfg.MODEL.get('TEACHER', '')
+        assert teacher_ckpt, 'Cần đặt cfg.MODEL.TEACHER (checkpoint của Teacher_Trainer)'
+        self.kd_weight = cfg.MODEL.get('kd_weight', 1.0)
 
+        self.teacher = copy.deepcopy(self.model)   # cùng kiến trúc với student
+        self.teacher.mode = 'teacher'              # forward() sẽ chạy forward_teacher
+        load_model_weights(self.teacher, teacher_ckpt)
+
+        resume = hasattr(args, 'resume_training') and args.resume_training
+        if not resume:
+            # Khởi tạo student từ trọng số teacher (chỉ module smpl_model)
+            self.model.smpl_model.load_state_dict(self.teacher.smpl_model.state_dict())
+            print('===> Student smpl_model initialized from Teacher')
+
+        self.teacher = torch.nn.DataParallel(self.teacher).cuda()
+        self.teacher.eval()
+        for p in self.teacher.parameters():
+            p.requires_grad = False
         # The dataset wrapper already emits H36M-17 GT and 2D inputs. The model's
         # auxiliary outputs (joint_proj / joint_cam) come from get_coord in
         # SMPL-30 joint order, so build a reduction index from the underlying
@@ -476,7 +508,7 @@ class Student_Trainer:
 
         self.jotr_coord_loss = JOTRCoordLoss()
         self.jotr_param_loss = JOTRParamLoss()
-        self.awl = AutomaticWeightedLoss(5).cuda()
+        self.awl = AutomaticWeightedLoss(3).cuda()
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
         # Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
@@ -517,46 +549,31 @@ class Student_Trainer:
             gt_smplshape = targets['shape_param'].cuda()
             is_3d = meta['is_3D'].cuda()
             is_valid_fit = meta['is_valid_fit'].cuda()
-            
             # Feed 2D pose to model (which routes to MotionBERT in Student mode)
             model_output = self.model(input_image, input_pose2d, is_train=True)
 
             pred_mesh = model_output['smpl_mesh_cam']
             pred_smplpose = model_output['smpl_pose']
             pred_smplshape = model_output['smpl_shape']
-
             # Regress H36M joints from the predicted SMPL mesh.
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
             pred_pose_rootrel = pred_pose - pred_pose[:, 0:1, :]
 
-            if i == 0:
-                with torch.no_grad():
-                    gt_root_abs = gt_fit_joint_cam[:, 0, :].abs().mean().item()
-                    pred_root_abs = pred_pose[:, 0, :].abs().mean().item()
-                    pred_rootrel_abs = pred_pose_rootrel[:, 0, :].abs().mean().item()
-                    gt_mean_abs = gt_fit_joint_cam.abs().mean().item()
-                    pred_mean_abs = pred_pose.abs().mean().item()
-                    pred_rootrel_mean_abs = pred_pose_rootrel.abs().mean().item()
-                    valid_mask = fit_joint_trunc * is_valid_fit[:, None, None]
-                    valid_ratio = valid_mask.float().mean().item()
-                    valid_count = valid_mask.sum().item()
-                    raw_std = meta['raw_smpl_rootrel_std']
-                    raw_mean_abs = meta['raw_smpl_rootrel_mean_abs']
-                    raw_bone_median = meta['raw_smpl_bone_median']
-                    raw_mesh_std = meta['raw_smpl_mesh_std']
-                    raw_joint_std = meta['raw_smpl_joint_std']
-                    raw_trans = meta['raw_smpl_trans']
-                    raw_to_fit_ratio = raw_std.float().mean().item() / max(
-                        gt_fit_joint_cam.std().item(), 1e-12
-                    )
-                    if not torch.isfinite(pred_pose).all():
-                        raise FloatingPointError(
-                            'Non-finite values detected in pred_pose during Student training.'
-                        )
-                    if not torch.isfinite(gt_fit_joint_cam).all():
-                        raise FloatingPointError(
-                            'Non-finite values detected in gt_fit_joint_cam.'
-                        )
+            # ---------- teacher forward (GT 3D làm đầu vào, không grad) ----------
+            with torch.no_grad():
+                t_out = self.teacher(input_image, gt_fit_joint_cam, is_train=False)
+                t_mesh = t_out['smpl_mesh_cam']
+                t_pose = torch.matmul(self.J_regressor[None, :, :], t_mesh)
+                t_pose_rootrel = t_pose - t_pose[:, 0:1, :]
+                t_mesh_rootrel = t_mesh - t_pose[:, 0:1, :]
+
+            # ---------- loss mềm: student bắt chước teacher ----------
+            kd_joint = (pred_pose_rootrel - t_pose_rootrel).abs().mean()
+            kd_pose = (pred_smplpose - t_out['smpl_pose']).abs().mean()
+            kd_shape = (pred_smplshape - t_out['smpl_shape']).abs().mean()
+            kd_loss = kd_joint + kd_pose + kd_shape
+
+            # ---------------------------------------------------------
 
             loss_smpl_joint_cam = self.jotr_coord_loss(
                 pred_pose_rootrel,
@@ -566,26 +583,17 @@ class Student_Trainer:
 
             # Lấy thêm outputs từ model
             pred_joint_proj = model_output.get('joint_proj')
-            pred_joint_cam = model_output.get('joint_cam')
             
             gt_orig_joint_img = targets['orig_joint_img'].cuda()
             orig_joint_trunc = meta['orig_joint_trunc'].cuda()
             gt_orig_joint_cam_30 = targets['orig_joint_cam'].cuda()
             orig_joint_valid_30 = meta['orig_joint_valid'].cuda()
-
             # Tính loss body_joint_proj (2D)
             loss_body_joint_proj = self.jotr_coord_loss(
                 pred_joint_proj, 
                 gt_orig_joint_img[:, :, :2], 
                 orig_joint_trunc
             ).mean() if pred_joint_proj is not None else torch.tensor(0.0).cuda()
-
-            # Tính loss body_joint_cam (3D)
-            loss_body_joint_cam = self.jotr_coord_loss(
-                pred_joint_cam, 
-                gt_orig_joint_cam_30, 
-                orig_joint_valid_30 * is_3d[:, None, None]
-            ).mean() if pred_joint_cam is not None else torch.tensor(0.0).cuda()
 
             fit_pose_valid = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
             fit_shape_valid = is_valid_fit[:, None]
@@ -595,12 +603,10 @@ class Student_Trainer:
                 'smpl_joint_cam': loss_smpl_joint_cam,
                 'smpl_pose': smpl_pose_loss,
                 'smpl_shape': smpl_shape_loss,
-                'body_joint_proj': loss_body_joint_proj,
-                'body_joint_cam': loss_body_joint_cam,
             }
             loss_dict = self.awl(loss_dict)
-            loss = sum(loss_dict.values())
-
+            hard_loss = sum(loss_dict.values())
+            loss = hard_loss + self.kd_weight * kd_loss
             # update weights
             self.optimizer.zero_grad()
             loss.backward()
@@ -613,8 +619,7 @@ class Student_Trainer:
                         'train_loss/smpl_joint_cam': loss_smpl_joint_cam.detach(),
                         'train_loss/smpl_pose': smpl_pose_loss.detach(),
                         'train_loss/smpl_shape': smpl_shape_loss.detach(),
-                        'train_loss/body_joint_proj': loss_body_joint_proj.detach(),
-                        'train_loss/body_joint_cam': loss_body_joint_cam.detach(),
+                        'train_loss/body_joint_proj': loss_body_joint_proj.detach()
                     }
                 )
 
@@ -623,7 +628,6 @@ class Student_Trainer:
                 batch_generator.set_description(
                     f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
                     f'proj2d: {loss_body_joint_proj.item():.3f} '
-                    f'body3d: {loss_body_joint_cam.item():.3f} '
                     f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
                     f'smpl: {(smpl_pose_loss + smpl_shape_loss).item():.3f} '
                     f'tl: {total_loss.item():.3f}'

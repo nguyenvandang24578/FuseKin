@@ -87,9 +87,9 @@ cfg.MODEL.shape_loss_weight = 0.06
 cfg.MODEL.pose_loss_weight = 0.06
 cfg.MODEL.posenet_pretrained = False
 cfg.MODEL.motionbert_pretrained = ''
-cfg.MODEL.posenet_path = './experiment/pretrained/pose_3dpw.pth.tar'
 cfg.MODEL.TEACHER = './experiment/teacher/checkpoint'
-
+cfg.MODEL.kd_weight = 1.0
+cfg.MODEL.motionbert_pretrained = './experiment/motionbert/best_epoch.bin'
 """ Train Detail """
 cfg.TRAIN = edict()
 cfg.TRAIN.print_freq = 20

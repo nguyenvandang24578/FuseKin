@@ -72,7 +72,6 @@ class RGBJointCrossTransformer(nn.Module):
         return x.view(b, n, self.h, self.d_k).transpose(1, 2)  # (b,h,n,d_k)
 
     def forward(self, rgb_tok, joint_tok):
-        print(f"rgb_tok: {rgb_tok.shape}, joint_tok: {joint_tok.shape}")
         b = rgb_tok.shape[0]
 
         rgb_norm = self.ln_rgb1(rgb_tok)
