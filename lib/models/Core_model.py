@@ -9,9 +9,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from typing import Tuple, Type, Optional
-from einops import rearrange
-from models.common import LayerNorm2d, MLPBlock
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from timm.models.vision_transformer import _cfg, Mlp
 from functools import partial
