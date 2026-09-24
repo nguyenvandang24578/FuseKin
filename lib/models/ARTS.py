@@ -142,17 +142,17 @@ class ARTS(nn.Module):
         with torch.no_grad():
             ft_map, global_feature = self.get_image_features(image)
             pose_3d = self.lift_2d_to_3d(pose_2d)
-
-        seqlen = cfg.DATASET.seqlen
+            pose_3d = pose_3d / 1000                      # mm -> m
+            pose_3d = pose_3d - pose_3d[:, 0:1, :]        # root-relative
 
         output = self.pose_mesh_coevo(
-            pose_3d / 1000,
+            pose_3d,
             ft_map,
             is_train=is_train,
         )
         # MotionBERT outputs 3D joints in millimeters; convert to meters so
         # joint_img shares the unit of the GT joints used in the training loss.
-        output["joint_img"] = pose_3d/1000
+        output["joint_img"] = pose_3d
         return output
 
     def forward(self, image, joints, is_train=True):

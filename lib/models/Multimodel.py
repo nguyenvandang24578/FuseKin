@@ -92,6 +92,9 @@ class Pose2Mesh(nn.Module):
 
         output, global_ft = self.fusion(joints, img_feats, is_train=is_train, J_regressor=J_regressor, return_features=True) #(B, 1024)
 
+        if isinstance(global_ft, dict):
+            global_ft = global_ft['concat_feat']
+
         gamma = self.gamma_proj(global_ft).unsqueeze(1) + 1.0 #(B, 1, 512)
         beta  = self.beta_proj(global_ft).unsqueeze(1)   # (B, 1, 512)
 

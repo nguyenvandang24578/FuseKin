@@ -1,0 +1,43 @@
+DATASET:
+    # train_list: ['PW3D', 'MPII3D', 'Human36M']
+    train_list: ['PW3D']
+    test_list: ['PW3D']
+    input_joint_set: 'coco'
+    target_joint_set: 'human36'
+    workers: 8
+    use_gt_input: False
+    seqlen: 16
+    stride: 1
+
+MODEL:
+    name: 'ARTS'
+    hpe_dim: 256
+    hpe_dep: 3
+    joint_dim: 64
+    vertx_dim: 64
+    joint_loss_weight: 0.001
+    shape_loss_weight: 0.06
+    pose_loss_weight: 0.06
+    # joint_loss_weight: 0.002
+    # shape_loss_weight: 0.1
+    # pose_loss_weight: 0.1
+    posenet_pretrained: True
+    posenet_path: './experiment/ARTS_PoseEstimation/checkpoint/best.pth.tar'   # 16frame
+
+TRAIN:
+    print_freq: 20
+    batch_size: 16
+    shuffle: True
+    begin_epoch: 1
+    end_epoch: 30
+    edge_loss_start: 2
+    scheduler: 'step'
+    lr: 0.0001
+    lr_step: [2, 4, 6, 8, 10, 12, 15, 23]
+    lr_factor: 0.9
+    optimizer: 'adam'
+    wandb: True
+
+TEST:
+    batch_size: 64
+    shuffle: False
