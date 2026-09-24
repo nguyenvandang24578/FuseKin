@@ -190,6 +190,14 @@ class Trainer:
             if pred_joint_proj is not None:
                 if pred_joint_proj.shape[1] == 30:
                     pred_joint_proj = pred_joint_proj[:, self.h36m_from_smpl30]
+                
+                if i == 0:
+                    print("\n[DIAGNOSTIC] PRED_2D Min/Max:", pred_joint_proj.min().item(), "->", pred_joint_proj.max().item())
+                    print("[DIAGNOSTIC] GT_2D Min/Max:", gt_orig_joint_img[:, :, :2].min().item(), "->", gt_orig_joint_img[:, :, :2].max().item())
+                    print("[DIAGNOSTIC] AWL Params:", self.awl.params.detach().cpu().numpy())
+                    if hasattr(self.awl, 'keys'):
+                        print("[DIAGNOSTIC] AWL Keys:", self.awl.keys)
+
                 loss_body_joint_proj = self.jotr_coord_loss(
                     pred_joint_proj,
                     gt_orig_joint_img[:, :, :2],

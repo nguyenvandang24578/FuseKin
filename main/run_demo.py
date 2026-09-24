@@ -91,7 +91,7 @@ def render(verts, cam, bbox, orig_height, orig_width, orig_img, mesh_face, color
     return renederd_img
 
 
-def get_joint_setting(mesh_model, joint_category='coco'):
+def get_joint_setting(mesh_model, checkpoint_path, joint_category='coco'):
     joint_regressor, joint_num, skeleton = None, None, None
     if joint_category == 'coco':
         joint_regressor = mesh_model.joint_regressor_coco
@@ -101,7 +101,7 @@ def get_joint_setting(mesh_model, joint_category='coco'):
             (13, 15),  # (5, 6), #(11, 12),
             (17, 11), (17, 12), (17, 18), (18, 5), (18, 6), (18, 0))
         flip_pairs = ((1, 2), (3, 4), (5, 6), (7, 8), (9, 10), (11, 12), (13, 14), (15, 16))
-        model_chk_path = './experiment/exp_05-04_15_04/checkpoint/best.pth.tar'
+        model_chk_path = checkpoint_path
  
     else:
         raise NotImplementedError(f"{joint_category}: unknown joint set category")
@@ -269,7 +269,7 @@ def main(args):
     virtual_crop_size = 500
     joint_set = args.joint_set
     mesh_model = SMPL()
-    model, joint_regressor, joint_num, skeleton, ckt_name = get_joint_setting(mesh_model, joint_category=joint_set)
+    model, joint_regressor, joint_num, skeleton, ckt_name = get_joint_setting(mesh_model, args.checkpoint, joint_category=joint_set)
     joint_regressor = torch.Tensor(joint_regressor).to(device)
     
     model = model.to(device)
@@ -520,6 +520,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--save_obj', action='store_true',
                         help='save results as .obj files.')
+
+    parser.add_argument('--checkpoint', type=str, default='./experiment/exp_05-04_15_04/checkpoint/best.pth.tar',
+                        help='path to the trained model checkpoint')
 
     parser.add_argument('--gender', type=str, default='neutral',
                         help='set gender of people from (neutral, male, female)')
