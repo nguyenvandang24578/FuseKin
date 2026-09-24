@@ -549,12 +549,27 @@ class Student_Trainer:
             gt_smplshape = targets['shape_param'].cuda()
             is_3d = meta['is_3D'].cuda()
             is_valid_fit = meta['is_valid_fit'].cuda()
+            
+            print(f"Input Pose2D Shape: {input_pose2d.shape}")
+            print(f"input_image shape: {input_image.shape}")
+            print(f"gt_orig_joint_cam shape: {gt_orig_joint_cam.shape}")
+            print(f"gt_fit_joint_cam shape: {gt_fit_joint_cam.shape}")
+            print(f"orig_joint_valid shape: {orig_joint_valid.shape}")
+            print(f"fit_joint_trunc shape: {fit_joint_trunc.shape}")
+            print(f"gt_smplpose shape: {gt_smplpose.shape}")
+            print(f"gt_smplshape shape: {gt_smplshape.shape}")
+            print(f"is_3d shape: {is_3d.shape}")
+            print(f"is_valid_fit shape: {is_valid_fit.shape}")
             # Feed 2D pose to model (which routes to MotionBERT in Student mode)
             model_output = self.model(input_image, input_pose2d, is_train=True)
 
             pred_mesh = model_output['smpl_mesh_cam']
             pred_smplpose = model_output['smpl_pose']
             pred_smplshape = model_output['smpl_shape']
+
+            print(f"pred_mesh shape: {pred_mesh.shape}")
+            print(f"pred_smplpose shape: {pred_smplpose.shape}")
+            print(f"pred_smplshape shape: {pred_smplshape.shape}")
             # Regress H36M joints from the predicted SMPL mesh.
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
             pred_pose_rootrel = pred_pose - pred_pose[:, 0:1, :]
@@ -588,6 +603,11 @@ class Student_Trainer:
             orig_joint_trunc = meta['orig_joint_trunc'].cuda()
             gt_orig_joint_cam_30 = targets['orig_joint_cam'].cuda()
             orig_joint_valid_30 = meta['orig_joint_valid'].cuda()
+            print(f"pred_joint_proj shape: {pred_joint_proj.shape}")
+            print(f"gt_orig_joint_img shape: {gt_orig_joint_img.shape}")
+            print(f"orig_joint_trunc shape: {orig_joint_trunc.shape}")
+            print(f"gt_orig_joint_cam_30 shape: {gt_orig_joint_cam_30.shape}")
+            print(f"orig_joint_valid_30 shape: {orig_joint_valid_30.shape}")
             # Tính loss body_joint_proj (2D)
             loss_body_joint_proj = self.jotr_coord_loss(
                 pred_joint_proj, 
@@ -606,7 +626,7 @@ class Student_Trainer:
             }
             loss_dict = self.awl(loss_dict)
             hard_loss = sum(loss_dict.values())
-            loss = hard_loss + self.kd_weight * kd_loss
+            loss = 0.5  * hard_loss + 0.5 * kd_loss
             # update weights
             self.optimizer.zero_grad()
             loss.backward()

@@ -118,7 +118,8 @@ class ARTS(nn.Module):
     def forward_student(self, image, pose_2d, is_train):
         with torch.no_grad():
             feature_map, _ = self.get_image_features(image)
-            pose_3d = self.lift_2d_to_3d(pose_2d)
+            pose_3d = self.lift_2d_to_3d(pose_2d) / 1000      # mm -> m
+            pose_3d = pose_3d - pose_3d[:, 0:1, :]            # root-relative như đầu vào teacher
 
         smpl_output = self.smpl_model(
             joints=pose_3d,
@@ -129,20 +130,19 @@ class ARTS(nn.Module):
 
     def forward_arts(self, image, pose_2d, is_train):
         with torch.no_grad():
-            _, global_feature = self.get_image_features(image)
+            ft_map, global_feature = self.get_image_features(image)
             pose_3d = self.lift_2d_to_3d(pose_2d)
 
         seqlen = cfg.DATASET.seqlen
-        pose_3d_sequence = pose_3d.unsqueeze(1).repeat(1, seqlen, 1, 1)
 
         output = self.pose_mesh_coevo(
-            pose_3d_sequence / 1000,
-            global_feature,
+            pose_3d / 1000,
+            ft_map,
             is_train=is_train,
         )
         # MotionBERT outputs 3D joints in millimeters; convert to meters so
         # joint_img shares the unit of the GT joints used in the training loss.
-        output["joint_img"] = pose_3d_sequence[:, seqlen // 2] / 1000
+        output["joint_img"] = pose_3d/1000
         return output
 
     def forward(self, image, joints, is_train=True):

@@ -2,12 +2,12 @@ import os.path as osp
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from config import cfg
+from core.config import cfg
 from human_body_prior.tools.model_loader import load_vposer
 import torchgeometry as tgm
-from nets.layer import make_conv_layers, make_deconv_layers, make_conv1d_layers, make_linear_layers, GraphConvBlock, GraphResBlock
-from nets.transformer import bulid_transformer_decoder, bulid_transformer_encoder
-from utils.mano import MANO
+# from nets.layer import make_conv_layers, make_deconv_layers, make_conv1d_layers, make_linear_layers, GraphConvBlock, GraphResBlock
+# from nets.transformer import bulid_transformer_decoder, bulid_transformer_encoder
+# from utils.mano import MANO
 from utils.smpl import SMPL
 from einops import rearrange, reduce
 import numpy as np
