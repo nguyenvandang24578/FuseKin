@@ -93,7 +93,7 @@ class Transformer(nn.Module):
         return x
 
 class CrossAttention(nn.Module):
-    def __init__(self, dim, v_dim, kv_num, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, k_dim, v_dim, kv_num, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
         super().__init__()
         self.num_heads = num_heads
         self.kv_num = kv_num
@@ -102,7 +102,7 @@ class CrossAttention(nn.Module):
         self.scale = qk_scale or head_dim ** -0.5
 
         self.wq = nn.Linear(dim, dim, bias=qkv_bias)
-        self.wk = nn.Linear(dim, dim, bias=qkv_bias)
+        self.wk = nn.Linear(k_dim, dim, bias=qkv_bias)
         self.wv = nn.Linear(v_dim, v_dim, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(v_dim, dim)
@@ -133,7 +133,7 @@ class CrossAttentionBlock(nn.Module):
         self.normk = norm_layer(k_dim)
         self.normv = norm_layer(v_dim)
         self.kv_num = kv_num
-        self.attn = CrossAttention(q_dim, v_dim, kv_num = kv_num, num_heads=num_heads, qkv_bias=qkv_bias, 
+        self.attn = CrossAttention(q_dim, k_dim, v_dim, kv_num = kv_num, num_heads=num_heads, qkv_bias=qkv_bias, 
                                    qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()

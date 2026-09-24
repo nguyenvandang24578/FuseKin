@@ -12,7 +12,6 @@ from utils.h36m_adapter import HUMAN36M_JOINTS, convert_smpl_to_human36m
 
 
 TRAIN_DATASETS = {
-    "3dpw": PW3D,
     'Human36M': Human36M,
     'MuCo': MuCo,
     'MSCOCO': MSCOCO,
@@ -42,28 +41,39 @@ class Human36M17Dataset(Dataset):
         return len(self.dataset)
 
     def __getattr__(self, name):
+        # Guard against infinite recursion: if `dataset` itself is missing
+        # (e.g. during unpickling before __init__ restores it), don't recurse.
+        if name == 'dataset':
+            raise AttributeError(name)
         return getattr(self.dataset, name)
 
-    def _convert(self, value, mask=False):
-        array = np.asarray(value)
-        if array.shape[0] != len(self.dataset.joints_name):
-            return value
-        zeros = np.zeros_like(array, dtype=np.float32)
-        converted, converted_mask = convert_smpl_to_human36m(
-            zeros,
-            array if mask else zeros,
-            self.dataset.joints_name,
-        )
-        return converted_mask if mask else self._convert_joint(value)
-
     def _convert_joint(self, value):
+        """Reorder joints to H36M-17. Arrays already in H36M-17 pass through;
+        source-joint arrays (matching the wrapped dataset) are name-mapped."""
         array = np.asarray(value)
-        zeros = np.zeros_like(array, dtype=np.float32)
-        return convert_smpl_to_human36m(
-            array,
-            zeros,
-            self.dataset.joints_name,
-        )[0]
+        n = array.shape[0]
+        if n == len(HUMAN36M_JOINTS):
+            return array.astype(np.float32)
+        if n == len(self.dataset.joints_name):
+            zeros = np.zeros_like(array, dtype=np.float32)
+            return convert_smpl_to_human36m(array, zeros, self.dataset.joints_name)[0]
+        raise ValueError(
+            f"Unexpected joint count {n}; expected {len(HUMAN36M_JOINTS)} (H36M) "
+            f"or {len(self.dataset.joints_name)} (source)."
+        )
+
+    def _convert_mask(self, value):
+        array = np.asarray(value)
+        n = array.shape[0]
+        if n == len(HUMAN36M_JOINTS):
+            return array.astype(np.float32)
+        if n == len(self.dataset.joints_name):
+            zeros = np.zeros_like(array, dtype=np.float32)
+            return convert_smpl_to_human36m(zeros, array, self.dataset.joints_name)[1]
+        raise ValueError(
+            f"Unexpected mask joint count {n}; expected {len(HUMAN36M_JOINTS)} (H36M) "
+            f"or {len(self.dataset.joints_name)} (source)."
+        )
 
     def __getitem__(self, index):
         inputs, targets, meta = self.dataset[index]
@@ -78,15 +88,19 @@ class Human36M17Dataset(Dataset):
                 targets[key] = self._convert_joint(targets[key])
         for key in self.MASK_KEYS:
             if key in meta:
-                meta[key] = self._convert(meta[key], mask=True)
+                meta[key] = self._convert_mask(meta[key])
         return inputs, targets, meta
 
 
 def get_train_dataset(name, args):
     if '3dpw' in name or name == 'PW3D':
-        # Đối với PW3D, phải truyền data_name (ví dụ '3dpw-train')
-        data_name = name if name in ['3dpw', '3dpw-train'] else '3dpw-train'
-        return Human36M17Dataset(PW3D(transforms.ToTensor(), data_name=data_name))
+        # PW3D chỉ dùng để train với split '3dpw-train'.
+        if name not in ('3dpw-train', 'PW3D'):
+            raise ValueError(
+                f"get_train_dataset không hỗ trợ '{name}' cho train. "
+                f"Dùng '3dpw-train' (các split '3dpw'/'3dpw-pc'/... là split test)."
+            )
+        return Human36M17Dataset(PW3D(transforms.ToTensor(), data_name='3dpw-train'))
     else:
         # Các dataset còn lại thì truyền 'train'
         return Human36M17Dataset(TRAIN_DATASETS[name](transforms.ToTensor(), 'train'))

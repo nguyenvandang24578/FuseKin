@@ -19,9 +19,9 @@ from models.Core_model import CrossAttentionBlock
 from models.common import Vposer
 from utils.transforms import rot6d_to_axis_angle
 TEACHER_CHPT = cfg.MODEL.TEACHER
-SMPL_MODEL_DIR = 'data/base_data'
-SMPL_MEAN_PARAMS = 'data/base_data/smpl_mean_params.npz'
-BASE_DATA_DIR = 'data/base_data'
+SMPL_MODEL_DIR = 'data_final/base_data'
+SMPL_MEAN_PARAMS = 'data_final/base_data/smpl_mean_params.npz'
+BASE_DATA_DIR = 'data_final/base_data'
 
 class Pose2Mesh(nn.Module):
     def __init__(self, num_joint, embed_dim=512, smpl_head_hidden_dim: int = 256, smpl_head_depth: int = 3):
@@ -51,8 +51,11 @@ class Pose2Mesh(nn.Module):
                                         drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
 #-------------------------------------------------------------------------------------
         self.fusion = Teacher(num_joint, embed_dim, vert_anchors = 16, horz_anchors = 16)
-        pretrained_dict = torch.load(osp.join(TEACHER_CHPT, 'best.pth.tar'))['model']
+        pretrained_dict = torch.load(osp.join(TEACHER_CHPT, 'best.pth.tar'), weights_only=False)['model_state_dict']
         self.fusion.load_state_dict(pretrained_dict, strict=False)
+        for param in self.fusion.parameters():
+            param.requires_grad = False
+        self.fusion.eval()
 #-------------------------------------------------------------------------------------
         self.node_pe = nn.Embedding(24, embed_dim)
         self.num_hyper_layers = 3
@@ -78,8 +81,8 @@ class Pose2Mesh(nn.Module):
         mean_shape  = self.init_shape.view(1, 10)              # (1, 24, 6)
         pose_emb   = self.pose_embed(mean_pose)                  # (1, 24, embed_dim)
         shape_emb = self.shape_embed(mean_shape) #(1, dim)
-        pose_token = pose_emb.unsqueeze(1).expand(
-            batch_size, 24, -1
+        pose_token = pose_emb.expand(
+            batch_size, -1, -1
         )   
         shape_token = self.shape_token.weight.unsqueeze(0).expand(
             batch_size, 1, -1
@@ -138,7 +141,7 @@ class Pose2Mesh(nn.Module):
             'joint_cam': joint_cam,
             'smpl_mesh_cam': mesh_cam,
             'mesh_cam_render': mesh_cam_render,
-            'smpl_pose': full_pose[:, 3:75],  # body pose (B, 72)
+            'smpl_pose': full_pose,  # full pose (B, 72)
             'smpl_shape': shape_param,
             'cam_param': cam_param
         }
@@ -204,6 +207,12 @@ class Pose2Mesh(nn.Module):
         mesh_cam = mesh_cam - root_cam
 
         return joint_proj, joint_cam, mesh_cam, mesh_cam_render
+
+    def train(self, mode=True):
+        super().train(mode)
+        self.vposer.eval()
+        self.fusion.eval()
+
 class MLP(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int,
                 num_layers: int, sigmoid_output: bool = False) -> None:

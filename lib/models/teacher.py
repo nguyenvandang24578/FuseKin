@@ -111,7 +111,7 @@ class Teacher(nn.Module):
 
         self.mesh = Mesh()
         self.regressorspin = RegressorSpin()
-        pretrained_dict = torch.load(osp.join(BASE_DATA_DIR, 'spin_model_checkpoint.pth.tar'))['model']
+        pretrained_dict = torch.load(osp.join(BASE_DATA_DIR, 'spin_model_checkpoint.pth.tar'), weights_only=False)['model']
         self.regressorspin.load_state_dict(pretrained_dict, strict=False)
         #--------------------------------------------------------------
         self.vert_anchors = vert_anchors

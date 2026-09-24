@@ -106,17 +106,22 @@ class Trainer:
         self.print_freq = cfg.TRAIN.print_freq
 
         self.J_regressor = eval(f'torch.Tensor(self.main_dataset.joint_regressor_{cfg.DATASET.target_joint_set}).cuda()')
-        
-        # Mapping from SMPL 30 joints (Dataloader output) to H36M 17 joints (ARTS input)
-        smpl_joints = self.main_dataset.joints_name
+
+        # The dataset wrapper already emits H36M-17 GT and 2D inputs. The model's
+        # auxiliary outputs (joint_proj / joint_cam) come from get_coord in
+        # SMPL-30 joint order, so build a reduction index from the underlying
+        # SMPL joint set to map those outputs to H36M-17.
         h36m_joints = ('Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck', 'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist')
-        self.smpl_to_h36m_idx = [smpl_joints.index(name) for name in h36m_joints]
+        smpl30_joints = self.main_dataset.mesh_model.joints_name
+        self.h36m_from_smpl30 = [smpl30_joints.index(name) for name in h36m_joints]
 
         self.model = torch.nn.DataParallel(self.model).cuda()
 
         self.jotr_coord_loss = JOTRCoordLoss()
         self.jotr_param_loss = JOTRParamLoss()
-        self.awl = AutomaticWeightedLoss(5).cuda()
+        # 4 losses: body_joint_cam dropped (joint_img comes from the frozen
+        # MotionBERT lifter, so a loss on it has zero gradient).
+        self.awl = AutomaticWeightedLoss(4).cuda()
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
         # Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
@@ -127,8 +132,8 @@ class Trainer:
                 if 'awl_state_dict' in ckpt:
                     self.awl.load_state_dict(ckpt['awl_state_dict'])
                     print('===> AWL weights restored from checkpoint')
-            except:
-                pass
+            except Exception as e:
+                print(f'===> Could not restore AWL weights: {e}')
 
         if cfg.TRAIN.wandb:
             wandb.init(config=cfg,
@@ -147,12 +152,11 @@ class Trainer:
         for i, (inputs, targets, meta) in enumerate(batch_generator):
             # convert to cuda
             input_image = inputs['img'].cuda().float()
-            # Slice 30 joints -> 17 joints matching ARTS expected input
-            input_pose = inputs['joints'][:, self.smpl_to_h36m_idx].cuda().float() # keypoint 2D Ä‘áº§u vÃ o
-            gt_orig_joint_cam = targets['orig_joint_cam'][:, self.smpl_to_h36m_idx].cuda() #ÄÃ¢y lÃ  tá»a Ä‘á»™ 3D thá»±c táº¿ Ä‘o Ä‘Æ°á»£c tá»« cÃ¡c cáº£m biáº¿n
-            gt_fit_joint_cam = targets['fit_joint_cam'][:, self.smpl_to_h36m_idx].cuda() # tá»a Ä‘á»™ 3D sinh ra tá»« smpl prj
-            orig_joint_valid = meta['orig_joint_valid'][:, self.smpl_to_h36m_idx].cuda() #mask, = 0 thÃ¬ k tÃ­nh loss
-            fit_joint_trunc = meta['fit_joint_trunc'][:, self.smpl_to_h36m_idx].cuda() # mask
+            input_pose = inputs['joints'].cuda().float() # keypoint 2D Ä‘áº§u vÃ o
+            gt_orig_joint_cam = targets['orig_joint_cam'].cuda() #ÄÃ¢y lÃ  tá»a Ä‘á»™ 3D thá»±c táº¿ Ä‘o Ä‘Æ°á»£c tá»« cÃ¡c cáº£m biáº¿n
+            gt_fit_joint_cam = targets['fit_joint_cam'].cuda() # tá»a Ä‘á»™ 3D sinh ra tá»« smpl prj
+            orig_joint_valid = meta['orig_joint_valid'].cuda() #mask, = 0 thÃ¬ k tÃ­nh loss
+            fit_joint_trunc = meta['fit_joint_trunc'].cuda() # mask
             
             gt_smplpose = targets['pose_param'].cuda()
             gt_smplshape = targets['shape_param'].cuda()
@@ -161,34 +165,42 @@ class Trainer:
             
             model_output = self.model(input_image, input_pose, is_train=True)
 
-            pred_joint_img = model_output['joint_img']
             pred_mesh = model_output['smpl_mesh_cam']
             pred_smplpose = model_output['smpl_pose']
             pred_smplshape = model_output['smpl_shape']
 
+            # Regress H36M-17 joints from the predicted mesh, root-relative to
+            # match gt_fit_joint_cam (the dataset subtracts the pelvis).
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
-            
-            loss_body_joint_cam = 5 * self.jotr_coord_loss(
-                pred_joint_img, gt_orig_joint_cam, orig_joint_valid * is_3d[:, None, None]).mean()
+            pred_pose = pred_pose - pred_pose[:, 0:1, :]
+
+            # NOTE: no body_joint_cam loss here. In ARTS mode joint_img is the
+            # output of the frozen MotionBERT lifter (computed under no_grad), so
+            # a loss on it would produce zero gradient — it is intentionally dropped.
             loss_smpl_joint_cam = self.jotr_coord_loss(
                 pred_pose, gt_fit_joint_cam, fit_joint_trunc * is_valid_fit[:, None, None]).mean()
-            
-            # Tính thêm loss 2D projection
+
+            # 2D projection loss. joint_proj comes from get_coord in SMPL-30
+            # order, so reduce it to H36M-17 before comparing to the GT.
             pred_joint_proj = model_output.get('joint_proj')
-            gt_orig_joint_img_30 = targets['orig_joint_img'].cuda()
-            orig_joint_trunc_30 = meta['orig_joint_trunc'].cuda()
-            loss_body_joint_proj = self.jotr_coord_loss(
-                pred_joint_proj, 
-                gt_orig_joint_img_30[:, :, :2], 
-                orig_joint_trunc_30
-            ).mean() if pred_joint_proj is not None else torch.tensor(0.0).cuda()
+            gt_orig_joint_img = targets['orig_joint_img'].cuda()
+            orig_joint_trunc = meta['orig_joint_trunc'].cuda()
+            if pred_joint_proj is not None:
+                if pred_joint_proj.shape[1] == 30:
+                    pred_joint_proj = pred_joint_proj[:, self.h36m_from_smpl30]
+                loss_body_joint_proj = self.jotr_coord_loss(
+                    pred_joint_proj,
+                    gt_orig_joint_img[:, :, :2],
+                    orig_joint_trunc
+                ).mean()
+            else:
+                loss_body_joint_proj = torch.tensor(0.0).cuda()
 
             fit_pose_valid = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
             fit_shape_valid = is_valid_fit[:, None]
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
             loss_dict = {
-                'body_joint_cam': loss_body_joint_cam,
                 'smpl_joint_cam': loss_smpl_joint_cam,
                 'smpl_pose': smpl_pose_loss,
                 'smpl_shape': smpl_shape_loss,
@@ -206,7 +218,6 @@ class Trainer:
             if cfg.TRAIN.wandb:
                 wandb.log(
                     {
-                        'train_loss/body_joint_cam': loss_body_joint_cam.detach(),
                         'train_loss/smpl_joint_cam': loss_smpl_joint_cam.detach(),
                         'train_loss/smpl_pose': smpl_pose_loss.detach(),
                         'train_loss/smpl_shape': smpl_shape_loss.detach(),
@@ -219,7 +230,6 @@ class Trainer:
                 batch_generator.set_description(
                     f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
                     f'proj2d: {loss_body_joint_proj.item():.3f} '
-                    f'body3d: {loss_body_joint_cam.item():.3f} '
                     f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
                     f'smpl: {(smpl_pose_loss + smpl_shape_loss).item():.3f} '
                     f'tl: {total_loss.item():.3f}'
@@ -271,11 +281,12 @@ class Teacher_Trainer:
         self.print_freq = cfg.TRAIN.print_freq
 
         self.J_regressor = eval(f'torch.Tensor(self.main_dataset.joint_regressor_{cfg.DATASET.target_joint_set}).cuda()')
-        
-        # Mapping from SMPL 30 joints (Dataloader output) to H36M 17 joints (ARTS input)
-        smpl_joints = self.main_dataset.joints_name
+
+        # The dataset wrapper already emits H36M-17 GT and 2D inputs. Kept for
+        # parity with the other trainers (Teacher uses only H36M-17 targets).
         h36m_joints = ('Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck', 'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist')
-        self.smpl_to_h36m_idx = [smpl_joints.index(name) for name in h36m_joints]
+        smpl30_joints = self.main_dataset.mesh_model.joints_name
+        self.h36m_from_smpl30 = [smpl30_joints.index(name) for name in h36m_joints]
 
         self.model = torch.nn.DataParallel(self.model).cuda()
 
@@ -292,8 +303,8 @@ class Teacher_Trainer:
                 if 'awl_state_dict' in ckpt:
                     self.awl.load_state_dict(ckpt['awl_state_dict'])
                     print('===> AWL weights restored from checkpoint')
-            except:
-                pass
+            except Exception as e:
+                print(f'===> Could not restore AWL weights: {e}')
 
         if cfg.TRAIN.wandb:
             wandb.init(config=cfg,
@@ -312,10 +323,10 @@ class Teacher_Trainer:
         for i, (inputs, targets, meta) in enumerate(batch_generator):
             # convert to cuda
             input_image = inputs['img'].cuda().float()
-            gt_orig_joint_cam = targets['orig_joint_cam'][:, self.smpl_to_h36m_idx].cuda() #ÄÃ¢y lÃ  tá»a Ä‘á»™ 3D thá»±c táº¿ Ä‘o Ä‘Æ°á»£c tá»« cÃ¡c cáº£m biáº¿n
-            gt_fit_joint_cam = targets['fit_joint_cam'][:, self.smpl_to_h36m_idx].cuda() # tá»a Ä‘á»™ 3D sinh ra tá»« smpl prj
-            orig_joint_valid = meta['orig_joint_valid'][:, self.smpl_to_h36m_idx].cuda() #mask, = 0 thÃ¬ k tÃ­nh loss
-            fit_joint_trunc = meta['fit_joint_trunc'][:, self.smpl_to_h36m_idx].cuda() # mask
+            gt_orig_joint_cam = targets['orig_joint_cam'].cuda() #ÄÃ¢y lÃ  tá»a Ä‘á»™ 3D thá»±c táº¿ Ä‘o Ä‘Æ°á»£c tá»« cÃ¡c cáº£m biáº¿n
+            gt_fit_joint_cam = targets['fit_joint_cam'].cuda() # tá»a Ä‘á»™ 3D sinh ra tá»« smpl prj
+            orig_joint_valid = meta['orig_joint_valid'].cuda() #mask, = 0 thÃ¬ k tÃ­nh loss
+            fit_joint_trunc = meta['fit_joint_trunc'].cuda() # mask
             
             gt_smplpose = targets['pose_param'].cuda()
             gt_smplshape = targets['shape_param'].cuda()
@@ -452,11 +463,14 @@ class Student_Trainer:
         self.print_freq = cfg.TRAIN.print_freq
 
         self.J_regressor = eval(f'torch.Tensor(self.main_dataset.joint_regressor_{cfg.DATASET.target_joint_set}).cuda()')
-        
-        # Mapping from SMPL 30 joints (Dataloader output) to H36M 17 joints (ARTS input)
-        smpl_joints = self.main_dataset.joints_name
+
+        # The dataset wrapper already emits H36M-17 GT and 2D inputs. The model's
+        # auxiliary outputs (joint_proj / joint_cam) come from get_coord in
+        # SMPL-30 joint order, so build a reduction index from the underlying
+        # SMPL joint set to map those outputs to H36M-17.
         h36m_joints = ('Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck', 'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist')
-        self.smpl_to_h36m_idx = [smpl_joints.index(name) for name in h36m_joints]
+        smpl30_joints = self.main_dataset.mesh_model.joints_name
+        self.h36m_from_smpl30 = [smpl30_joints.index(name) for name in h36m_joints]
 
         self.model = torch.nn.DataParallel(self.model).cuda()
 
@@ -473,8 +487,8 @@ class Student_Trainer:
                 if 'awl_state_dict' in ckpt:
                     self.awl.load_state_dict(ckpt['awl_state_dict'])
                     print('===> AWL weights restored from checkpoint')
-            except:
-                pass
+            except Exception as e:
+                print(f'===> Could not restore AWL weights: {e}')
 
         if cfg.TRAIN.wandb:
             wandb.init(config=cfg,
@@ -493,11 +507,11 @@ class Student_Trainer:
         for i, (inputs, targets, meta) in enumerate(batch_generator):
             # convert to cuda
             input_image = inputs['img'].cuda().float()
-            input_pose2d = inputs['joints'][:, self.smpl_to_h36m_idx].cuda().float()
-            gt_orig_joint_cam = targets['orig_joint_cam'][:, self.smpl_to_h36m_idx].cuda() 
-            gt_fit_joint_cam = targets['fit_joint_cam'][:, self.smpl_to_h36m_idx].cuda() 
-            orig_joint_valid = meta['orig_joint_valid'][:, self.smpl_to_h36m_idx].cuda() 
-            fit_joint_trunc = meta['fit_joint_trunc'][:, self.smpl_to_h36m_idx].cuda() 
+            input_pose2d = inputs['joints'].cuda().float()
+            gt_orig_joint_cam = targets['orig_joint_cam'].cuda() 
+            gt_fit_joint_cam = targets['fit_joint_cam'].cuda() 
+            orig_joint_valid = meta['orig_joint_valid'].cuda() 
+            fit_joint_trunc = meta['fit_joint_trunc'].cuda() 
             
             gt_smplpose = targets['pose_param'].cuda()
             gt_smplshape = targets['shape_param'].cuda()

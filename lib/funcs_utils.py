@@ -130,7 +130,7 @@ def save_checkpoint(states, epoch, is_best=None):
 def load_checkpoint(load_dir, epoch=0, pick_best=False):
     try:
         print(f"Fetch model weight from {load_dir}")
-        checkpoint = torch.load(load_dir, map_location='cuda')
+        checkpoint = torch.load(load_dir, map_location='cuda', weights_only=False)
         return checkpoint
     except Exception as e:
         raise ValueError("No checkpoint exists!\n", e)

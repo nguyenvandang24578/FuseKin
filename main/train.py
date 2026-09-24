@@ -1,6 +1,11 @@
 import os, sys
 sys.path.append('./lib')
 sys.path.append('./')
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"  # cho Apple Accelerate/vecLib
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import argparse
 from core.config import cfg, update_config
 

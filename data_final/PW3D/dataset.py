@@ -3,11 +3,8 @@ import os.path as osp
 import numpy as np
 import torch
 import cv2
-import random
 import json
-import math
 import copy
-import transforms3d
 from pycocotools.coco import COCO
 from core.config import cfg
 # from utils.renderer import Renderer
@@ -168,7 +165,8 @@ class PW3D(torch.utils.data.Dataset):
                     hhrnetpose = self.add_neck(hhrnetpose, self.coco_joints_name)
                     hhrnet_count += 1
 
-                except:
+                except Exception as e:
+                    print(f"HHRNet result missing/invalid for ann {aid}, falling back to OpenPose: {e}")
                     hhrnetpose = openpose
                     hhrnetpose = transform_joint_to_other_db(hhrnetpose, self.openpose_joints_name, self.coco_joints_name)
             
@@ -337,55 +335,78 @@ class PW3D(torch.utils.data.Dataset):
         # import pdb;pdb.set_trace()
 
         if self.data_split == 'train':
-            orig_joint_cam = smpl_joint_cam.copy() # Since we don't have separate H36M gt for 3DPW, we use SMPL joints
-            orig_joint_valid = np.ones((self.joint_num, 1), dtype=np.float32)
+            # GT 3D joints are regressed from the GT SMPL mesh with the H36M
+            # regressor so the training target matches the evaluation protocol
+            # (evaluate() also uses h36m_joint_regressor on the mesh). This
+            # yields H36M-17 joints directly, in meters, camera-absolute.
+            num_h36m = len(self.h36m_joints_name)
+            h36m_joint_cam = np.dot(self.h36m_joint_regressor, smpl_mesh_cam).astype(np.float32)  # (17, 3)
+            orig_joint_valid = np.ones((num_h36m, 1), dtype=np.float32)
 
             if smpl_param is not None:
                 # 3D data rotation augmentation
-                rot_aug_mat = np.array([[np.cos(np.deg2rad(-rot)), -np.sin(np.deg2rad(-rot)), 0], 
+                rot_aug_mat = np.array([[np.cos(np.deg2rad(-rot)), -np.sin(np.deg2rad(-rot)), 0],
                 [np.sin(np.deg2rad(-rot)), np.cos(np.deg2rad(-rot)), 0],
                 [0, 0, 1]], dtype=np.float32)
-                
-                # SMPL_Layer already returns meters; keep rotation, remove only duplicate /1000.
-                orig_joint_cam = np.dot(rot_aug_mat, orig_joint_cam.transpose(1,0)).transpose(1,0)
-                
+
+                # GT 2D projection target (H36M-17), in the network's
+                # output_hm_shape space, with its own truncation mask derived
+                # from the GT joints (NOT the OpenPose input mask).
+                h36m_coord_img = cam2pixel(h36m_joint_cam, cam_param['focal'], cam_param['princpt'])  # (17, 3)
+                h36m_img_xy1 = np.concatenate((h36m_coord_img[:, :2], np.ones_like(h36m_coord_img[:, 0:1])), 1)
+                h36m_coord_img[:, :2] = np.dot(img2bb_trans, h36m_img_xy1.transpose(1, 0)).transpose(1, 0)[:, :2]
+                h36m_coord_img[:, 0] = h36m_coord_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+                h36m_coord_img[:, 1] = h36m_coord_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+                orig_joint_trunc = (
+                    (h36m_coord_img[:, 0] >= 0) * (h36m_coord_img[:, 0] < cfg.output_hm_shape[2]) *
+                    (h36m_coord_img[:, 1] >= 0) * (h36m_coord_img[:, 1] < cfg.output_hm_shape[1])
+                ).reshape(-1, 1).astype(np.float32)
+                orig_joint_img = h36m_coord_img.astype(np.float32)
+
+                # 3D joints: root-relative first, then rotation aug (meters).
+                orig_joint_cam = h36m_joint_cam - h36m_joint_cam[self.h36m_root_joint_idx, None]
+                orig_joint_cam = np.dot(rot_aug_mat, orig_joint_cam.transpose(1, 0)).transpose(1, 0).astype(np.float32)
+                # For 3DPW the fitted-SMPL target and the GT target come from the
+                # same mesh, so fit reuses the same H36M-17 root-relative joints.
+                fit_joint_cam = orig_joint_cam.copy()
+
                 smpl_pose = np.array(smpl_param['pose'], dtype=np.float32).reshape(-1,3)
                 root_pose = smpl_pose[self.root_joint_idx,:]
                 root_pose, _ = cv2.Rodrigues(root_pose)
                 root_pose, _ = cv2.Rodrigues(np.dot(rot_aug_mat,root_pose))
                 smpl_pose[self.root_joint_idx] = root_pose.reshape(3)
                 smpl_pose = smpl_pose.reshape(-1)
-                
-                smpl_shape = np.array(smpl_param['shape'], dtype=np.float32)
 
-                smpl_joint_cam = smpl_joint_cam - smpl_joint_cam[self.root_joint_idx,None] # root-relative
-                # SMPL_Layer already returns meters; keep rotation, remove only duplicate /1000.
-                smpl_joint_cam = np.dot(rot_aug_mat, smpl_joint_cam.transpose(1,0)).transpose(1,0)
+                smpl_shape = np.array(smpl_param['shape'], dtype=np.float32)
 
                 # SMPL pose parameter validity
                 smpl_param_valid = np.ones((self.smpl.orig_joint_num, 3), dtype=np.float32)
                 for name in ('L_Ankle', 'R_Ankle', 'L_Toe', 'R_Toe', 'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand'):
                     smpl_param_valid[self.joints_name.index(name)] = 0
                 smpl_param_valid = smpl_param_valid.reshape(-1)
-                
+
                 is_valid_fit = True
-                smpl_joint_trunc = np.ones((self.joint_num,1), dtype=np.float32)
+                fit_joint_trunc = np.ones((num_h36m, 1), dtype=np.float32)
             else:
-                orig_joint_cam = np.zeros((self.joint_num,3), dtype=np.float32)
-                smpl_joint_cam = np.zeros((self.joint_num,3), dtype=np.float32)
+                orig_joint_img = np.zeros((num_h36m, 3), dtype=np.float32)
+                orig_joint_cam = np.zeros((num_h36m, 3), dtype=np.float32)
+                fit_joint_cam = np.zeros((num_h36m, 3), dtype=np.float32)
+                orig_joint_trunc = np.zeros((num_h36m, 1), dtype=np.float32)
                 smpl_pose = np.zeros((72), dtype=np.float32)
                 smpl_shape = np.zeros((10), dtype=np.float32)
-                smpl_joint_trunc = np.zeros((self.joint_num,1), dtype=np.float32)
+                fit_joint_trunc = np.zeros((num_h36m, 1), dtype=np.float32)
                 smpl_param_valid = np.zeros((self.smpl.orig_joint_num*3), dtype=np.float32)
                 is_valid_fit = False
 
-            inputs = {'img': img, 'joints': joint_coord_img[:, :2], 'joints_mask': joint_trunc}
-            targets = {'orig_joint_cam': orig_joint_cam, 'fit_joint_cam': smpl_joint_cam, 'pose_param': smpl_pose, 'shape_param': smpl_shape}
+            # Keep the 2D input pose 3-column (x, y, conf) to match the test
+            # branch so the model receives the same input format in both phases.
+            inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc}
+            targets = {'orig_joint_img': orig_joint_img, 'orig_joint_cam': orig_joint_cam, 'fit_joint_cam': fit_joint_cam, 'pose_param': smpl_pose, 'shape_param': smpl_shape}
             meta_info = {
                 'orig_joint_valid': orig_joint_valid,
-                'orig_joint_trunc': joint_trunc,
+                'orig_joint_trunc': orig_joint_trunc,
                 'fit_param_valid': smpl_param_valid,
-                'fit_joint_trunc': smpl_joint_trunc,
+                'fit_joint_trunc': fit_joint_trunc,
                 'is_valid_fit': float(is_valid_fit),
                 'is_3D': float(True),
                 **raw_smpl_stats,
@@ -458,7 +479,7 @@ class PW3D(torch.utils.data.Dataset):
             out = outs[n]
 
             # h36m joint from gt mesh
-            mesh_gt_cam = out['smpl_mesh_cam_target']
+            mesh_gt_cam = out['smpl_mesh_cam_target'].copy()
             pose_coord_gt_h36m = np.dot(self.h36m_joint_regressor, mesh_gt_cam)
 
             pose_coord_gt_h36m = pose_coord_gt_h36m - pose_coord_gt_h36m[self.h36m_root_joint_idx, None]  # root-relative
@@ -473,7 +494,7 @@ class PW3D(torch.utils.data.Dataset):
             # pose_coord_out_h36m = transform_joint_to_other_db(pose_out_cam, self.smpl.graph_joints_name, self.h36m_joints_name)
 
             # h36m joint from output mesh
-            mesh_out_cam = out['smpl_mesh_cam']
+            mesh_out_cam = out['smpl_mesh_cam'].copy()
             pose_coord_out_h36m = np.dot(self.h36m_joint_regressor, mesh_out_cam)
             # # debug
             # pose_out_img = cam2pixel(pose_coord_out_h36m + root_h36m_gt, annot['cam_param']['focal'], annot['cam_param']['princpt'])
