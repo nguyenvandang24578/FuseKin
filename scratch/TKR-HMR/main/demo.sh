@@ -1,1 +1,0 @@
-python ./main/run_demo.py --vid_file /data0/tangt/models/ARTS/demo/sample_video.mp4 --gpu 7
