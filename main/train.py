@@ -59,7 +59,7 @@ for file_path in files_to_backup:
     if os.path.exists(file_path):
         shutil.copyfile(src=file_path, dst=os.path.join(cfg.checkpoint_dir, os.path.basename(file_path)))
 
-from core.base import Trainer, Tester, Teacher_Trainer, Teacher_Tester
+from core.base import Trainer, Tester, Teacher_Trainer, Teacher_Tester, Student_Trainer, Student_Tester
 
 if cfg.MODEL.name == 'ARTS':
     trainer = Trainer(args, load_dir='./experiment/exp_04-26_09_16/checkpoint/best.pth.tar')
@@ -67,6 +67,9 @@ if cfg.MODEL.name == 'ARTS':
 elif cfg.MODEL.name == 'teacher':
     trainer = Teacher_Trainer(args, load_dir='')
     tester = Teacher_Tester(args)
+elif cfg.MODEL.name == 'student':
+    trainer = Student_Trainer(args, load_dir='')
+    tester = Student_Tester(args)
 
 print("===> Start training...")
 

@@ -31,8 +31,8 @@ class PW3D(torch.utils.data.Dataset):
             self.data_split = 'train'
             cfg.crowd = False
         # self.data_split ='validation' if cfg.crowd else 'test'  # data_split
-        self.data_path = osp.join(cfg.DATASET.jotr_data_root, '3DPW')
-        self.human_bbox_root_dir = osp.join(cfg.DATASET.jotr_data_root, '3DPW', 'rootnet_output', 'bbox_root_pw3d_output.json')
+        self.data_path = osp.join(cfg.DATASET.jotr_data_root, 'PW3D')
+        self.human_bbox_root_dir = osp.join(cfg.DATASET.jotr_data_root, 'PW3D', 'rootnet_output', 'bbox_root_pw3d_output.json')
 
         # SMPL joint set
         self.smpl = SMPL()
