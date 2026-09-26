@@ -130,9 +130,8 @@ class Trainer:
         self.jotr_coord_loss = JOTRCoordLoss()
         self.jotr_param_loss = JOTRParamLoss()
         self.coordLoss = CoordLoss(has_valid=True)
-        # 4 losses: body_joint_cam dropped (joint_img comes from the frozen
-        # MotionBERT lifter, so a loss on it has zero gradient).
-        self.awl = AutomaticWeightedLoss(4).cuda()
+        # 5 losses now (including mesh_loss)
+        self.awl = AutomaticWeightedLoss(5).cuda()
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
         # Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
@@ -171,6 +170,7 @@ class Trainer:
             
             gt_smplpose = targets['pose_param'].cuda()
             gt_smplshape = targets['shape_param'].cuda()
+            gt_mesh_cam = targets['smpl_mesh_cam'].cuda()
             is_3d = meta['is_3D'].cuda()
             is_valid_fit = meta['is_valid_fit'].cuda()
             
@@ -182,10 +182,9 @@ class Trainer:
             pred_smplpose = model_output['smpl_pose']
             pred_smplshape = model_output['smpl_shape']
             cam_param = model_output['cam_param']
-            # Regress H36M-17 joints from the predicted mesh, root-relative to
-            # match gt_fit_joint_cam (the dataset subtracts the pelvis).
+            # Regress H36M-17 joints from the predicted mesh.
+            # gt_fit_joint_cam is now absolute, so we compare directly with the absolute pred_pose.
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
-            pred_pose = pred_pose - pred_pose[:, 0:1, :]
 
             # NOTE: no body_joint_cam loss here. In ARTS mode joint_img is the
             # output of the frozen MotionBERT lifter (computed under no_grad), so
@@ -221,11 +220,13 @@ class Trainer:
             fit_shape_valid = is_valid_fit[:, None]
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
+            mesh_loss = self.coordLoss(pred_mesh, gt_mesh_cam, is_valid_fit[:, None, None])
             loss_dict = {
                 'smpl_joint_cam': loss_smpl_joint_cam,
                 'smpl_pose': smpl_pose_loss,
                 'smpl_shape': smpl_shape_loss,
                 'body_joint_proj': loss_body_joint_proj,
+                'mesh_loss': mesh_loss,
             }
             loss_dict = self.awl(loss_dict)
             loss = sum(loss_dict.values())
@@ -243,6 +244,7 @@ class Trainer:
                         'train_loss/smpl_pose': smpl_pose_loss.detach(),
                         'train_loss/smpl_shape': smpl_shape_loss.detach(),
                         'train_loss/body_joint_proj': loss_body_joint_proj.detach(),
+                        'train_loss/mesh': mesh_loss.detach(),
                     }
                 )
 
@@ -253,6 +255,7 @@ class Trainer:
                     f'proj2d: {loss_body_joint_proj.item():.3f} '
                     f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
                     f'smpl: {(smpl_pose_loss + smpl_shape_loss).item():.3f} '
+                    f'mesh: {mesh_loss.item():.3f} '
                     f'tl: {total_loss.item():.3f}'
                 )
 
@@ -397,6 +400,7 @@ class Teacher_Trainer:
                         'train_loss/smpl_joint_cam': loss_smpl_joint_cam.detach(),
                         'train_loss/smpl_pose': smpl_pose_loss.detach(),
                         'train_loss/smpl_shape': smpl_shape_loss.detach(),
+                        'train_loss/mesh': mesh_loss.detach(),
                     }
                 )
 
@@ -406,6 +410,7 @@ class Teacher_Trainer:
                     f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
                     f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
                     f'smpl: {(smpl_pose_loss + smpl_shape_loss).item():.3f} '
+                    f'mesh: {mesh_loss.item():.3f} '
                     f'tl: {total_loss.item():.3f}'
                 )
 
