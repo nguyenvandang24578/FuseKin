@@ -363,11 +363,13 @@ class PW3D(torch.utils.data.Dataset):
                 ).reshape(-1, 1).astype(np.float32)
                 orig_joint_img = h36m_coord_img.astype(np.float32)
 
-                # 3D joints: root-relative first, then rotation aug (meters).
-                orig_joint_cam = h36m_joint_cam - h36m_joint_cam[self.h36m_root_joint_idx, None]
+                # 3D joints: root-relative first, then rotation aug (meters), then add root back to get absolute coordinates.
+                root_cam = h36m_joint_cam[self.h36m_root_joint_idx, None]
+                orig_joint_cam = h36m_joint_cam - root_cam
                 orig_joint_cam = np.dot(rot_aug_mat, orig_joint_cam.transpose(1, 0)).transpose(1, 0).astype(np.float32)
+                orig_joint_cam = orig_joint_cam + root_cam # Absolute coordinates
                 # For 3DPW the fitted-SMPL target and the GT target come from the
-                # same mesh, so fit reuses the same H36M-17 root-relative joints.
+                # same mesh, so fit reuses the same H36M-17 absolute joints.
                 fit_joint_cam = orig_joint_cam.copy()
 
                 smpl_pose = np.array(smpl_param['pose'], dtype=np.float32).reshape(-1,3)
@@ -401,7 +403,7 @@ class PW3D(torch.utils.data.Dataset):
             # Keep the 2D input pose 3-column (x, y, conf) to match the test
             # branch so the model receives the same input format in both phases.
             inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc}
-            targets = {'orig_joint_img': orig_joint_img, 'orig_joint_cam': orig_joint_cam, 'fit_joint_cam': fit_joint_cam, 'pose_param': smpl_pose, 'shape_param': smpl_shape}
+            targets = {'orig_joint_img': orig_joint_img, 'orig_joint_cam': orig_joint_cam, 'fit_joint_cam': fit_joint_cam, 'pose_param': smpl_pose, 'shape_param': smpl_shape, 'smpl_mesh_cam': smpl_mesh_cam}
             meta_info = {
                 'orig_joint_valid': orig_joint_valid,
                 'orig_joint_trunc': orig_joint_trunc,

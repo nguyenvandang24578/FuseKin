@@ -10,7 +10,7 @@ import pickle
 import models
 from data_final.dataset import MultipleDatasets
 from core.config import cfg
-from core.loss import JOTRCoordLoss, JOTRParamLoss, AutomaticWeightedLoss
+from core.loss import JOTRCoordLoss, JOTRParamLoss, AutomaticWeightedLoss, CoordLoss
 from funcs_utils import get_optimizer, load_checkpoint, get_scheduler, count_parameters, lr_check
 from utils.jotr_dataset import get_test_dataset as get_jotr_test_dataset
 from utils.jotr_dataset import get_train_dataset as get_jotr_train_dataset
@@ -129,6 +129,7 @@ class Trainer:
 
         self.jotr_coord_loss = JOTRCoordLoss()
         self.jotr_param_loss = JOTRParamLoss()
+        self.coordLoss = CoordLoss(has_valid=True)
         # 4 losses: body_joint_cam dropped (joint_img comes from the frozen
         # MotionBERT lifter, so a loss on it has zero gradient).
         self.awl = AutomaticWeightedLoss(4).cuda()
@@ -345,6 +346,7 @@ class Teacher_Trainer:
             input_image = inputs['img'].cuda().float()
             gt_orig_joint_cam = targets['orig_joint_cam'].cuda() #ÄÃ¢y lÃ  tá»a Ä‘á»™ 3D thá»±c táº¿ Ä‘o Ä‘Æ°á»£c tá»« cÃ¡c cáº£m biáº¿n
             gt_fit_joint_cam = targets['fit_joint_cam'].cuda() # tá»a Ä‘á»™ 3D sinh ra tá»« smpl prj
+            gt_mesh_cam = targets['smpl_mesh_cam'].cuda()
             orig_joint_valid = meta['orig_joint_valid'].cuda() #mask, = 0 thÃ¬ k tÃ­nh loss
             fit_joint_trunc = meta['fit_joint_trunc'].cuda() # mask
             
@@ -353,7 +355,7 @@ class Teacher_Trainer:
             is_3d = meta['is_3D'].cuda()
             is_valid_fit = meta['is_valid_fit'].cuda()
             
-            teacher_gt_pose3d = gt_fit_joint_cam  # (B, 17, 3), meters, root-relative
+            teacher_gt_pose3d = gt_fit_joint_cam  # (B, 17, 3), meters, absolute
             model_output = self.model(input_image, teacher_gt_pose3d, is_train=True)
 
             pred_mesh = model_output['smpl_mesh_cam']
@@ -361,47 +363,11 @@ class Teacher_Trainer:
             pred_smplshape = model_output['smpl_shape']
 
             # Regress H36M joints from the predicted SMPL mesh.
-            # gt_fit_joint_cam is root-relative (the dataset subtracts the
-            # pelvis before returning it), so normalize the prediction in the
-            # same coordinate system before computing the joint loss.
+            # gt_fit_joint_cam is now absolute, so we compare directly with the absolute pred_pose.
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
-            pred_pose_rootrel = pred_pose - pred_pose[:, 0:1, :]
-
-            # Coordinate-system diagnostic: print once per epoch, on the first
-            # batch, so we can verify that GT and prediction use the same origin.
-            if i == 0:
-                with torch.no_grad():
-                    gt_root_abs = gt_fit_joint_cam[:, 0, :].abs().mean().item()
-                    pred_root_abs = pred_pose[:, 0, :].abs().mean().item()
-                    pred_rootrel_abs = pred_pose_rootrel[:, 0, :].abs().mean().item()
-                    gt_mean_abs = gt_fit_joint_cam.abs().mean().item()
-                    pred_mean_abs = pred_pose.abs().mean().item()
-                    pred_rootrel_mean_abs = pred_pose_rootrel.abs().mean().item()
-                    valid_mask = fit_joint_trunc * is_valid_fit[:, None, None]
-                    valid_ratio = valid_mask.float().mean().item()
-                    valid_count = valid_mask.sum().item()
-                    # Dataset raw SMPL stats. raw/fit ratio should stay near 1.0
-                    # after fixing the old duplicate /1000 scale conversion.
-                    raw_std = meta['raw_smpl_rootrel_std']
-                    raw_mean_abs = meta['raw_smpl_rootrel_mean_abs']
-                    raw_bone_median = meta['raw_smpl_bone_median']
-                    raw_mesh_std = meta['raw_smpl_mesh_std']
-                    raw_joint_std = meta['raw_smpl_joint_std']
-                    raw_trans = meta['raw_smpl_trans']
-                    raw_to_fit_ratio = raw_std.float().mean().item() / max(
-                        gt_fit_joint_cam.std().item(), 1e-12
-                    )
-                    if not torch.isfinite(pred_pose).all():
-                        raise FloatingPointError(
-                            'Non-finite values detected in pred_pose during Teacher training.'
-                        )
-                    if not torch.isfinite(gt_fit_joint_cam).all():
-                        raise FloatingPointError(
-                            'Non-finite values detected in gt_fit_joint_cam.'
-                        )
 
             loss_smpl_joint_cam = self.jotr_coord_loss(
-                pred_pose_rootrel,
+                pred_pose,
                 gt_fit_joint_cam,
                 fit_joint_trunc * is_valid_fit[:, None, None]
             ).mean()
@@ -409,10 +375,12 @@ class Teacher_Trainer:
             fit_shape_valid = is_valid_fit[:, None]
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
+            mesh_loss = self.coordLoss(pred_mesh, gt_mesh_cam, is_valid_fit[:, None, None])
             loss_dict = {
                 'smpl_joint_cam': loss_smpl_joint_cam,
                 'smpl_pose': smpl_pose_loss,
                 'smpl_shape': smpl_shape_loss,
+                'mesh_loss': mesh_loss,
             }
             loss_dict = self.awl(loss_dict)
             loss = sum(loss_dict.values())

@@ -271,10 +271,10 @@ class Pose2Mesh(nn.Module):
 
         mesh_cam_render = mesh_cam.clone()
 
-        # Root-relative
-        root_cam = joint_cam[:, root_joint_idx, None, :]
-        joint_cam = joint_cam - root_cam
-        mesh_cam = mesh_cam - root_cam
+        # Keep absolute coordinates
+        # root_cam = joint_cam[:, root_joint_idx, None, :]
+        # joint_cam = joint_cam - root_cam
+        # mesh_cam = mesh_cam - root_cam
 
         return joint_proj, joint_cam, mesh_cam, mesh_cam_render
 
