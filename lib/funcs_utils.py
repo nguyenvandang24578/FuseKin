@@ -117,11 +117,10 @@ def get_scheduler(optimizer):
 
 
 def save_checkpoint(states, epoch, is_best=None):
-    # file_name = f'checkpoint{epoch}.pth.tar'
     output_dir = cfg.checkpoint_dir
-    # if states['epoch'] == cfg.TRAIN.end_epoch:
-    #     file_name = 'final.pth.tar'
-    # torch.save(states, os.path.join(output_dir, file_name))
+    
+    # Luôn lưu đè epoch gần nhất
+    torch.save(states, os.path.join(output_dir, 'last.pth.tar'))
 
     if is_best:
         torch.save(states, os.path.join(output_dir, 'best.pth.tar'))

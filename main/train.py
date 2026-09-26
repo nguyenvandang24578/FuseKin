@@ -79,10 +79,10 @@ for epoch in range(cfg.TRAIN.begin_epoch, cfg.TRAIN.end_epoch + 1):
 
     tester.test(epoch, current_model=trainer.model)
 
-    if epoch > 1:
+    if len(trainer.error_history['joint']) > 0:
         is_best = tester.joint_error < min(trainer.error_history['joint']) or tester.surface_error < min(trainer.error_history['surface'])
     else:
-        is_best = None
+        is_best = True
 
     trainer.error_history['surface'].append(tester.surface_error)
     trainer.error_history['joint'].append(tester.joint_error)
