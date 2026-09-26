@@ -123,7 +123,16 @@ class AdaptiveHyperNoRoot(nn.Module):
       - M       : ma tran hoc duoc, khoi tao bang H_init
       - S       : phu thuoc du lieu (similarity-based, per sample)
 
-    Input/Output: (B, 24, C)
+    FIX (quan trong): truoc day chi `S` duoc mask root=0 tuong minh, con
+    `M` chi ~0 tai thoi diem khoi tao nho _inverse_softplus(eps), khong co
+    gi ngan `M_raw[0,:]` troi ra khoi 0 trong qua trinh train. Khi do,
+    Dv[0] = H_tilde[0,:].sum()+eps co the ~eps rat nho, va dao ham cua
+    Dv^{-1/2} tai diem gan 0 rat lon -> nguy co grad bung no cho
+    M_raw[0,:] va beta1_raw du gia tri forward gan nhu bang 0.
+    Sua: mask H_tilde[:, 0, :] = 0 mot cach TUONG MINH sau khi cong ca 3
+    thanh phan, bien no thanh hang so khong phu thuoc tham so -> khong
+    con duong gradient nao chay qua root nua (an toan tuyet doi, khong
+    chi dua vao gia tri khoi tao).
     """
 
     def __init__(self, dim_in, dim_out, num_edges=5):
@@ -179,6 +188,15 @@ class AdaptiveHyperNoRoot(nn.Module):
         H_init_exp = self.H_init.unsqueeze(0).expand(b, -1, -1)
         M_exp      = M.unsqueeze(0).expand(b, -1, -1)
         H_tilde    = beta0 * H_init_exp + beta1 * M_exp + beta2 * S  # (B, 24, E)
+
+        # --- FIX: mask cung root row sau khi da cong het 3 thanh phan.
+        # Bien H_tilde[:,0,:] thanh hang so 0.0 (khong con phu thuoc
+        # M_raw/beta1_raw), loai bo hoan toan nguy co grad explosion qua
+        # Dv^{-1/2} noi tren, dong thoi giu dung bat bien "root khong
+        # tham gia hyperedge" trong suot qua trinh train chu khong chi
+        # luc khoi tao.
+        H_tilde = H_tilde.clone()
+        H_tilde[:, 0, :] = 0.0
 
         G   = compute_G_batched(H_tilde)                       # (B, 24, 24)
         xh  = torch.bmm(G, x)                                  # (B, 24, C)
@@ -263,7 +281,17 @@ if __name__ == '__main__':
     # Kiem tra root row cua H_tilde ~0 (root bi loai khoi hyperedge)
     H_tilde = aux['H_tilde']                         # (B, 24, E)
     print(f"H_tilde[root=0] sum = {H_tilde[:, 0, :].abs().sum().item():.6f} "
-          f"(ky vong ~0)")
+          f"(ky vong = 0, tuyet doi, khong chi ~0)")
+
+    # --- Kiem tra bo sung: gradient KHONG chay ve M_raw[0,:] va anh huong
+    # tu beta1_raw len root duoc chan hoan toan (dung voi fix moi).
+    layer.zero_grad()
+    x3 = torch.randn(B, V, C_in, requires_grad=False)
+    out3, aux3 = layer(x3)
+    out3.sum().backward()
+    g_M_root = layer.adaptive_hyper.M_raw.grad[0, :].abs().sum().item()
+    print(f"grad M_raw[root=0] = {g_M_root:.8f} (ky vong = 0, dung voi fix)")
+    assert g_M_root == 0.0, "M_raw[root] van con nhan gradient — fix chua dung!"
 
     # Kiem tra chi 3 khop con truc tiep cua root (1,2,3) nhan tin hieu
     x2 = torch.zeros(B, V, C_in)

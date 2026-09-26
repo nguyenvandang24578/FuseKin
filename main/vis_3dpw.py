@@ -68,6 +68,11 @@ def main(args):
         update_config('config/train_student.yml')
         cfg.TRAIN.wandb = False
         tester = Student_Tester(args, load_dir=args.checkpoint)
+    elif args.mode == 'arts':
+        update_config('./config/train_init_mesh.yaml')
+        cfg.TRAIN.wandb = False
+        # Student_Tester và Teacher_Tester code giống hệt nhau, chỉ quan trọng config
+        tester = Student_Tester(args, load_dir=args.checkpoint)
     else:
         update_config('config/train_teacher.yml')
         cfg.TRAIN.wandb = False
@@ -101,7 +106,7 @@ def main(args):
                     for key, value in inputs.items()
                 }
                 
-                if cfg.MODEL.name == 'teacher':
+                if cfg.MODEL.name == 'arts' or cfg.MODEL.name == 'teacher':
                     target_mesh_tensor = targets['smpl_mesh_cam'].cuda().float()
                     h36m_regressor = torch.as_tensor(
                         dataset.h36m_joint_regressor,
@@ -116,7 +121,7 @@ def main(args):
                 else:
                     input_pose = model_inputs['joints']
                     
-                outputs = model(model_inputs['img'], input_pose, is_train=False)
+                outputs = model(model_inputs['img'], input_pose, is_train=False, use_gt_3d = True)
                 
                 pred_mesh = outputs['smpl_mesh_cam'].detach().cpu().numpy()
                 target_mesh = targets['smpl_mesh_cam'].detach().cpu().numpy()
@@ -163,7 +168,7 @@ def main(args):
                 key: value.cuda() if torch.is_tensor(value) else value
                 for key, value in inputs.items()
             }
-            if args.mode == 'teacher':
+            if args.mode == 'arts' or args.mode == 'teacher':
                 target_mesh_tensor = targets['smpl_mesh_cam'].cuda().float()
                 h36m_regressor = torch.as_tensor(
                     dataset.h36m_joint_regressor,
@@ -184,7 +189,7 @@ def main(args):
                     # Nối mask (chiều 3) vào joints (x, y) để pose_lifter biết joint nào bị che
                     input_pose = torch.cat([input_pose[..., :2], mask], dim=-1)
                 
-            outputs = model(model_inputs['img'], input_pose, is_train=False)
+            outputs = model(model_inputs['img'], input_pose, is_train=False, use_gt_3d = True)
             
             pred_mesh = outputs['smpl_mesh_cam'].detach().cpu().numpy()
             
@@ -475,7 +480,7 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint', type=str, required=True, help='Đường dẫn tới file .pth.tar')
-    parser.add_argument('--mode', type=str, default='teacher', choices=['teacher', 'student'], help='Chọn mô hình test: teacher (nhận GT 3D) hoặc student (nhận output từ pose_lifter)')
+    parser.add_argument('--mode', type=str, default='teacher', choices=['teacher', 'student', 'arts'], help='Chọn mô hình test: teacher (nhận GT 3D) hoặc student (nhận output từ pose_lifter)')
     parser.add_argument('--resume_training', action='store_true')
     args = parser.parse_args()
     main(args)
