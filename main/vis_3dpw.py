@@ -13,7 +13,7 @@ import numpy as np
 import argparse
 import __init_path
 from core.config import cfg, update_config
-from core.base import Tester
+from core.base import Teacher_Tester, Student_Tester
 
 def save_obj(vertices, faces, filename):
     with open(filename, 'w') as f:
@@ -63,11 +63,16 @@ def render_perspective(img, vertices_3d, faces, focal, princpt):
     return output_img.astype(np.uint8)
 
 def main(args):
-    print("Đang khởi tạo Tester và load dữ liệu 3DPW...")
-    update_config('config/train_init_mesh.yaml')
-    cfg.TRAIN.wandb = False
-    
-    tester = Tester(args, load_dir=args.checkpoint)
+    print(f"Đang khởi tạo Tester và load dữ liệu 3DPW ({args.mode} mode)...")
+    if args.mode == 'student':
+        update_config('config/train_student.yml')
+        cfg.TRAIN.wandb = False
+        tester = Student_Tester(args, load_dir=args.checkpoint)
+    else:
+        update_config('config/train_teacher.yml')
+        cfg.TRAIN.wandb = False
+        tester = Teacher_Tester(args, load_dir=args.checkpoint)
+        
     model = tester.model
     dataset = tester.val_datasets[0] # 3dpw
     loader = tester.val_loaders[0]
@@ -95,7 +100,23 @@ def main(args):
                     key: value.cuda() if torch.is_tensor(value) else value
                     for key, value in inputs.items()
                 }
-                outputs = model(model_inputs['img'], model_inputs['joints'], is_train=False)
+                
+                if cfg.MODEL.name == 'teacher':
+                    target_mesh_tensor = targets['smpl_mesh_cam'].cuda().float()
+                    h36m_regressor = torch.as_tensor(
+                        dataset.h36m_joint_regressor,
+                        device='cuda',
+                        dtype=target_mesh_tensor.dtype,
+                    )
+                    teacher_gt_joints = torch.matmul(
+                        h36m_regressor.unsqueeze(0).expand(target_mesh_tensor.shape[0], -1, -1),
+                        target_mesh_tensor,
+                    )
+                    input_pose = teacher_gt_joints - teacher_gt_joints[:, 0:1, :]
+                else:
+                    input_pose = model_inputs['joints']
+                    
+                outputs = model(model_inputs['img'], input_pose, is_train=False)
                 
                 pred_mesh = outputs['smpl_mesh_cam'].detach().cpu().numpy()
                 target_mesh = targets['smpl_mesh_cam'].detach().cpu().numpy()
@@ -142,10 +163,29 @@ def main(args):
                 key: value.cuda() if torch.is_tensor(value) else value
                 for key, value in inputs.items()
             }
-            outputs = model(model_inputs['img'], model_inputs['joints'], is_train=False)
+            if args.mode == 'teacher':
+                target_mesh_tensor = targets['smpl_mesh_cam'].cuda().float()
+                h36m_regressor = torch.as_tensor(
+                    dataset.h36m_joint_regressor,
+                    device='cuda',
+                    dtype=target_mesh_tensor.dtype,
+                )
+                teacher_gt_joints = torch.matmul(
+                    h36m_regressor.unsqueeze(0).expand(target_mesh_tensor.shape[0], -1, -1),
+                    target_mesh_tensor,
+                )
+                input_pose = teacher_gt_joints - teacher_gt_joints[:, 0:1, :]
+            else:
+                input_pose = model_inputs['joints'].float()
+                if 'joints_mask' in model_inputs:
+                    mask = model_inputs['joints_mask'].float()
+                    if mask.dim() == 2:
+                        mask = mask.unsqueeze(-1)
+                    # Nối mask (chiều 3) vào joints (x, y) để pose_lifter biết joint nào bị che
+                    input_pose = torch.cat([input_pose[..., :2], mask], dim=-1)
+                
+            outputs = model(model_inputs['img'], input_pose, is_train=False)
             
-            # CHÚ Ý: Phải dùng mesh_cam_render vì nó chứa Tọa độ tuyệt đối Z của Perspective Camera!
-            pred_mesh_render = outputs['mesh_cam_render'].detach().cpu().numpy()
             pred_mesh = outputs['smpl_mesh_cam'].detach().cpu().numpy()
             
             # Lấy ảnh gốc
@@ -153,12 +193,7 @@ def main(args):
             img_np = input_img_tensor.numpy().transpose(1, 2, 0)
             orig_img = (img_np * 255).astype(np.uint8)
     
-    
-            
             idx = 0
-            
-            # Lấy Mesh dự đoán (có sẵn tọa độ tuyệt đối)
-            pred_verts = pred_mesh_render[idx]
             
             # ==========================================================
             # TỰ TÍNH TOÁN TRUE TRANSLATION CHO ẢNH CROP 256x256
@@ -196,6 +231,11 @@ def main(args):
             # Ghép True Translation vào lưới GT (Nhớ trừ đi orig_root để đưa về Root-Relative trước!)
             target_mesh_root = targets['smpl_mesh_cam'].detach().cpu().numpy()
             target_verts = target_mesh_root[idx] - orig_root + true_crop_trans
+            
+            # Tính pred_verts tương tự GT: chuyển mesh về root-relative rồi cộng true translation
+            pred_h36m = np.dot(dataset.h36m_joint_regressor, pred_mesh[idx])
+            pred_root = pred_h36m[0]
+            pred_verts = pred_mesh[idx] - pred_root + true_crop_trans
             # ==========================================================
             
             # ----- RENDER OVERLAY PRED -----
@@ -435,6 +475,7 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint', type=str, required=True, help='Đường dẫn tới file .pth.tar')
+    parser.add_argument('--mode', type=str, default='teacher', choices=['teacher', 'student'], help='Chọn mô hình test: teacher (nhận GT 3D) hoặc student (nhận output từ pose_lifter)')
     parser.add_argument('--resume_training', action='store_true')
     args = parser.parse_args()
     main(args)

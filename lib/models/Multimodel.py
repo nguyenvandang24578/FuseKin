@@ -17,6 +17,8 @@ from models.hypergcn import HYPERGCv2
 from models.teacher import Teacher
 from models.Core_model import CrossAttentionBlock
 from models.common import Vposer
+from models.spin import RegressorSpin
+
 from utils.transforms import rot6d_to_axis_angle
 TEACHER_CHPT = cfg.MODEL.TEACHER
 SMPL_MODEL_DIR = 'data_final/base_data'
@@ -37,6 +39,9 @@ class Pose2Mesh(nn.Module):
         self.human_model = SMPLModel()
         self.human_model_layer = self.human_model.layer['neutral'].cuda()
         self.joint_regressor = self.human_model.joint_regressor
+        self.regressorspin = RegressorSpin()
+        pretrained_dict = torch.load(osp.join(BASE_DATA_DIR, 'spin_model_checkpoint.pth.tar'))['model']
+        self.regressorspin.load_state_dict(pretrained_dict, strict=False)
 # =========================================================
         mean_params = np.load(SMPL_MEAN_PARAMS)
         init_pose = torch.from_numpy(mean_params['pose'][:]).unsqueeze(0)
@@ -65,8 +70,8 @@ class Pose2Mesh(nn.Module):
         ])
 #-------------------------------------------------------------------------------------
         # Heads theo pattern JOTR: root riêng, body qua vposer, shape, cam
-        self.root_pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, 2)     # root rotation 6D
-        self.body_pose_head = MLP(embed_dim, smpl_head_hidden_dim, 32, 2)    # vposer latent code
+        # self.root_pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, 2)     # root rotation 6D
+        self.pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, smpl_head_depth)
         self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
         self.cam_head = MLP(1024, smpl_head_hidden_dim, 3, 2)           # camera params
         self.shape_token = nn.Embedding(1, embed_dim)
@@ -90,11 +95,11 @@ class Pose2Mesh(nn.Module):
         shape_emb = shape_emb.unsqueeze(1)
         shape_token = shape_token + shape_emb
 
-        output, global_ft = self.fusion(joints, img_feats, is_train=is_train, J_regressor=J_regressor, return_features=True) #(B, 1024)
+        output, feature = self.fusion(joints, img_feats, is_train=is_train, J_regressor=J_regressor, return_features=True) #(B, 1024)
 
-        if isinstance(global_ft, dict):
-            global_ft = global_ft['concat_feat']
-
+        if isinstance(feature, dict):
+            global_ft = feature['concat_feat']
+        img_feats_trans = feature['img']
         gamma = self.gamma_proj(global_ft).unsqueeze(1) + 1.0 #(B, 1, 512)
         beta  = self.beta_proj(global_ft).unsqueeze(1)   # (B, 1, 512)
 
@@ -107,20 +112,21 @@ class Pose2Mesh(nn.Module):
         for hyper_layer in self.spatial_hypers:
             dang_hyper, aux = hyper_layer(dang_hyper)
         pose_token_op = dang_hyper + dang # (B, 24, D) + skip around HyperGCN
+        f_pose  = self.pose_head(pose_token_op) # (B, T, 24, 6)   
+        inv_pred2rot6d = f_pose.reshape(batch_size, -1)
+        # # Pool tất cả joint tokens để lấy global pose feature
+        # pose_global = pose_token_op.mean(dim=1)  # (B, 512)
 
-        # Pool tất cả joint tokens để lấy global pose feature
-        pose_global = pose_token_op.mean(dim=1)  # (B, 512)
-
-        # 1. Root pose: MLP -> 6D rotation -> axis-angle (B, 3)
-        root_pose_6d = self.root_pose_head(pose_global)            # (B, 6)
-        root_pose = rot6d_to_axis_angle(root_pose_6d)              # (B, 3)
+        # # 1. Root pose: MLP -> 6D rotation -> axis-angle (B, 3)
+        # root_pose_6d = self.root_pose_head(pose_global)            # (B, 6)
+        # root_pose = rot6d_to_axis_angle(root_pose_6d)              # (B, 3)
 
         # 2. Body pose: MLP -> vposer latent (B, 32) -> decode -> axis-angle (B, 69)
-        pose_latent = self.body_pose_head(pose_global)             # (B, 32)
-        body_pose = self.vposer(pose_latent)                       # (B, 69) = 23 joints × 3
+        # pose_latent = self.body_pose_head(pose_global)             # (B, 32)
+        # body_pose = self.vposer(pose_latent)                       # (B, 69) = 23 joints × 3
 
-        # 3. Ghép root + body -> full SMPL pose (B, 72)
-        full_pose = torch.cat([root_pose, body_pose], dim=1)       # (B, 72)
+        # # 3. Ghép root + body -> full SMPL pose (B, 72)
+        # full_pose = torch.cat([root_pose, body_pose], dim=1)       # (B, 72)
 
         # 4. Camera params
         cam_param = self.cam_head(global_ft)                     # (B, 3)
@@ -135,18 +141,22 @@ class Pose2Mesh(nn.Module):
 #---------------------------------------------------------------------------------------------------------------------------------------
         # 6. SMPL forward: get_coord
         cam_trans = self.get_camera_trans(cam_param)               # (B, 3)
-        joint_proj, joint_cam, mesh_cam, mesh_cam_render = self.get_coord(
-            full_pose, shape_param, cam_trans
-        )
-
+        # joint_proj, joint_cam, mesh_cam, mesh_cam_render = self.get_coord(
+        #     full_pose, shape_param, cam_trans
+        # )
+        output = self.regressorspin(img_feats_trans,
+                                    init_pose=inv_pred2rot6d,
+                                    init_shape=shape_param,
+                                    init_cam=cam_param,
+                                    is_train=is_train,
+                                    J_regressor=J_regressor)[0]
         return {
-            'joint_proj': joint_proj,
-            'joint_cam': joint_cam,
-            'smpl_mesh_cam': mesh_cam,
-            'mesh_cam_render': mesh_cam_render,
-            'smpl_pose': full_pose,  # full pose (B, 72)
-            'smpl_shape': shape_param,
-            'cam_param': cam_param
+            'joint_proj': output['kp_2d'],
+            'joint_cam': output['kp_3d'],
+            'smpl_mesh_cam': output['verts'],
+            'smpl_pose': output['theta'][:, 3:75],  # full pose (B, 72)
+            'smpl_shape': output['theta'][:, 75:85],
+            'cam_param': output['theta'][:, :3]
         }
 
     def get_camera_trans(self, cam_param):

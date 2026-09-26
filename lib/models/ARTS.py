@@ -33,11 +33,25 @@ class ARTS(nn.Module):
         self.mode = cfg.MODEL.name
 
         self.backbone = ResNetBackbone(cfg.MODEL.resnet_type)
-        self.pose_lifter = DSTformer(
-            norm_layer=partial(nn.LayerNorm, eps=1e-6),
-            **MOTIONBERT_CONFIG,
-        )
-        self.load_pose_lifter_weights()
+        
+        # Lấy hpe_dim từ config để hỗ trợ MotionBERT-Lite (256) hoặc Full (512)
+        mb_dim = cfg.MODEL.get('hpe_dim', 512)
+        mb_mlp_ratio = cfg.MODEL.get('mlp_ratio', 4 if mb_dim == 256 else 2)
+        
+        # Override dim_feat và mlp_ratio theo config
+        mb_config = MOTIONBERT_CONFIG.copy()
+        mb_config['dim_feat'] = mb_dim
+        mb_config['dim_rep'] = 512  # dim_rep luôn là 512 kể cả bản Lite
+        mb_config['mlp_ratio'] = mb_mlp_ratio
+
+        if self.mode != "teacher":
+            self.pose_lifter = DSTformer(
+                norm_layer=partial(nn.LayerNorm, eps=1e-6),
+                **mb_config,
+            )
+            self.load_pose_lifter_weights()
+        else:
+            self.pose_lifter = None
 
         if self.mode in ("teacher", "student"):
             self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim)
@@ -64,14 +78,16 @@ class ARTS(nn.Module):
 
     def freeze_backbone_and_pose_lifter(self):
         for module in (self.backbone, self.pose_lifter):
-            for param in module.parameters():
-                param.requires_grad = False
-            module.eval()
+            if module is not None:
+                for param in module.parameters():
+                    param.requires_grad = False
+                module.eval()
 
     def train(self, mode=True):
         super().train(mode)
         self.backbone.eval()
-        self.pose_lifter.eval()
+        if self.pose_lifter is not None:
+            self.pose_lifter.eval()
         return self
 
     def get_image_features(self, image):
@@ -85,6 +101,10 @@ class ARTS(nn.Module):
 
         first_frame = pose_2d[:, 0]
         xy = first_frame[..., :2]
+        
+        # CRITICAL FIX: MotionBERT was finetuned with root-relative 2D keypoints!
+        xy = xy - xy[:, 0:1, :]
+        
         if first_frame.shape[-1] >= 3:
             confidence = first_frame[..., 2:3]
         else:
@@ -96,10 +116,21 @@ class ARTS(nn.Module):
         return pose_3d_all_frames[:, NUM_FRAMES // 2]
 
     def format_smpl_output(self, smpl_output):
-        theta = smpl_output["theta"][:, -1]
+        theta = smpl_output["theta"]
+        if theta.dim() == 3:
+            theta = theta[:, -1]
+            
+        verts = smpl_output["verts"]
+        if verts.dim() == 4:
+            verts = verts[:, -1]
+            
+        kp_3d = smpl_output.get("kp_3d", smpl_output.get("joint_img"))
+        if kp_3d is not None and kp_3d.dim() == 4:
+            kp_3d = kp_3d[:, -1]
+
         return {
-            "joint_img": smpl_output["kp_3d"],
-            "smpl_mesh_cam": smpl_output["verts"][:, -1],
+            "joint_img": kp_3d,
+            "smpl_mesh_cam": verts,
             "smpl_pose": theta[:, 3:75],
             "smpl_shape": theta[:, 75:],
         }
@@ -138,12 +169,17 @@ class ARTS(nn.Module):
         result['feat_global'] = feats['concat_feat']
         return result
 
-    def forward_arts(self, image, pose_2d, is_train):
+    def forward_arts(self, image, pose_input, is_train, use_gt_3d=False):
         with torch.no_grad():
             ft_map, global_feature = self.get_image_features(image)
-            pose_3d = self.lift_2d_to_3d(pose_2d)
-            pose_3d = pose_3d / 1000                      # mm -> m
-            pose_3d = pose_3d - pose_3d[:, 0:1, :]        # root-relative
+            
+            if not use_gt_3d:
+                pose_3d = self.lift_2d_to_3d(pose_input)
+                pose_3d = pose_3d / 1000                      # mm -> m
+                pose_3d = pose_3d - pose_3d[:, 0:1, :]        # root-relative
+            else:
+                # Dùng trực tiếp GT 3D (đã là đơn vị Mét và root-relative từ Trainer)
+                pose_3d = pose_input
 
         output = self.pose_mesh_coevo(
             pose_3d,
@@ -155,12 +191,12 @@ class ARTS(nn.Module):
         output["joint_img"] = pose_3d
         return output
 
-    def forward(self, image, joints, is_train=True):
+    def forward(self, image, joints, is_train=True, use_gt_3d=False):
         if self.mode == "teacher":
             return self.forward_teacher(image, joints, is_train)
         if self.mode == "student":
             return self.forward_student(image, joints, is_train)
-        return self.forward_arts(image, joints, is_train)
+        return self.forward_arts(image, joints, is_train, use_gt_3d)
 
 
 def get_model(num_joint, embed_dim, depth=None):

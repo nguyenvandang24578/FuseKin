@@ -168,10 +168,13 @@ def run_motionbert(model, joints_2d_batch, joints_mask_batch, device):
 
     Returns: (B, J, 3) numpy array -- predicted 3D joints
     """
-    B, J, C = joints_2d_batch.shape
     # Always take x,y (first 2 channels) then append confidence=1
     # MotionBERT always expects exactly 3 channels: (x, y, confidence)
     xy = joints_2d_batch[..., :2]                              # (B, J, 2)
+    
+    # CRITICAL FIX: MotionBERT was finetuned with root-relative 2D keypoints!
+    xy = xy - xy[:, 0:1, :]
+    
     # joints_2d_batch is ALREADY normalized to [-1, 1] by Human36M17Dataset wrapper.
 
     conf = joints_mask_batch
@@ -251,31 +254,86 @@ for batch_idx, (inputs_b, targets_b, meta_b) in enumerate(loader):
         joints_px   = (joints + 1) / 2.0 * 256.0              # Denorm -> pixel
         img_bgr     = draw_2d_skeleton(img_bgr, joints_px, joints_mask)
 
-        # -- Build 3-panel figure ---------------------------
-        fig = plt.figure(figsize=(18, 6))
+        # -- Build 4-panel figure ---------------------------
+        fig = plt.figure(figsize=(24, 6))
 
         # Panel 1: Input image + 2D skeleton
-        ax1 = fig.add_subplot(131)
+        ax1 = fig.add_subplot(141)
         ax1.imshow(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
         ax1.axis('off')
         ax1.set_title('Input Image + 2D KP', fontsize=11)
 
-        # Panel 2: GT 3D skeleton (green / blue)
-        ax2 = fig.add_subplot(132, projection='3d')
+        pred_3d = pred_3d_batch[b]                             # (J, 3)
+        gt_3d = None
         if 'orig_joint_cam' in targets_b:
             gt_3d = targets_b['orig_joint_cam'][b].numpy()    # (J, 3)
-            draw_3d_skeleton(ax2, gt_3d,
+            
+            # --- TÍNH TOÁN VÀ IN THÔNG SỐ SO SÁNH ---
+            print(f"\n[Sample {img_count:03d}] So sánh tọa độ:")
+            print(f" - Mẫu GT khớp 0 (pelvis): {gt_3d[0]}")
+            print(f" - Mẫu Pred khớp 0 (pelvis): {pred_3d[0]}")
+            
+            gt_root = gt_3d[0:1, :]
+            pred_root = pred_3d[0:1, :]
+            
+            gt_rel = gt_3d - gt_root
+            pred_rel = pred_3d - pred_root
+            
+            # Kiểm tra scale (đo chiều dài xương đùi)
+            gt_bone_len = np.linalg.norm(gt_rel[1] - gt_rel[0])
+            pred_bone_len = np.linalg.norm(pred_rel[1] - pred_rel[0])
+            print(f" - Chiều dài xương đùi (khớp 1-0): GT = {gt_bone_len:.4f}, Pred = {pred_bone_len:.4f}")
+            
+            # Nếu chênh lệch scale quá lớn (vd: mm vs m), quy đổi về cùng hệ m
+            scale_factor = 1.0
+            if pred_bone_len > 10 * gt_bone_len: # Pred là mm, GT là m
+                print(" -> Phát hiện Pred dùng đơn vị Millimet, GT dùng đơn vị Mét! Tự động chia Pred cho 1000...")
+                pred_rel = pred_rel / 1000.0
+                scale_factor = 1000.0
+                
+            mpjpe = np.sqrt(np.sum((pred_rel - gt_rel) ** 2, axis=1)).mean()
+            print(f" -> MPJPE (đã Root-Relative & đồng bộ Scale): {mpjpe:.4f} mét ({mpjpe*1000:.2f} mm)")
+
+        # Panel 2: GT 3D skeleton (green / blue)
+        ax2 = fig.add_subplot(142, projection='3d')
+        if gt_3d is not None:
+            draw_3d_skeleton(ax2, gt_rel,
                              color_joint='green', color_bone='blue',
-                             title='GT 3D (orig_joint_cam)')
+                             title='GT 3D (Root Relative)')
         else:
             ax2.set_title('GT not available')
 
         # Panel 3: MotionBERT predicted 3D (red / orange)
-        ax3 = fig.add_subplot(133, projection='3d')
-        pred_3d = pred_3d_batch[b]                             # (J, 3)
-        draw_3d_skeleton(ax3, pred_3d,
+        ax3 = fig.add_subplot(143, projection='3d')
+        draw_3d_skeleton(ax3, pred_rel if gt_3d is not None else pred_3d,
                          color_joint='red', color_bone='orange',
-                         title='MotionBERT Predicted 3D')
+                         title='Pred 3D (Root Relative)')
+
+        # Panel 4: OVERLAP TOP-DOWN VIEW
+        ax4 = fig.add_subplot(144, projection='3d')
+        if gt_3d is not None:
+            draw_3d_skeleton(ax4, gt_rel, color_joint='green', color_bone='blue', title='Top-Down Overlap (GT=Green, Pred=Red)')
+            # Để vẽ đè lên ax4, ta cần viết lại logic của draw_3d_skeleton không gọi set_ylim/zlim để tránh bị đè limits
+            # nhưng tạm thời có thể gọi chung hàm
+            joints_x = pred_rel[:, 0]
+            joints_y = -pred_rel[:, 1]
+            joints_z = pred_rel[:, 2]
+            h36m_skeleton = [
+                (0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 6),
+                (0, 7), (7, 8), (8, 9), (9, 10), (8, 14), (14, 15),
+                (15, 16), (8, 11), (11, 12), (12, 13)
+            ]
+            ax4.scatter(joints_x, joints_z, joints_y, c='red', s=20)
+            for bone in h36m_skeleton:
+                ax4.plot([joints_x[bone[0]], joints_x[bone[1]]],
+                         [joints_z[bone[0]], joints_z[bone[1]]],
+                         [joints_y[bone[0]], joints_y[bone[1]]], color='orange')
+            
+            # Góc nhìn từ trên xuống: elev=90 (nhìn thẳng từ trên trục Z trong plot), azim=-90
+            ax4.view_init(elev=90, azim=-90)
+            ax4.set_title('Top-Down Overlap (GT=Blue, Pred=Orange)', fontsize=11)
+        else:
+            ax4.set_title('Top-Down not available')
 
         plt.suptitle(f'Sample {img_count:03d}', fontsize=13, y=1.02)
         plt.tight_layout()

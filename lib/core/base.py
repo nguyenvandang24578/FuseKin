@@ -5,7 +5,8 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 from collections import Counter
 import copy
-
+import numpy as np
+import pickle
 import models
 from data_final.dataset import MultipleDatasets
 from core.config import cfg
@@ -14,6 +15,8 @@ from funcs_utils import get_optimizer, load_checkpoint, get_scheduler, count_par
 from utils.jotr_dataset import get_test_dataset as get_jotr_test_dataset
 from utils.jotr_dataset import get_train_dataset as get_jotr_train_dataset
 from utils.jotr_evaluation import evaluate_3dpw_subset
+from utils.transforms import cam2pixel
+
 def get_dataloader(args, dataset_names, is_train):
     dataset_split = 'TRAIN' if is_train else 'TEST'
     if is_train:
@@ -62,6 +65,7 @@ def prepare_network(args, load_dir='', is_train=True):
         elif cfg.MODEL.name == 'PoseEst':
             model = models.PoseEstimation.get_model(num_joint=main_dataset.joint_num, embed_dim=cfg.MODEL.hpe_dim, depth=cfg.MODEL.hpe_dep, pretrained=False)
         print('# of model parameters: {}'.format(count_parameters(model)))
+        model = model.cuda()
 
     if is_train:
         criterion = None
@@ -70,8 +74,12 @@ def prepare_network(args, load_dir='', is_train=True):
 
     if load_dir and (not is_train or args.resume_training):
         print('==> Loading checkpoint')
-        checkpoint = load_checkpoint(load_dir=load_dir, pick_best=(cfg.MODEL.name == 'PoseEst'))
-        model.load_state_dict(checkpoint['model_state_dict'])
+        if cfg.MODEL.name in ['teacher', 'student', 'ARTS']:
+            model = load_model_weights(model, load_dir)
+            checkpoint = torch.load(load_dir, map_location='cuda', pickle_module=_PickleShim, weights_only=False)
+        else:
+            checkpoint = load_checkpoint(load_dir=load_dir, pick_best=(cfg.MODEL.name == 'PoseEst'))
+            model.load_state_dict(checkpoint['model_state_dict'])
 
         if is_train:
             optimizer.load_state_dict(checkpoint['optim_state_dict'])
@@ -165,12 +173,14 @@ class Trainer:
             is_3d = meta['is_3D'].cuda()
             is_valid_fit = meta['is_valid_fit'].cuda()
             
-            model_output = self.model(input_image, input_pose, is_train=True)
+            # model_output = self.model(input_image, input_pose, is_train=True)
+            # Tạm skip MotionBERT, đưa trực tiếp GT 3D (đã là meter và root-relative) vào pose_mesh_coevo
+            model_output = self.model(input_image, gt_fit_joint_cam, is_train=True, use_gt_3d=True)
 
             pred_mesh = model_output['smpl_mesh_cam']
             pred_smplpose = model_output['smpl_pose']
             pred_smplshape = model_output['smpl_shape']
-
+            cam_param = model_output['cam_param']
             # Regress H36M-17 joints from the predicted mesh, root-relative to
             # match gt_fit_joint_cam (the dataset subtracts the pelvis).
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
@@ -182,29 +192,29 @@ class Trainer:
             loss_smpl_joint_cam = self.jotr_coord_loss(
                 pred_pose, gt_fit_joint_cam, fit_joint_trunc * is_valid_fit[:, None, None]).mean()
 
-            # 2D projection loss. joint_proj comes from get_coord in SMPL-30
-            # order, so reduce it to H36M-17 before comparing to the GT.
-            pred_joint_proj = model_output.get('joint_proj')
-            gt_orig_joint_img = targets['orig_joint_img'].cuda()
-            orig_joint_trunc = meta['orig_joint_trunc'].cuda()
-            if pred_joint_proj is not None:
-                if pred_joint_proj.shape[1] == 30:
-                    pred_joint_proj = pred_joint_proj[:, self.h36m_from_smpl30]
-                
-                if i == 0:
-                    print("\n[DIAGNOSTIC] PRED_2D Min/Max:", pred_joint_proj.min().item(), "->", pred_joint_proj.max().item())
-                    print("[DIAGNOSTIC] GT_2D Min/Max:", gt_orig_joint_img[:, :, :2].min().item(), "->", gt_orig_joint_img[:, :, :2].max().item())
-                    print("[DIAGNOSTIC] AWL Params:", self.awl.params.detach().cpu().numpy())
-                    if hasattr(self.awl, 'keys'):
-                        print("[DIAGNOSTIC] AWL Keys:", self.awl.keys)
-
-                loss_body_joint_proj = self.jotr_coord_loss(
-                    pred_joint_proj,
-                    gt_orig_joint_img[:, :, :2],
-                    orig_joint_trunc
-                ).mean()
-            else:
-                loss_body_joint_proj = torch.tensor(0.0).cuda()
+            # 2D projection loss.
+            # Dùng Weak Perspective Projection của SPIN (từ cam_param: scale, tx, ty)
+            cam = model_output['cam_param'] # (B, 3)
+            scale = cam[:, 0:1, None]
+            trans = cam[:, 1:3, None].transpose(1, 2) # (B, 1, 2)
+            
+            # Lấy 17 khớp 3D (Root-relative)
+            pred_pose_17 = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
+            
+            # Chiếu 3D xuống 2D (tọa độ normalize [-1, 1])
+            proj_2d = scale * pred_pose_17[:, :, :2] + trans
+            
+            # Đổi từ [-1, 1] sang tọa độ pixel của ảnh input (ví dụ: 256x256)
+            proj_pixel = (proj_2d + 1.0) * 0.5 * cfg.input_img_shape[0]
+            
+            # Chuẩn hóa về tọa độ heatmap (ví dụ: 64x64)
+            pred_joint_proj = proj_pixel * (cfg.output_hm_shape[1] / cfg.input_img_shape[0])
+            
+            loss_body_joint_proj = self.jotr_coord_loss(
+                pred_joint_proj,
+                targets['orig_joint_img'].cuda()[:, :, :2],
+                meta['orig_joint_trunc'].cuda()
+            ).mean()
 
             fit_pose_valid = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
             fit_shape_valid = is_valid_fit[:, None]
@@ -565,7 +575,7 @@ class Student_Trainer:
 
         self.jotr_coord_loss = JOTRCoordLoss()
         self.jotr_param_loss = JOTRParamLoss()
-        self.awl = AutomaticWeightedLoss(3).cuda()
+        self.awl = AutomaticWeightedLoss(4).cuda()
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
         # Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
@@ -662,11 +672,28 @@ class Student_Trainer:
             # print(f"gt_orig_joint_cam_30 shape: {gt_orig_joint_cam_30.shape}")
             # print(f"orig_joint_valid_30 shape: {orig_joint_valid_30.shape}")
             # Tính loss body_joint_proj (2D)
-            # loss_body_joint_proj = self.jotr_coord_loss(
-            #     pred_joint_proj, 
-            #     gt_orig_joint_img[:, :, :2], 
-            #     orig_joint_trunc
-            # ).mean() if pred_joint_proj is not None else torch.tensor(0.0).cuda()
+            # Dùng Weak Perspective Projection của SPIN (từ cam_param: scale, tx, ty)
+            cam = model_output['cam_param'] # (B, 3)
+            scale = cam[:, 0:1, None]
+            trans = cam[:, 1:3, None].transpose(1, 2) # (B, 1, 2)
+            
+            # Lấy 17 khớp 3D (Root-relative)
+            pred_pose_17 = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
+            
+            # Chiếu 3D xuống 2D (tọa độ normalize [-1, 1])
+            proj_2d = scale * pred_pose_17[:, :, :2] + trans
+            
+            # Đổi từ [-1, 1] sang tọa độ pixel của ảnh input (ví dụ: 256x256)
+            proj_pixel = (proj_2d + 1.0) * 0.5 * cfg.input_img_shape[0]
+            
+            # Chuẩn hóa về tọa độ heatmap (ví dụ: 64x64)
+            pred_joint_proj = proj_pixel * (cfg.output_hm_shape[1] / cfg.input_img_shape[0])
+            
+            loss_body_joint_proj = self.jotr_coord_loss(
+                pred_joint_proj, 
+                gt_orig_joint_img[:, :, :2], 
+                orig_joint_trunc
+            ).mean()
 
             fit_pose_valid = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
             fit_shape_valid = is_valid_fit[:, None]
@@ -676,6 +703,7 @@ class Student_Trainer:
                 'smpl_joint_cam': loss_smpl_joint_cam,
                 'smpl_pose': smpl_pose_loss,
                 'smpl_shape': smpl_shape_loss,
+                'body_joint_proj': loss_body_joint_proj,
             }
             loss_dict = self.awl(loss_dict)
             hard_loss = sum(loss_dict.values())

@@ -51,6 +51,12 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
             # Root relative (same as MotionBERT train.py line 168)
             mb_input[..., :2] = mb_input[..., :2] - mb_input[:, :, 0:1, :2]
             target_3d_seq = target_3d_seq - target_3d_seq[:, :, 0:1, :]
+            
+            # FIX: MotionBERT pretrained weights expect MILLIMETERS.
+            # But PW3D/JOTR dataset returns targets in METERS.
+            # We must multiply by 1000, otherwise the loss is too small
+            # and weight decay collapses the model weights to 0.
+            target_3d_seq = target_3d_seq * 1000.0
 
         # Forward pass
         predicted_3d = model(mb_input) # (B, 243, 17, 3)
