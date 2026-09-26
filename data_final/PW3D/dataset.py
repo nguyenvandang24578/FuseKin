@@ -367,9 +367,12 @@ class PW3D(torch.utils.data.Dataset):
                 root_cam = h36m_joint_cam[self.h36m_root_joint_idx, None]
                 orig_joint_cam = h36m_joint_cam - root_cam
                 orig_joint_cam = np.dot(rot_aug_mat, orig_joint_cam.transpose(1, 0)).transpose(1, 0).astype(np.float32)
-                orig_joint_cam = orig_joint_cam + root_cam # Absolute coordinates
+                
+                smpl_mesh_cam = smpl_mesh_cam - root_cam
+                smpl_mesh_cam = np.dot(rot_aug_mat, smpl_mesh_cam.transpose(1, 0)).transpose(1, 0).astype(np.float32)
+
                 # For 3DPW the fitted-SMPL target and the GT target come from the
-                # same mesh, so fit reuses the same H36M-17 absolute joints.
+                # same mesh, so fit reuses the same H36M-17 joints.
                 fit_joint_cam = orig_joint_cam.copy()
 
                 smpl_pose = np.array(smpl_param['pose'], dtype=np.float32).reshape(-1,3)

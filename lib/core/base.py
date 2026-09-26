@@ -182,9 +182,10 @@ class Trainer:
             pred_smplpose = model_output['smpl_pose']
             pred_smplshape = model_output['smpl_shape']
             cam_param = model_output['cam_param']
-            # Regress H36M-17 joints from the predicted mesh.
-            # gt_fit_joint_cam is now absolute, so we compare directly with the absolute pred_pose.
+            # Regress H36M-17 joints from the predicted mesh, root-relative to
+            # match gt_fit_joint_cam (the dataset subtracts the pelvis).
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
+            pred_pose = pred_pose - pred_pose[:, 0:1, :]
 
             # NOTE: no body_joint_cam loss here. In ARTS mode joint_img is the
             # output of the frozen MotionBERT lifter (computed under no_grad), so
@@ -366,8 +367,8 @@ class Teacher_Trainer:
             pred_smplshape = model_output['smpl_shape']
 
             # Regress H36M joints from the predicted SMPL mesh.
-            # gt_fit_joint_cam is now absolute, so we compare directly with the absolute pred_pose.
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
+            pred_pose = pred_pose - pred_pose[:, 0:1, :]
 
             loss_smpl_joint_cam = self.jotr_coord_loss(
                 pred_pose,
