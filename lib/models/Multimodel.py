@@ -167,6 +167,7 @@ class Pose2Mesh(nn.Module):
             betas=smpl_shape,
             body_pose=smpl_pose[:, 3:],
             global_orient=smpl_pose[:, :3],
+            transl=smpl_trans,
             pose2rot=True,
         )
         mesh_cam = pred_output.vertices
