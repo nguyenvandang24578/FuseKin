@@ -75,5 +75,22 @@ def main():
         print("\n=> KẾT LUẬN: Lưới Mesh sinh ra từ 2 model hoàn toàn giống nhau (chênh lệch cực nhỏ do sai số float).")
         print("   Nguyên nhân kết quả tệ hơn nằm ở một nơi khác trong pipeline.")
 
+    print("\n--- KIỂM TRA TRỰC TIẾP MA TRẬN REGRESSOR (PELVIS) ---")
+    row_old = joint_regressor_old[0] # (6890,)
+    # smplx lưu regressor dưới dạng tensor (nếu sparse thì cần convert về dense)
+    j_reg_new = new_smpl.J_regressor
+    if j_reg_new.is_sparse:
+        j_reg_new = j_reg_new.to_dense()
+    row_new = j_reg_new[0] # (6890,)
+    
+    diff_reg = torch.abs(row_old - row_new)
+    print(f"Max Diff giữa 2 hàng Pelvis: {diff_reg.max().item():.6f}")
+    print(f"Sum Diff giữa 2 hàng Pelvis: {diff_reg.sum().item():.6f}")
+    
+    non_zero_old = (row_old != 0).sum().item()
+    non_zero_new = (row_new != 0).sum().item()
+    print(f"Số lượng Non-Zero ở bản CŨ (smplpytorch): {non_zero_old}")
+    print(f"Số lượng Non-Zero ở bản MỚI (smplx): {non_zero_new}")
+
 if __name__ == '__main__':
     main()
