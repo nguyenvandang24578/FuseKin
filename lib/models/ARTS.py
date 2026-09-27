@@ -44,7 +44,7 @@ class ARTS(nn.Module):
         mb_config['dim_rep'] = 512  # dim_rep luôn là 512 kể cả bản Lite
         mb_config['mlp_ratio'] = mb_mlp_ratio
 
-        if self.mode != "teacher":
+        if self.mode != "ARTS":
             self.pose_lifter = DSTformer(
                 norm_layer=partial(nn.LayerNorm, eps=1e-6),
                 **mb_config,

@@ -51,7 +51,7 @@ class Pose2Mesh(nn.Module):
             num_heads=8, mlp_ratio=4., qkv_bias=True,
             drop=0., attn_drop=0., drop_path=0.2, has_mlp=True
         )
-        self.fusion = Teacher(num_joint, embed_dim, vert_anchors = 16, horz_anchors = 16)
+        self.fusion = Teacher(num_joint, embed_dim, vert_anchors = 16, horz_anchors = 16, depth = 3)
         self.node_pe = nn.Embedding(24, embed_dim)
         self.num_hyper_layers = 3
         self.spatial_hypers = nn.ModuleList([

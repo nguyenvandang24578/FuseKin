@@ -12,8 +12,9 @@ import torch
 import numpy as np
 import argparse
 import __init_path
+# pyrefly: ignore [missing-import]
 from core.config import cfg, update_config
-from core.base import Teacher_Tester, Student_Tester
+from core.base import Teacher_Tester, Student_Tester, Tester
 
 def save_obj(vertices, faces, filename):
     with open(filename, 'w') as f:
@@ -72,7 +73,7 @@ def main(args):
         update_config('./config/train_init_mesh.yaml')
         cfg.TRAIN.wandb = False
         # Student_Tester và Teacher_Tester code giống hệt nhau, chỉ quan trọng config
-        tester = Student_Tester(args, load_dir=args.checkpoint)
+        tester = Tester(args, load_dir=args.checkpoint)
     else:
         update_config('config/train_teacher.yml')
         cfg.TRAIN.wandb = False

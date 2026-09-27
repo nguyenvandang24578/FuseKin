@@ -7,8 +7,12 @@ import torch.nn.functional as F
 from core.config import cfg
 from models.backbones.mesh import Mesh
 from models.spin import RegressorSpin
+import numpy as np
 
 BASE_DATA_DIR = cfg.DATASET.BASE_DATA_DIR
+SMPL_MODEL_DIR = 'data_final/base_data'
+SMPL_MEAN_PARAMS = 'data_final/base_data/smpl_mean_params.npz'
+BASE_DATA_DIR = 'data_final/base_data'
 class LearnableCoefficient(nn.Module):
     def __init__(self):
         super(LearnableCoefficient, self).__init__()
@@ -105,7 +109,7 @@ class RGBJointCrossTransformerBlock(nn.Module):
 
 
 class RGBJointCrossTransformer(nn.Module):
-    def __init__(self, d_model, h, block_exp=4, resid_pdrop=0.1, depth=1):
+    def __init__(self, d_model, h, block_exp=4, resid_pdrop=0.1, depth=3):
         super().__init__()
         self.blocks = nn.ModuleList([
             RGBJointCrossTransformerBlock(d_model, h, block_exp, resid_pdrop)
@@ -126,6 +130,12 @@ class Teacher(nn.Module):
         self.regressorspin = RegressorSpin()
         pretrained_dict = torch.load(osp.join(BASE_DATA_DIR, 'spin_model_checkpoint.pth.tar'), weights_only=False)['model']
         self.regressorspin.load_state_dict(pretrained_dict, strict=False)
+
+        mean_params = np.load(SMPL_MEAN_PARAMS)
+        init_pose = torch.from_numpy(mean_params['pose'][:]).unsqueeze(0)
+        init_shape = torch.from_numpy(mean_params['shape'][:].astype('float32')).unsqueeze(0)
+        self.register_buffer('init_pose', init_pose)
+        self.register_buffer('init_shape', init_shape)
         #--------------------------------------------------------------
         self.vert_anchors = vert_anchors
         self.horz_anchors = horz_anchors
@@ -155,7 +165,10 @@ class Teacher(nn.Module):
         # Chiếu img_feats từ 2048 kênh xuống 512 kênh
         img_feats = self.img_proj(img_feats)
         bs, c, h, w = img_feats.shape
-        
+        mean_pose  = self.init_pose.expand(
+            bs, -1
+        )          # (bs, 144)
+        mean_shape  = self.init_shape.expand(bs, 10)  # (bs, 10)
         # 1. Project joints (B, 17, 3) -> (B, 17, 512)
         joints_tok = self.joint_proj(joints) + self.pos_emb_joint
         
@@ -186,7 +199,7 @@ class Teacher(nn.Module):
         img_feats_trans = self.out_proj(concat_feat) # (B, 2048)
         img_feats_trans = img_feats_trans.unsqueeze(1) # (B, 1, 2048)
 
-        output = self.regressorspin(img_feats_trans, is_train=is_train, J_regressor=J_regressor)
+        output = self.regressorspin(img_feats_trans, init_pose = mean_pose, init_shape = mean_shape, is_train=is_train, J_regressor=J_regressor)
         
         # Trích xuất kết quả từ SPIN để cung cấp khởi tạo cho Pose2Mesh
         spin_out = output[0]
