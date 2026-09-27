@@ -18,7 +18,7 @@ class LearnableCoefficient(nn.Module):
         out = x * self.bias
         return out
 
-class RGBJointCrossTransformer(nn.Module):
+class RGBJointCrossTransformerBlock(nn.Module):
     """
     rgb tokens:   (B, H*W, C)   -- Q, K, V riêng
     joint tokens: (B, 17, C)    -- Q, K, V riêng
@@ -104,8 +104,22 @@ class RGBJointCrossTransformer(nn.Module):
         return rgb_out, joint_out
 
 
+class RGBJointCrossTransformer(nn.Module):
+    def __init__(self, d_model, h, block_exp=4, resid_pdrop=0.1, depth=1):
+        super().__init__()
+        self.blocks = nn.ModuleList([
+            RGBJointCrossTransformerBlock(d_model, h, block_exp, resid_pdrop)
+            for _ in range(depth)
+        ])
+
+    def forward(self, rgb_tok, joint_tok):
+        for block in self.blocks:
+            rgb_tok, joint_tok = block(rgb_tok, joint_tok)
+        return rgb_tok, joint_tok
+
+
 class Teacher(nn.Module):
-    def __init__(self, num_joint, embed_dim=512, vert_anchors=16, horz_anchors=16, in_channels=2048):
+    def __init__(self, num_joint, embed_dim=512, vert_anchors=16, horz_anchors=16, in_channels=2048, depth=1):
         super(Teacher, self).__init__()
 
         self.mesh = Mesh()
@@ -126,12 +140,13 @@ class Teacher(nn.Module):
         self.pos_emb_img = nn.Parameter(torch.zeros(1, vert_anchors * horz_anchors, embed_dim))
         self.pos_emb_joint = nn.Parameter(torch.zeros(1, 17, embed_dim))
 
-        # Khởi tạo RGBJointCrossTransformer mới
+        # Khởi tạo RGBJointCrossTransformer với chiều sâu (depth)
         self.cfcer = RGBJointCrossTransformer(
             d_model=embed_dim, 
             h=8, 
             block_exp=4, 
-            resid_pdrop=0.1
+            resid_pdrop=0.1,
+            depth=depth
         )
         
         # Output projection cho regressorspin (nhận concat 2 vector 512 -> 1024)
@@ -173,12 +188,22 @@ class Teacher(nn.Module):
 
         output = self.regressorspin(img_feats_trans, is_train=is_train, J_regressor=J_regressor)
         
+        # Trích xuất kết quả từ SPIN để cung cấp khởi tạo cho Pose2Mesh
+        spin_out = output[0]
+        pose_6d = spin_out['pose_6d'].squeeze(1) # (B, 24, 6)
+        shape = spin_out['shape'].squeeze(1)     # (B, 10)
+        cam = spin_out['cam'].squeeze(1)         # (B, 3)
+        
         if return_features:
-            return output, {'joint_out': joint_out, 'concat_feat': concat_feat}
-        return output
+            return pose_6d, shape, cam, {
+                'joint_out': joint_out,      # (B, 17, C) - per-joint tokens
+                'img_out': img_out,          # (B, H*W, C) - unpooled image tokens
+                'concat_feat': concat_feat,  # (B, 1024) - global pooled feature
+            }
+        return pose_6d, shape, cam
 # ============================================================
 # Factory
 # ============================================================
-def get_model(num_joint, embed_dim, vert_anchors=16, horz_anchors=16):
-    model = Teacher(num_joint, embed_dim, vert_anchors, horz_anchors)
+def get_model(num_joint, embed_dim, vert_anchors=16, horz_anchors=16, depth=1):
+    model = Teacher(num_joint, embed_dim, vert_anchors, horz_anchors, depth=depth)
     return model

@@ -293,7 +293,10 @@ class RegressorSpin(nn.Module):
             'verts'  : pred_vertices,
             'kp_2d'  : pred_keypoints_2d,
             'kp_3d'  : pred_joints,
-            'rotmat' : pred_rotmat
+            'rotmat' : pred_rotmat,
+            'pose_6d': pred_pose.reshape(batch_size, seqlen, 24, 6),
+            'shape'  : pred_shape.reshape(batch_size, seqlen, 10),
+            'cam'    : pred_cam.reshape(batch_size, seqlen, 3)
         }]
         return output
 
