@@ -14,8 +14,9 @@ from models.hypergcn import HYPERGCv2
 from models.teacher import Teacher
 from models.Core_model import CrossAttentionBlock
 from models.common import Vposer
-
+from models.smpl_mps import SMPL
 from utils.transforms import rot6d_to_axis_angle
+from geometry import rot6d_to_rotmat
 TEACHER_CHPT = cfg.MODEL.TEACHER
 SMPL_MODEL_DIR = 'data_final/base_data'
 SMPL_MEAN_PARAMS = 'data_final/base_data/smpl_mean_params.npz'
@@ -29,7 +30,11 @@ class Pose2Mesh(nn.Module):
         for param in self.vposer.parameters():
             param.requires_grad = False
         self.vposer.eval()
-
+        self.smpl = SMPL(
+            SMPL_MODEL_DIR,
+            batch_size=64,
+            create_transl=False
+        ).to('cpu')
         from utils.smpl import SMPL as SMPLModel
         self.human_model = SMPLModel()
         self.human_model_layer = self.human_model.layer['neutral']
@@ -38,7 +43,6 @@ class Pose2Mesh(nn.Module):
             'joint_regressor_t',
             torch.from_numpy(self.joint_regressor).float()
         )
-
         self.pose_embed  = nn.Linear(6, embed_dim)
         self.shape_embed  = nn.Linear(10, embed_dim)
 
@@ -166,7 +170,14 @@ class Pose2Mesh(nn.Module):
             mesh_cam_render: (B, 6890, 3) absolute mesh vertices
         """
         batch_size = smpl_pose.shape[0]
-        mesh_cam, _ = self.human_model_layer(smpl_pose, smpl_shape, smpl_trans)
+        pred_rotmat = rot6d_to_rotmat(smpl_pose).view(batch_size, 24, 3, 3)
+        pred_output = self.smpl(
+            betas=smpl_shape,
+            body_pose=pred_rotmat[:, 1:],
+            global_orient=pred_rotmat[:, 0].unsqueeze(1),
+            pose2rot=False,
+        )
+        mesh_cam = pred_output.vertices
 
         joint_regressor = self.joint_regressor_t
         joint_cam = torch.bmm(
