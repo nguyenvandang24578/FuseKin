@@ -32,16 +32,7 @@ class Pose2Mesh(nn.Module):
         self.vposer.eval()
         self.smpl = SMPL(
             SMPL_MODEL_DIR,
-            batch_size=64,
             create_transl=False
-        ).to('cpu')
-        from utils.smpl import SMPL as SMPLModel
-        self.human_model = SMPLModel()
-        self.human_model_layer = self.human_model.layer['neutral']
-        self.joint_regressor = self.human_model.joint_regressor
-        self.register_buffer(
-            'joint_regressor_t',
-            torch.from_numpy(self.joint_regressor).float()
         )
         self.pose_embed  = nn.Linear(6, embed_dim)
         self.shape_embed  = nn.Linear(10, embed_dim)
@@ -170,22 +161,19 @@ class Pose2Mesh(nn.Module):
             mesh_cam_render: (B, 6890, 3) absolute mesh vertices
         """
         batch_size = smpl_pose.shape[0]
-        pred_rotmat = rot6d_to_rotmat(smpl_pose).view(batch_size, 24, 3, 3)
+        # Pose2Mesh dự đoán full_pose dạng axis-angle (72D)
+        # Chúng ta có thể truyền thẳng (B, 69) và (B, 3) vào smplx và bật pose2rot=True
         pred_output = self.smpl(
             betas=smpl_shape,
-            body_pose=pred_rotmat[:, 1:],
-            global_orient=pred_rotmat[:, 0].unsqueeze(1),
-            pose2rot=False,
+            body_pose=smpl_pose[:, 3:],
+            global_orient=smpl_pose[:, :3],
+            pose2rot=True,
         )
         mesh_cam = pred_output.vertices
+        joint_cam = pred_output.joints
 
-        joint_regressor = self.joint_regressor_t
-        joint_cam = torch.bmm(
-            joint_regressor[None, :, :].repeat(batch_size, 1, 1),
-            mesh_cam
-        )
-
-        root_joint_idx = self.human_model.root_joint_idx
+        # Root joint index for OP MidHip in smpl_mps is 8
+        root_joint_idx = 8
 
         x = joint_cam[:, :, 0] / (joint_cam[:, :, 2] + 1e-4) * cfg.DATASET.focal[0] + cfg.DATASET.princpt[0]
         y = joint_cam[:, :, 1] / (joint_cam[:, :, 2] + 1e-4) * cfg.DATASET.focal[1] + cfg.DATASET.princpt[1]
