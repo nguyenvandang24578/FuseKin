@@ -20,7 +20,7 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda'):
             # mesh, so derive H36M-17 GT joints and root-center them to match
             # Teacher training input. Student evaluation uses 2D joints.
             from core.config import cfg
-            if cfg.MODEL.name == 'teacher' and hasattr(dataset, 'h36m_joint_regressor'):
+            if cfg.MODEL.name in ('teacher', 'ARTS') and hasattr(dataset, 'h36m_joint_regressor'):
                 h36m_regressor = torch.as_tensor(
                     dataset.h36m_joint_regressor,
                     device=device,
@@ -31,7 +31,7 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda'):
                     target_mesh_tensor,
                 )
                 teacher_gt_joints = teacher_gt_joints - teacher_gt_joints[:, 0:1, :]
-                outputs = model(model_inputs['img'], teacher_gt_joints, is_train=False)
+                outputs = model(model_inputs['img'], teacher_gt_joints, is_train=False, use_gt_3d=True)
             else:
                 outputs = model(model_inputs['img'], model_inputs['joints'], is_train=False)
 

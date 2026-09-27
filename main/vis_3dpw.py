@@ -107,7 +107,7 @@ def main(args):
                     for key, value in inputs.items()
                 }
                 
-                if cfg.MODEL.name == 'arts' or cfg.MODEL.name == 'teacher':
+                if cfg.MODEL.name in ('arts', 'ARTS', 'teacher'):
                     target_mesh_tensor = targets['smpl_mesh_cam'].cuda().float()
                     h36m_regressor = torch.as_tensor(
                         dataset.h36m_joint_regressor,
@@ -122,7 +122,7 @@ def main(args):
                 else:
                     input_pose = model_inputs['joints']
                     
-                outputs = model(model_inputs['img'], input_pose, is_train=False, use_gt_3d = True)
+                outputs = model(model_inputs['img'], input_pose, is_train=False, use_gt_3d=True)
                 
                 pred_mesh = outputs['smpl_mesh_cam'].detach().cpu().numpy()
                 target_mesh = targets['smpl_mesh_cam'].detach().cpu().numpy()
@@ -169,7 +169,7 @@ def main(args):
                 key: value.cuda() if torch.is_tensor(value) else value
                 for key, value in inputs.items()
             }
-            if args.mode == 'arts' or args.mode == 'teacher':
+            if args.mode in ('arts', 'teacher'):
                 target_mesh_tensor = targets['smpl_mesh_cam'].cuda().float()
                 h36m_regressor = torch.as_tensor(
                     dataset.h36m_joint_regressor,
@@ -187,10 +187,9 @@ def main(args):
                     mask = model_inputs['joints_mask'].float()
                     if mask.dim() == 2:
                         mask = mask.unsqueeze(-1)
-                    # Nối mask (chiều 3) vào joints (x, y) để pose_lifter biết joint nào bị che
                     input_pose = torch.cat([input_pose[..., :2], mask], dim=-1)
                 
-            outputs = model(model_inputs['img'], input_pose, is_train=False, use_gt_3d = True)
+            outputs = model(model_inputs['img'], input_pose, is_train=False, use_gt_3d=True)
             
             pred_mesh = outputs['smpl_mesh_cam'].detach().cpu().numpy()
             

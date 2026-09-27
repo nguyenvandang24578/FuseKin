@@ -176,7 +176,8 @@ class Trainer:
             
             # model_output = self.model(input_image, input_pose, is_train=True)
             # Tạm skip MotionBERT, đưa trực tiếp GT 3D (đã là meter và root-relative) vào pose_mesh_coevo
-            model_output = self.model(input_image, gt_fit_joint_cam, is_train=True, use_gt_3d=True)
+            gt_pose_input = gt_fit_joint_cam - gt_fit_joint_cam[:, 0:1, :]  # root-relative
+            model_output = self.model(input_image, gt_pose_input, is_train=True, use_gt_3d=True)
 
             pred_mesh = model_output['smpl_mesh_cam']
             pred_smplpose = model_output['smpl_pose']
@@ -317,7 +318,8 @@ class Teacher_Trainer:
 
         self.jotr_coord_loss = JOTRCoordLoss()
         self.jotr_param_loss = JOTRParamLoss()
-        self.awl = AutomaticWeightedLoss(3).cuda()
+        self.coordLoss = CoordLoss(has_valid=True)
+        self.awl = AutomaticWeightedLoss(4).cuda()  # 4 losses: joint_cam, pose, shape, mesh
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
         # Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
