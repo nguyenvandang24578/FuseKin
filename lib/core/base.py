@@ -313,11 +313,6 @@ class Trainer:
                 batch_generator.set_description(desc)
 
         self.loss_history.append(running_loss / len(batch_generator))
-        for i, pg in enumerate(self.optimizer.param_groups):
-            group_name = ['SPIN', 'Fresh'][i] if i < 2 else f'Group{i}'
-            grads = [p.grad.norm().item() for p in pg['params'] if p.grad is not None]
-            if grads:
-                print(f"  [{group_name}] grad_norm={sum(grads) / len(grads):.4f}")
         print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}')
 
 class Tester:

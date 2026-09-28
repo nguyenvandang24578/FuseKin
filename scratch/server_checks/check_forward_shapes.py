@@ -165,7 +165,7 @@ def main():
 
             with torch.set_grad_enabled(is_train):
                 out = model(
-                    input_image, input_pose, is_train=is_train, use_gt_3d=use_gt_3d,
+                    input_image, input_pose, is_train=is_train, use_gt_3d=True,
                     gt_pose_6d=gt_pose_6d if is_train else None, 
                     kp2d=mode_kp2d, kp_conf=kp_conf,
                     pose_valid_mask=pose_valid_mask if is_train else None

@@ -101,7 +101,7 @@ class Pose2Mesh(nn.Module):
         # ============================================================
         # 1. Teacher fusion  (always runs — provides cam/shape features)
         # ============================================================
-        pred_pose_6d, pred_shape, pred_cam, feature = self.fusion(
+        _, pred_pose_6d, pred_shape, pred_cam, feature = self.fusion(
             joints, img_feats, is_train=is_train,
             J_regressor=J_regressor, return_features=True
         )
@@ -180,7 +180,6 @@ class Pose2Mesh(nn.Module):
             full_pose, shape_param, cam_trans
         )
         
-        from core.config import cfg
         if is_train and getattr(cfg.LOSS, 'DETACH_POSE_FOR_PROJ', True):
             _, _, mesh_cam_proj, _ = self.get_coord(
                 full_pose.detach(), shape_param, cam_trans
