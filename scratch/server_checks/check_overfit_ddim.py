@@ -1,4 +1,4 @@
-"""check_overfit_ddim.py – Overfit SMPL_HyperDiff on a tiny batch and verify quality.
+"""check_overfit_ddim.py – Overfit SMPL_HyperDiff on a real batch and verify quality.
 
 Claims to check
 ===============
@@ -7,36 +7,52 @@ Claims to check
 3. Two DDIM seeds give similar results (deterministic overfit).
 4. CONTROL: shuffling kp condition should degrade results, proving the model
    actually uses keypoint conditioning (not just memorising).
+5. Compares on overfitted batch vs unseen batch.
+6. Reports valid vs invalid joint errors separately.
 
 Previous bugs
 =============
-- Used random input (randn for kp2d, aa), not real data. Overfit test should
-  use plausible keypoints and poses.
+- Used random input (randn for kp2d, aa), not real data.
 - Only measured MSE in 6D space, not angular degrees.
-- No shuffle control → could pass even if keypoints are ignored.
-- PASS threshold too lax (last < first * 0.5).
+- PASS threshold too lax.
 """
 
 import os
 import sys
 import csv
-import math
 import argparse
 import torch
+import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'lib'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from models.smpl_hyperdiff import SMPL_HyperDiff, axis_angle_to_rot6d, axis_angle_to_rotmat
+from core.config import update_config, cfg
+from models.ARTS import get_model as get_arts_model
+from models.smpl_hyperdiff import axis_angle_to_rot6d
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cfg', type=str, default='')
+    parser.add_argument('--cfg', type=str, default='config/train_init_mesh.yaml')
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--out_dir', type=str, default='logs/server_checks')
-    parser.add_argument('--steps', type=int, default=500)
+    parser.add_argument('--steps', type=int, default=1000)
     return parser.parse_args()
+
+
+def dict_to_tensor(d, device):
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, np.ndarray):
+            out[k] = torch.from_numpy(v).float().unsqueeze(0).to(device)
+        elif isinstance(v, (float, int, bool)):
+            out[k] = torch.tensor([v], device=device).float()
+        elif torch.is_tensor(v):
+            out[k] = v.float().unsqueeze(0).to(device)
+        else:
+            out[k] = v
+    return out
 
 
 def rot6d_to_rotmat_local(x):
@@ -48,23 +64,61 @@ def rot6d_to_rotmat_local(x):
     dot = (b1 * a2).sum(dim=-1, keepdim=True)
     b2 = torch.nn.functional.normalize(a2 - dot * b1, dim=-1)
     b3 = torch.cross(b1, b2, dim=-1)
-    return torch.stack([b1, b2, b3], dim=-1)  # (N, 3, 3)
+    return torch.stack([b1, b2, b3], dim=-1)
 
 
 def geodesic_per_joint(pred_6d, gt_6d):
     """Compute per-joint geodesic angle in degrees.
-    pred_6d, gt_6d: (B, 24, 6) -> returns (B, 24) in degrees.
+    Returns (B, 24) in degrees.
     """
     B, J = pred_6d.shape[:2]
     R_pred = rot6d_to_rotmat_local(pred_6d.reshape(-1, 6)).reshape(B, J, 3, 3)
     R_gt = rot6d_to_rotmat_local(gt_6d.reshape(-1, 6)).reshape(B, J, 3, 3)
 
-    # R_diff = R_gt^T @ R_pred
     R_diff = torch.matmul(R_gt.transpose(-1, -2), R_pred)
-    trace = R_diff.diagonal(dim1=-2, dim2=-1).sum(dim=-1)  # (B, J)
+    trace = R_diff.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
     cos_angle = ((trace - 1) / 2).clamp(-1, 1)
-    angle_rad = torch.acos(cos_angle)  # (B, J)
+    angle_rad = torch.acos(cos_angle)
     return torch.degrees(angle_rad)
+
+
+def get_real_batch(ds, start_idx, B, device):
+    imgs, gt6ds, kp2ds, confs, masks = [], [], [], [], []
+    for b in range(start_idx, start_idx + B):
+        inputs, targets, meta = ds[b]
+        inp_t = dict_to_tensor(inputs, device)
+        tgt_t = dict_to_tensor(targets, device)
+        met_t = dict_to_tensor(meta, device)
+
+        imgs.append(inp_t['img'])
+        pp = tgt_t['pose_param'].reshape(-1, 3)
+        g6d = axis_angle_to_rot6d(pp).reshape(1, 24, 6)
+        gt6ds.append(g6d)
+
+        kp = tgt_t['orig_joint_img'][:, :17, :2].clone()
+        kp[..., 0] = kp[..., 0] / cfg.output_hm_shape[2] * 2 - 1
+        kp[..., 1] = kp[..., 1] / cfg.output_hm_shape[1] * 2 - 1
+        kp2ds.append(kp)
+
+        c = met_t['orig_joint_trunc'][:, :17]
+        if c.dim() == 3:
+            c = c.squeeze(-1)
+        confs.append(c)
+
+        fv = met_t['fit_param_valid']
+        if fv.shape[-1] == 72:
+            m = fv.reshape(1, 24, 3)[:, :, 0]
+        else:
+            m = torch.ones(1, 24, device=device)
+        masks.append(m)
+
+    return {
+        'img': torch.cat(imgs, 0),
+        'gt_pose_6d': torch.cat(gt6ds, 0),
+        'kp2d': torch.cat(kp2ds, 0),
+        'kp_conf': torch.cat(confs, 0),
+        'valid_mask': torch.cat(masks, 0)
+    }
 
 
 def main():
@@ -83,49 +137,33 @@ def main():
 
     all_pass = True
     try:
+        update_config(args.cfg)
+        cfg.MODEL.REFINER = 'diffusion'
         device = args.device
-        model = SMPL_HyperDiff().to(device)
+
+        # Get diff model from ARTS
+        arts_model = get_arts_model(num_joint=17, embed_dim=cfg.MODEL.hpe_dim).to(device)
+        model = arts_model.pose_mesh_coevo.diffusion
         model.train()
 
         optim = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-        # ---- Generate plausible synthetic data ----
-        B = 4
-        # Small random rotations (realistic range ≈ ±0.5 rad per axis)
-        gt_aa = torch.randn(B, 24, 3, device=device) * 0.3
-        gt_6d = axis_angle_to_rot6d(gt_aa.reshape(-1, 3)).reshape(B, 24, 6)
+        # ---- Prepare Real Data ----
+        from utils.jotr_dataset import get_train_dataset
+        ds = get_train_dataset('3dpw-train', args)
+        
+        B = min(64, len(ds) // 2)
+        log(f"Loading {B} samples for train batch, and {B} for unseen test batch.")
+        
+        train_batch = get_real_batch(ds, 0, B, device)
+        test_batch = get_real_batch(ds, B, B, device)
 
-        # Plausible 2D keypoints in [-1, 1] (structured, not random noise)
-        # Rough skeleton layout
-        kp2d = torch.zeros(B, 17, 2, device=device)
-        # Set a rough human shape
-        kp_template = torch.tensor([
-            [0.0, -0.4],   # 0 Pelvis
-            [-0.1, -0.2],  # 1 R_Hip
-            [-0.1, 0.1],   # 2 R_Knee
-            [-0.1, 0.3],   # 3 R_Ankle
-            [0.1, -0.2],   # 4 L_Hip
-            [0.1, 0.1],    # 5 L_Knee
-            [0.1, 0.3],    # 6 L_Ankle
-            [0.0, -0.5],   # 7 Torso
-            [0.0, -0.65],  # 8 Neck
-            [0.0, -0.7],   # 9 Nose
-            [0.0, -0.8],   # 10 Head
-            [0.15, -0.6],  # 11 L_Shoulder
-            [0.25, -0.4],  # 12 L_Elbow
-            [0.3, -0.2],   # 13 L_Wrist
-            [-0.15, -0.6], # 14 R_Shoulder
-            [-0.25, -0.4], # 15 R_Elbow
-            [-0.3, -0.2],  # 16 R_Wrist
-        ], device=device)
-        for b in range(B):
-            noise = torch.randn(17, 2, device=device) * 0.02
-            kp2d[b] = kp_template + noise
-
-        kp_conf = torch.ones(B, 17, device=device)
+        gt_6d = train_batch['gt_pose_6d']
+        kp2d = train_batch['kp2d']
+        kp_conf = train_batch['kp_conf']
+        valid_mask = train_batch['valid_mask']
 
         log(f"Overfit data: B={B}, gt_6d shape={list(gt_6d.shape)}")
-        log(f"Using plausible synthetic keypoints and small-angle GT poses.")
         log(f"Training for {args.steps} steps...\n")
 
         # ---- Train ----
@@ -137,7 +175,7 @@ def main():
             last_loss = None
             for step in range(args.steps):
                 optim.zero_grad()
-                _, loss = model(gt_6d, kp2d, kp_conf, is_train=True)
+                _, loss = model(gt_6d, kp2d, kp_conf, is_train=True, valid_mask=valid_mask)
                 loss.backward()
                 optim.step()
 
@@ -157,7 +195,7 @@ def main():
             log(f"  WARNING: loss did not decrease 10x (ratio={last_loss/first_loss:.4f})")
             all_pass = False
 
-        # ---- DDIM sampling ----
+        # ---- DDIM sampling on Train batch ----
         model.eval()
         g1 = torch.Generator(device=device).manual_seed(42)
         g2 = torch.Generator(device=device).manual_seed(100)
@@ -167,20 +205,38 @@ def main():
             sample2 = model.ddim_sample(kp2d, kp_conf, generator=g2)
 
         # ---- Geodesic error per joint ----
-        geo1 = geodesic_per_joint(sample1, gt_6d)  # (B, 24) in degrees
-        geo2 = geodesic_per_joint(sample2, gt_6d)
+        geo1 = geodesic_per_joint(sample1, gt_6d)  # (B, 24)
 
-        log(f"\n--- Per-joint geodesic error (degrees) - Seed 42 ---")
-        log(f"{'Joint':>6} | {'Mean':>8} | {'Max':>8}")
-        log("-" * 30)
+        log(f"\n--- Per-joint geodesic error (degrees) - Train Batch (Seed 42) ---")
+        log(f"{'Joint':>6} | {'Mean':>8} | {'Valid Mean':>11} | {'Invld Mean':>11}")
+        log("-" * 46)
+        
+        valid_errs, invalid_errs = [], []
         for j in range(24):
             m = geo1[:, j].mean().item()
-            mx = geo1[:, j].max().item()
-            log(f"{j:>6} | {m:>8.2f} | {mx:>8.2f}")
+            v_mask = valid_mask[:, j] > 0.5
+            
+            if v_mask.any():
+                v_mean = geo1[v_mask, j].mean().item()
+                valid_errs.extend(geo1[v_mask, j].tolist())
+            else:
+                v_mean = 0.0
+                
+            if (~v_mask).any():
+                inv_mean = geo1[~v_mask, j].mean().item()
+                invalid_errs.extend(geo1[~v_mask, j].tolist())
+            else:
+                inv_mean = 0.0
+                
+            log(f"{j:>6} | {m:>8.2f} | {v_mean:>11.2f} | {inv_mean:>11.2f}")
 
+        mean_valid = sum(valid_errs) / len(valid_errs) if valid_errs else 0
+        mean_invalid = sum(invalid_errs) / len(invalid_errs) if invalid_errs else 0
         mean_geo = geo1.mean().item()
-        log(f"\nOverall mean geodesic error: {mean_geo:.2f}°")
-        log(f"Overall max geodesic error: {geo1.max().item():.2f}°")
+        
+        log(f"\nOverall mean valid geodesic error: {mean_valid:.2f}°")
+        log(f"Overall mean invalid geodesic error: {mean_invalid:.2f}°")
+        log(f"Overall mean geodesic error: {mean_geo:.2f}°")
 
         # ---- Seed consistency ----
         geo_diff = geodesic_per_joint(sample1, sample2)
@@ -188,9 +244,9 @@ def main():
         log(f"\nSeed diversity (geodesic between seed 42 vs 100): {seed_diff_mean:.2f}°")
 
         # ---- CONTROL: shuffle keypoints ----
-        log(f"\n--- CONTROL: shuffle kp2d across batch ---")
+        log(f"\n--- CONTROL: shuffle kp2d across Train batch ---")
         perm = torch.randperm(B, device=device)
-        kp2d_shuffled = kp2d[perm]  # different person's kps for each pose
+        kp2d_shuffled = kp2d[perm]
 
         with torch.no_grad():
             sample_shuf = model.ddim_sample(kp2d_shuffled, kp_conf, generator=g1)
@@ -199,23 +255,32 @@ def main():
         log(f"Shuffled kp mean geodesic error: {mean_geo_shuf:.2f}°")
         log(f"Normal kp mean geodesic error:   {mean_geo:.2f}°")
 
-        if mean_geo_shuf <= mean_geo * 1.1:
-            log(f"  WARNING: shuffled kps give similar error! "
-                f"Model may not be using keypoint conditioning. "
-                f"(This can happen with tiny B={B} overfitting.)")
-            # Don't fail for this with B=4, but warn.
-            # With a larger batch this should be a harder failure.
+        if mean_geo_shuf <= mean_geo * 1.5:
+            log(f"  WARNING: shuffled kps give similar error! Model might just be memorizing batch indices.")
+
+        # ---- Eval on UNSEEN batch ----
+        log(f"\n--- EVAL on UNSEEN Batch ---")
+        with torch.no_grad():
+            sample_unseen = model.ddim_sample(test_batch['kp2d'], test_batch['kp_conf'], generator=g1)
+            
+        geo_unseen = geodesic_per_joint(sample_unseen, test_batch['gt_pose_6d'])
+        v_mask_u = test_batch['valid_mask'] > 0.5
+        v_unseen = geo_unseen[v_mask_u].mean().item() if v_mask_u.any() else 0.0
+        
+        log(f"Unseen batch valid mean error: {v_unseen:.2f}°")
 
         # ---- Thresholds ----
-        THRESH_GEO_DEG = 15.0  # after 500-step overfit, expect < 15°
-        if mean_geo > THRESH_GEO_DEG:
-            log(f"\n  FAIL: mean geodesic {mean_geo:.2f}° > {THRESH_GEO_DEG}° threshold")
+        # With real B=64 and 1000 steps, we expect the model to fit well on train data.
+        # It's an overfit test, so train error should be small (~3-5°).
+        THRESH_GEO_DEG = 5.0
+        if mean_valid > THRESH_GEO_DEG:
+            log(f"\n  FAIL: mean valid geodesic {mean_valid:.2f}° > {THRESH_GEO_DEG}° threshold")
             all_pass = False
 
         # ---- Verdict ----
         if all_pass:
             log(f"\nPASS - Overfit successful: loss {first_loss:.4f}→{last_loss:.4f}, "
-                f"geodesic {mean_geo:.2f}°.")
+                f"valid geodesic {mean_valid:.2f}°.")
         else:
             log(f"\nFAIL - Overfit quality insufficient.")
             sys.exit(1)

@@ -179,12 +179,11 @@ def main():
                          if stats['joints'][n]['is_hardcoded_zero']]
         log(f"\nSummary: {len(masked_joints)} joints have mask=0: {masked_joints}")
 
-        # Check if any masked joint actually has significant GT motion
         for name in masked_joints:
             s = stats['joints'][name]
+            log(f"  - {name:<10}: std={s['aa_angle_std_deg']:>5.1f}°, min={s['aa_angle_min_deg']:>5.1f}°, max={s['aa_angle_max_deg']:>5.1f}°")
             if s['aa_angle_std_deg'] > 5.0:
-                log(f"  NOTE: {name} has std={s['aa_angle_std_deg']:.1f}° despite mask=0. "
-                    f"GT data IS present. Consider enabling FORCE_FULL_FIT_MASK_3DPW.")
+                log(f"      -> WARNING: GT data IS present. Consider enabling FORCE_FULL_FIT_MASK_3DPW.")
 
         with open(json_file, 'w') as f:
             json.dump(stats, f, indent=2)

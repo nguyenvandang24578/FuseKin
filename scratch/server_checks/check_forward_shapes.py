@@ -5,12 +5,11 @@ Claims to check
 1. All tensor outputs have expected shapes: pose (B,72), shape (B,10),
    cam (B,3), mesh (B,6890,3), joint_proj (B,30,2), pred_pose_6d_refined (B,24,6).
 2. No NaN/Inf in any output.
-3. Works in both train and eval modes.
+3. Works in all keypoint modes (GT, noisy, detector).
 
 Previous bugs
 =============
-- inputs['joints'] is numpy → crash on .unsqueeze(). Same conversion issue
-  as check_grad_paths.
+- inputs['joints'] is numpy → crash on .unsqueeze().
 - Pose2Mesh(cfg) wrong constructor (takes num_joint, embed_dim).
 - PASS was unconditional as long as no exception.
 """
@@ -25,7 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'lib'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from core.config import update_config, cfg
-from models.Multimodel import Pose2Mesh
+from models.ARTS import get_model as get_arts_model
 from models.smpl_hyperdiff import axis_angle_to_rot6d
 
 
@@ -73,7 +72,9 @@ def main():
         cfg.MODEL.REFINER = 'diffusion'
         device = args.device
 
-        model = Pose2Mesh(num_joint=17, embed_dim=cfg.MODEL.hpe_dim).to(device)
+        model = get_arts_model(num_joint=17, embed_dim=cfg.MODEL.hpe_dim).to(device)
+        
+        log(f"Constructed ARTS model. embed_dim={cfg.MODEL.hpe_dim}")
 
         # ---- Prepare inputs ----
         if args.real_batch:
@@ -145,63 +146,58 @@ def main():
             'pred_pose_6d_refined': (B, 24, 6),
         }
 
-        # ---- Run train mode ----
-        log(f"\n--- TRAIN mode (B={B}) ---")
-        model.train()
-        out_train = model(
-            input_pose, input_image, is_train=True,
-            gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,
-            pose_valid_mask=pose_valid_mask,
-        )
+        # Define 3 modes:
+        # Mode 1: Train, GT 3D, GT kp2d (Noisy)
+        # Mode 2: Train, lift 2D (detector), detector kp2d
+        # Mode 3: Eval, lift 2D, detector kp2d
+        modes = [
+            ("Train GT", True, True, kp2d + torch.randn_like(kp2d)*0.1),
+            ("Train Detector", True, False, kp2d),
+            ("Eval Detector", False, False, kp2d)
+        ]
 
-        for k, v in out_train.items():
-            if torch.is_tensor(v):
-                shape = tuple(v.shape)
-                has_nan = torch.isnan(v).any().item()
-                has_inf = torch.isinf(v).any().item()
-                log(f"  {k:>25}: {str(list(shape)):>20}  "
-                    f"nan={has_nan}  inf={has_inf}")
-
-                # Check expected shape
-                exp = expected_shapes.get(k) or train_extra.get(k)
-                if exp and shape != exp:
-                    log(f"    SHAPE MISMATCH: expected {exp}")
-                    all_pass = False
-                if has_nan or has_inf:
-                    log(f"    FAIL: NaN or Inf detected!")
-                    all_pass = False
+        for mode_name, is_train, use_gt_3d, mode_kp2d in modes:
+            log(f"\n--- {mode_name} mode (B={B}) ---")
+            if is_train:
+                model.train()
             else:
-                log(f"  {k:>25}: {type(v).__name__} = {v}")
+                model.eval()
 
-        # Check diff_loss exists in train
-        if 'diff_loss' not in out_train:
-            log("  FAIL: diff_loss missing from train output!")
-            all_pass = False
-        else:
-            dl = out_train['diff_loss']
-            log(f"  diff_loss: {dl.item():.4f}")
+            with torch.set_grad_enabled(is_train):
+                out = model(
+                    input_image, input_pose, is_train=is_train, use_gt_3d=use_gt_3d,
+                    gt_pose_6d=gt_pose_6d if is_train else None, 
+                    kp2d=mode_kp2d, kp_conf=kp_conf,
+                    pose_valid_mask=pose_valid_mask if is_train else None
+                )
 
-        # ---- Run eval mode ----
-        log(f"\n--- EVAL mode (B={B}) ---")
-        model.eval()
-        with torch.no_grad():
-            out_eval = model(
-                input_pose, input_image, is_train=False,
-                kp2d=kp2d, kp_conf=kp_conf,
-            )
+            for k, v in out.items():
+                if torch.is_tensor(v):
+                    shape = tuple(v.shape)
+                    has_nan = torch.isnan(v).any().item()
+                    has_inf = torch.isinf(v).any().item()
+                    log(f"  {k:>25}: {str(list(shape)):>20}  "
+                        f"nan={has_nan}  inf={has_inf}")
 
-        for k, v in out_eval.items():
-            if torch.is_tensor(v):
-                shape = tuple(v.shape)
-                has_nan = torch.isnan(v).any().item()
-                has_inf = torch.isinf(v).any().item()
-                log(f"  {k:>25}: {str(list(shape)):>20}  "
-                    f"nan={has_nan}  inf={has_inf}")
-                if has_nan or has_inf:
-                    log(f"    FAIL: NaN or Inf detected!")
+                    # Check expected shape
+                    exp = expected_shapes.get(k) or (train_extra.get(k) if is_train else None)
+                    if exp and shape != exp:
+                        log(f"    SHAPE MISMATCH: expected {exp}")
+                        all_pass = False
+                    if has_nan or has_inf:
+                        log(f"    FAIL: NaN or Inf detected!")
+                        all_pass = False
+                else:
+                    log(f"  {k:>25}: {type(v).__name__} = {v}")
+
+            # Check diff_loss exists in train
+            if is_train:
+                if 'diff_loss' not in out:
+                    log("  FAIL: diff_loss missing from train output!")
                     all_pass = False
-            else:
-                log(f"  {k:>25}: {type(v).__name__}")
+                else:
+                    dl = out['diff_loss']
+                    log(f"  diff_loss: {dl.item():.4f}")
 
         # ---- Verdict ----
         if all_pass:

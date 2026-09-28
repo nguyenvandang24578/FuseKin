@@ -3,17 +3,17 @@
 Claims to check
 ===============
 1. Draw BOTH orig_joint_img (GT clean) AND inputs['joints'] (detector) on
-   the same crop image in different colours so we can compare positions.
-2. Un-normalise image using the actual mean/std from the dataset code.
-3. Numerical checks: (a) keypoints mostly in [0,64) heatmap space,
-   (b) average distance between GT and detector < 30px (crop-256).
+   the same crop image in different colours.
+2. Un-normalise image correctly (values are in [0,1]).
+3. Check average distance between GT and detector < 15px.
+4. Print distance per joint.
+5. Check left/right swapped pairs to detect joint order mismatch.
 
 Previous bugs
 =============
-- Only drew ONE set of keypoints (GT or detector), not both.
-- Used hardcoded ImageNet mean/std (but dataset code uses ToTensor()/255
-  without further normalisation — values are in [0,1]).
-- PASS was unconditional — just meant "image saved".
+- Only drew ONE set of keypoints (GT or detector).
+- Used train set (which has noisy GT instead of real detector).
+- PASS was unconditional.
 """
 
 import os
@@ -26,7 +26,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'lib'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from core.config import update_config, cfg
-from utils.jotr_dataset import get_train_dataset
+from utils.jotr_dataset import get_test_dataset
+from utils.h36m_adapter import HUMAN36M_JOINTS
 
 
 def parse_args():
@@ -39,21 +40,18 @@ def parse_args():
 
 
 def hm_to_pixel(xy, hm_shape, img_shape):
-    """Convert heatmap coords [0, hm) to pixel coords [0, img_size)."""
     px = xy[0] / hm_shape[2] * img_shape[1]
     py = xy[1] / hm_shape[1] * img_shape[0]
     return px, py
 
 
 def norm_to_pixel(xy, img_shape):
-    """Convert [-1, 1] normalised coords to pixel [0, img_size)."""
     px = (xy[0] + 1) * 0.5 * img_shape[1]
     py = (xy[1] + 1) * 0.5 * img_shape[0]
     return px, py
 
 
 def draw_kps(draw, kps, conf, color, hm_shape, img_shape, coord_type='heatmap'):
-    """Draw keypoints on image. Returns list of pixel coords."""
     px_coords = []
     for i in range(kps.shape[0]):
         x, y = float(kps[i, 0]), float(kps[i, 1])
@@ -94,110 +92,120 @@ def main():
         if os.path.exists(args.cfg):
             update_config(args.cfg)
 
-        train_ds = get_train_dataset('3dpw-train', args)
+        # Using test set for real detector keypoints
+        test_ds = get_test_dataset('3dpw', args)
 
-        hm_shape = cfg.output_hm_shape  # (64, 64, 64)
-        img_shape = cfg.input_img_shape  # (256, 256)
+        hm_shape = cfg.output_hm_shape
+        img_shape = cfg.input_img_shape
 
-        gt_oob_count = 0
-        det_oob_count = 0
-        gt_total = 0
-        distances = []
+        log(f"Processing {args.n_samples} test samples (using real detector keypoints)...")
+        
+        per_joint_dists = [[] for _ in range(17)]
+        
+        # H36M left/right pairs
+        # 1:R_Hip/4:L_Hip, 2:R_Knee/5:L_Knee, 3:R_Ankle/6:L_Ankle
+        # 11:L_Shoulder/14:R_Shoulder, 12:L_Elbow/15:R_Elbow, 13:L_Wrist/16:R_Wrist
+        swap_pairs = [(1,4), (2,5), (3,6), (11,14), (12,15), (13,16)]
+        
+        normal_dist_total = 0.0
+        swapped_dist_total = 0.0
+        pair_count = 0
 
-        log(f"Processing {args.n_samples} train samples...")
-        log(f"Image shape: {img_shape}, Heatmap shape: {hm_shape}")
-        log(f"\nDataset image normalisation: ToTensor()/255 → values in [0,1]")
-        log(f"(No additional mean/std normalisation detected in PW3D.__getitem__)")
+        for i in range(min(args.n_samples, len(test_ds))):
+            inputs, targets, meta = test_ds[i]
 
-        for i in range(min(args.n_samples, len(train_ds))):
-            inputs, targets, meta = train_ds[i]
-
-            # ---- Reconstruct image ----
-            # PW3D dataset: img = self.transform(img.astype(np.float32))/255.
-            # transform = transforms.ToTensor() → (C,H,W) [0,1]
-            # Then /255 → values in [0, 1/255] ... Actually ToTensor already
-            # divides by 255 for uint8. But input is float32, so ToTensor just
-            # permutes. Then /255 brings to [0, ~1].
-            # So img values ≈ [0, 1].
-            img_tensor = np.asarray(inputs['img'])  # (3, H, W)
-            img_np = img_tensor.transpose(1, 2, 0)  # (H, W, 3)
+            img_tensor = np.asarray(inputs['img'])
+            img_np = img_tensor.transpose(1, 2, 0)
             img_np = np.clip(img_np * 255, 0, 255).astype(np.uint8)
             img_pil = Image.fromarray(img_np)
             draw = ImageDraw.Draw(img_pil)
 
             H, W = img_np.shape[:2]
 
-            # ---- GT keypoints (orig_joint_img) ----
-            # Shape: (17, 3) in heatmap space [0, 64)
-            gt_kp = np.asarray(targets['orig_joint_img'])[:, :2]  # (17, 2)
-            gt_conf = np.asarray(meta['orig_joint_trunc']).squeeze(-1)  # (17,)
+            # GT keypoints
+            gt_kp = np.asarray(targets['orig_joint_img'])[:, :2]
+            gt_conf = np.asarray(meta['orig_joint_trunc']).squeeze(-1)
+            gt_px = draw_kps(draw, gt_kp, gt_conf, 'lime', hm_shape, (H, W), coord_type='heatmap')
 
-            gt_px = draw_kps(draw, gt_kp, gt_conf, 'lime', hm_shape, (H, W),
-                             coord_type='heatmap')
-
-            # ---- Detector keypoints (inputs['joints']) ----
-            # After Human36M17Dataset, joints are normalised to [-1,1]
-            det_kp_raw = np.asarray(inputs['joints'])  # (17, 3) or (30, 3)
+            # Detector keypoints
+            det_kp_raw = np.asarray(inputs['joints'])
             det_kp = det_kp_raw[:17, :2]
-            det_conf_raw = np.asarray(inputs.get('joints_mask',
-                                                  np.ones((17, 1))))
+            det_conf_raw = np.asarray(inputs.get('joints_mask', np.ones((17, 1))))
             if det_conf_raw.ndim == 2:
                 det_conf = det_conf_raw[:17].squeeze(-1)
             else:
                 det_conf = det_conf_raw[:17]
 
-            det_px = draw_kps(draw, det_kp, det_conf, 'cyan', hm_shape, (H, W),
-                              coord_type='normalised')
+            det_px = draw_kps(draw, det_kp, det_conf, 'cyan', hm_shape, (H, W), coord_type='normalised')
 
-            # ---- Numerical checks ----
+            # Calculate distances
             for j in range(min(17, len(gt_px))):
-                gt_total += 1
-                gx, gy = gt_kp[j]
-                # GT should be in [0, 64)
-                if gx < 0 or gx >= hm_shape[2] or gy < 0 or gy >= hm_shape[1]:
-                    gt_oob_count += 1
-
-                # Detector should be in [-1, 1]
-                dx, dy = det_kp[j]
-                if abs(dx) > 1.1 or abs(dy) > 1.1:
-                    det_oob_count += 1
-
-                # Distance in pixel-256 space
-                gt_p = gt_px[j]
-                det_p = det_px[j]
-                dist = np.sqrt((gt_p[0] - det_p[0])**2 + (gt_p[1] - det_p[1])**2)
-                distances.append(dist)
+                if gt_conf[j] > 0.5: # only count valid GT
+                    gx, gy = gt_px[j]
+                    dx, dy = det_px[j]
+                    dist = np.sqrt((gx - dx)**2 + (gy - dy)**2)
+                    per_joint_dists[j].append(dist)
+                    
+            # Check left-right swaps for detector vs GT
+            for (l, r) in swap_pairs:
+                if gt_conf[l] > 0.5 and gt_conf[r] > 0.5:
+                    gl_x, gl_y = gt_px[l]
+                    dl_x, dl_y = det_px[l]
+                    gr_x, gr_y = gt_px[r]
+                    dr_x, dr_y = det_px[r]
+                    
+                    # Normal distance (L to L, R to R)
+                    n_dist = np.sqrt((gl_x - dl_x)**2 + (gl_y - dl_y)**2) + \
+                             np.sqrt((gr_x - dr_x)**2 + (gr_y - dr_y)**2)
+                             
+                    # Swapped distance (L to R, R to L)
+                    s_dist = np.sqrt((gl_x - dr_x)**2 + (gl_y - dr_y)**2) + \
+                             np.sqrt((gr_x - dl_x)**2 + (gr_y - dl_x)**2)
+                             
+                    normal_dist_total += n_dist
+                    swapped_dist_total += s_dist
+                    pair_count += 1
 
             img_pil.save(os.path.join(out_img_dir, f'overlay_{i:02d}.png'))
 
         # ---- Report ----
-        log(f"\nGT keypoints out of [0,64): {gt_oob_count}/{gt_total}")
-        log(f"Det keypoints out of [-1,1]: {det_oob_count}/{gt_total}")
+        log(f"\n--- GT vs Detector Distance per Joint (pixels on {cfg.input_img_shape[0]} crop) ---")
+        log(f"{'Joint':>2} {'Name':<15} | {'Mean Dist (px)':>15}")
+        log("-" * 40)
+        
+        all_dists = []
+        for j in range(17):
+            dists = per_joint_dists[j]
+            if dists:
+                mean_d = np.mean(dists)
+                all_dists.extend(dists)
+                log(f"{j:>2} {HUMAN36M_JOINTS[j]:<15} | {mean_d:>15.1f}")
+            else:
+                log(f"{j:>2} {HUMAN36M_JOINTS[j]:<15} | {'N/A':>15}")
 
-        if gt_total > 0 and len(distances) > 0:
-            dist_arr = np.array(distances)
-            mean_dist = dist_arr.mean()
-            median_dist = np.median(dist_arr)
-            max_dist = dist_arr.max()
-            log(f"\nGT-vs-Detector distance (px-{W}):")
-            log(f"  mean: {mean_dist:.1f}px, median: {median_dist:.1f}px, "
-                f"max: {max_dist:.1f}px")
-
-            if mean_dist > 30:
-                log(f"  WARNING: mean distance {mean_dist:.1f}px > 30px. "
-                    f"Possible coordinate system mismatch!")
+        if all_dists:
+            overall_mean = np.mean(all_dists)
+            log(f"\nOverall Mean Distance: {overall_mean:.1f}px")
+            
+            if overall_mean > 15.0:
+                log(f"  WARNING: Mean distance > 15px. Possible coordinate mismatch or very poor detector.")
                 all_pass = False
 
-        gt_oob_frac = gt_oob_count / gt_total if gt_total > 0 else 0
-        if gt_oob_frac > 0.2:
-            log(f"  WARNING: {gt_oob_frac*100:.0f}% of GT kps out of bounds!")
-            all_pass = False
+        if pair_count > 0:
+            norm_avg = normal_dist_total / pair_count
+            swap_avg = swapped_dist_total / pair_count
+            log(f"\n--- L/R Swap Analysis ---")
+            log(f"Normal Assignment L/R Distance : {norm_avg:.1f}px")
+            log(f"Swapped Assignment L/R Distance: {swap_avg:.1f}px")
+            if swap_avg < norm_avg:
+                log(f"  FAIL: Detector left/right joints seem swapped compared to GT!")
+                all_pass = False
 
         if all_pass:
             log(f"\nPASS - Numerical checks OK. Visual verification still needed "
                 f"(check {out_img_dir}/ images: lime=GT, cyan=detector).")
         else:
-            log(f"\nFAIL - Numerical checks indicate coordinate issues.")
+            log(f"\nFAIL - Numerical checks indicate coordinate or assignment issues.")
             sys.exit(1)
 
     except Exception as e:

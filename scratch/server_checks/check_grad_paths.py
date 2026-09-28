@@ -8,15 +8,8 @@ groups receive gradients. Expected:
   body_joint_proj → diffusion NO (detach), cam_head YES, shape/fuse YES, Teacher YES
   smpl_shape      → diffusion NO, shape_head/fuse YES, Teacher YES
 
-Previous bugs
-=============
-- inputs['joints'] is numpy → crash on .unsqueeze(). All dataset outputs
-  are numpy, need conversion.
-- Pose2Mesh(cfg) is wrong constructor call (takes num_joint, embed_dim).
-- Only tested diff_loss + proj_loss. Did not test smpl_shape or per-loss
-  backward in isolation.
-- "model.smpl_layer.J_regressor" does not exist; it's model.joint_regressor_t.
-- forward(input_pose, input_image, ...) → should be forward(joints, img_feats, ...).
+Added Negative Control: Set cfg.LOSS.DETACH_POSE_FOR_PROJ=False. Then body_joint_proj
+MUST propagate gradient to diffusion. If not, the test is invalid.
 """
 
 import os
@@ -29,8 +22,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'lib'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from core.config import update_config, cfg
-from models.Multimodel import Pose2Mesh
+from models.ARTS import get_model as get_arts_model
 from models.smpl_hyperdiff import axis_angle_to_rot6d
+from core.loss import JOTRCoordLoss
 
 
 def dict_to_tensor(d, device):
@@ -89,6 +83,98 @@ def parse_args():
     return parser.parse_args()
 
 
+def run_tests(model, input_pose, input_image, gt_pose_6d, kp2d, kp_conf, pose_valid_mask, gt_orig_joint_img, orig_joint_trunc, log):
+    # ---- Collect all trainable parameter groups ----
+    groups = {}
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        g = classify_param(name)
+        if g not in groups:
+            groups[g] = []
+        groups[g].append((name, p))
+
+    log(f"\nTrainable parameter groups: {sorted(groups.keys())}")
+    for g, params in sorted(groups.items()):
+        log(f"  {g}: {len(params)} params")
+
+    # ---- Forward pass ----
+    out = model.forward_arts(
+        input_image, input_pose, is_train=True, use_gt_3d=True,
+        gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,
+        pose_valid_mask=pose_valid_mask
+    )
+
+    # ---- Build losses ----
+    losses = {}
+
+    # diff_loss
+    losses['diff_loss'] = out['diff_loss']
+
+    # body_joint_proj (exactly like base.py)
+    cam = out['cam_param']
+    scale = cam[:, 0:1, None]
+    trans = cam[:, 1:3, None].transpose(1, 2)
+    
+    # We use model.pose_mesh_coevo.joint_regressor_t because that's what MULTIMODEL uses for mesh -> 17 joints
+    J_reg = model.pose_mesh_coevo.joint_regressor_t
+    pred_pose_17 = torch.matmul(J_reg[None, :, :], out['smpl_mesh_cam_proj'])
+    
+    proj_2d = scale * pred_pose_17[:, :, :2] + trans
+    proj_pixel = (proj_2d + 1.0) * 0.5 * cfg.input_img_shape[0]
+    pred_joint_proj = proj_pixel * (cfg.output_hm_shape[1] / cfg.input_img_shape[0])
+    
+    jotr_coord_loss = JOTRCoordLoss().to(input_image.device)
+    loss_body_joint_proj = jotr_coord_loss(
+        pred_joint_proj,
+        gt_orig_joint_img[:, :, :2],
+        orig_joint_trunc
+    ).mean()
+    
+    losses['body_joint_proj'] = loss_body_joint_proj
+
+    # smpl_shape
+    losses['smpl_shape'] = out['smpl_shape'].abs().mean()
+
+    # ---- Per-loss backward + check ----
+    results_table = {}  # loss -> group -> actual status
+
+    for loss_name in ['diff_loss', 'body_joint_proj', 'smpl_shape']:
+        log(f"\n{'='*60}")
+        log(f"Backward from: {loss_name}")
+        log(f"{'='*60}")
+
+        model.zero_grad()
+        loss_val = losses[loss_name]
+        if loss_val.dim() == 0:
+            loss_val.backward(retain_graph=True)
+        else:
+            loss_val.mean().backward(retain_graph=True)
+
+        results_table[loss_name] = {}
+        for g, params in sorted(groups.items()):
+            statuses = [grad_status(p) for _, p in params]
+            # Aggregate: if any param has GRAD>0, group = GRAD>0
+            if any(s == 'GRAD>0' for s in statuses):
+                group_status = 'GRAD>0'
+            elif any(s == 'ZERO' for s in statuses):
+                group_status = 'ZERO'
+            else:
+                group_status = 'NONE'
+
+            results_table[loss_name][g] = group_status
+
+            # Print norms for non-None
+            norms = [p.grad.norm().item() for _, p in params
+                     if p.grad is not None]
+            if norms:
+                log(f"  {g:>20}: {group_status:>7}  "
+                    f"(norms: min={min(norms):.2e}, max={max(norms):.2e})")
+            else:
+                log(f"  {g:>20}: {group_status}")
+    return results_table
+
+
 def main():
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
@@ -108,8 +194,16 @@ def main():
         cfg.MODEL.REFINER = 'diffusion'
         device = args.device
 
-        model = Pose2Mesh(num_joint=17, embed_dim=cfg.MODEL.hpe_dim).to(device)
+        # Build ARTS model (which includes backbone + Multimodel)
+        model = get_arts_model(num_joint=17, embed_dim=cfg.MODEL.hpe_dim).to(device)
         model.train()
+        
+        # Verify construction
+        log(f"Constructed ARTS model.")
+        log(f"Configured embed_dim = {cfg.MODEL.hpe_dim}.")
+        if hasattr(model, 'pose_mesh_coevo'):
+            log(f"Actual Pose2Mesh embed_dim = {model.pose_mesh_coevo.embed_dim}.")
+        log(f"Input image will pass through ResNetBackbone to generate img_feats.")
 
         # ---- Prepare inputs ----
         if args.real_batch:
@@ -119,6 +213,7 @@ def main():
 
             B = 4
             imgs, poses, gt6ds, kp2ds, confs, masks = [], [], [], [], [], []
+            gt_orig_imgs, orig_truncs = [], []
             for b in range(B):
                 inputs, targets, meta = ds[b]
                 inp_t = dict_to_tensor(inputs, device)
@@ -150,6 +245,9 @@ def main():
                 else:
                     m = torch.ones(1, 24, device=device)
                 masks.append(m)
+                
+                gt_orig_imgs.append(tgt_t['orig_joint_img'])
+                orig_truncs.append(met_t['orig_joint_trunc'])
 
             input_image = torch.cat(imgs, 0)
             input_pose = torch.cat(poses, 0)
@@ -157,6 +255,8 @@ def main():
             kp2d = torch.cat(kp2ds, 0)
             kp_conf = torch.cat(confs, 0)
             pose_valid_mask = torch.cat(masks, 0)
+            gt_orig_joint_img = torch.cat(gt_orig_imgs, 0)
+            orig_joint_trunc = torch.cat(orig_truncs, 0)
         else:
             log("Using FAKE random tensors...")
             B = 4
@@ -166,34 +266,14 @@ def main():
             kp2d = torch.randn(B, 17, 2, device=device).clamp(-1, 1)
             kp_conf = torch.ones(B, 17, device=device)
             pose_valid_mask = torch.ones(B, 24, device=device)
+            gt_orig_joint_img = torch.randn(B, 30, 3, device=device)
+            orig_joint_trunc = torch.ones(B, 30, 1, device=device)
 
         log(f"Input shapes: img={list(input_image.shape)}, "
             f"pose={list(input_pose.shape)}, gt6d={list(gt_pose_6d.shape)}")
 
-        # ---- Forward pass ----
-        # Pose2Mesh.forward(joints, img_feats, is_train, ...)
-        out = model(
-            input_pose, input_image, is_train=True,
-            gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,
-            pose_valid_mask=pose_valid_mask
-        )
-
-        # ---- Collect all trainable parameter groups ----
-        groups = {}
-        for name, p in model.named_parameters():
-            if not p.requires_grad:
-                continue
-            g = classify_param(name)
-            if g not in groups:
-                groups[g] = []
-            groups[g].append((name, p))
-
-        log(f"\nTrainable parameter groups: {sorted(groups.keys())}")
-        for g, params in sorted(groups.items()):
-            log(f"  {g}: {len(params)} params")
-
-        # ---- Define expected gradient table ----
-        # loss_name -> group -> expected status
+        
+        # Test 1: Normal mode (DETACH_POSE_FOR_PROJ depends on config, usually True)
         expected = {
             'diff_loss': {
                 'diffusion': 'GRAD>0',
@@ -219,64 +299,10 @@ def main():
                 'teacher/fusion': 'GRAD>0',
             },
         }
-
-        # ---- Build losses ----
-        losses = {}
-
-        # diff_loss
-        losses['diff_loss'] = out['diff_loss']
-
-        # body_joint_proj: replicate the exact computation from base.py
-        cam = out['cam_param']
-        J_reg = model.joint_regressor_t
-        mesh_proj = out['smpl_mesh_cam_proj']
-        pred_j17 = torch.matmul(J_reg[None, :, :].expand(B, -1, -1), mesh_proj)
-        # Weak-perspective: scale * xy + trans
-        scale = cam[:, 0:1, None]
-        trans = cam[:, 1:3, None].transpose(1, 2)
-        proj_2d = scale * pred_j17[:, :, :2] + trans
-        # Simple L1 target (just need a loss that flows grad)
-        losses['body_joint_proj'] = proj_2d.abs().mean()
-
-        # smpl_shape
-        losses['smpl_shape'] = out['smpl_shape'].abs().mean()
-
-        # ---- Per-loss backward + check ----
-        results_table = {}  # loss -> group -> actual status
-
-        for loss_name in ['diff_loss', 'body_joint_proj', 'smpl_shape']:
-            log(f"\n{'='*60}")
-            log(f"Backward from: {loss_name}")
-            log(f"{'='*60}")
-
-            model.zero_grad()
-            loss_val = losses[loss_name]
-            if loss_val.dim() == 0:
-                loss_val.backward(retain_graph=True)
-            else:
-                loss_val.mean().backward(retain_graph=True)
-
-            results_table[loss_name] = {}
-            for g, params in sorted(groups.items()):
-                statuses = [grad_status(p) for _, p in params]
-                # Aggregate: if any param has GRAD>0, group = GRAD>0
-                if any(s == 'GRAD>0' for s in statuses):
-                    group_status = 'GRAD>0'
-                elif any(s == 'ZERO' for s in statuses):
-                    group_status = 'ZERO'
-                else:
-                    group_status = 'NONE'
-
-                results_table[loss_name][g] = group_status
-
-                # Print norms for non-None
-                norms = [p.grad.norm().item() for _, p in params
-                         if p.grad is not None]
-                if norms:
-                    log(f"  {g:>20}: {group_status:>7}  "
-                        f"(norms: min={min(norms):.2e}, max={max(norms):.2e})")
-                else:
-                    log(f"  {g:>20}: {group_status}")
+        
+        cfg.LOSS.DETACH_POSE_FOR_PROJ = True
+        log(f"\n--- NORMAL MODE (cfg.LOSS.DETACH_POSE_FOR_PROJ=True) ---")
+        results_table = run_tests(model, input_pose, input_image, gt_pose_6d, kp2d, kp_conf, pose_valid_mask, gt_orig_joint_img, orig_joint_trunc, log)
 
         # ---- Check expectations ----
         log(f"\n{'='*60}")
@@ -293,8 +319,6 @@ def main():
                     match = False
                 else:
                     actual = results_table[loss_name][g]
-                    # NONE and ZERO both mean "no useful gradient"
-                    # GRAD>0 means gradient is flowing
                     if exp_status == 'NONE':
                         match = actual in ('NONE', 'ZERO')
                     elif exp_status == 'GRAD>0':
@@ -307,32 +331,26 @@ def main():
                 if not match:
                     mismatches.append((loss_name, g, exp_status, actual))
 
-        # ---- List requires_grad=True but grad=None after full backward ----
-        log(f"\n--- Params with requires_grad=True but never got gradient ---")
-        model.zero_grad()
-        total_loss = sum(l.mean() for l in losses.values())
-        total_loss.backward()
-        no_grad_list = []
-        for name, p in model.named_parameters():
-            if p.requires_grad and p.grad is None:
-                no_grad_list.append(name)
-        if no_grad_list:
-            log(f"  {len(no_grad_list)} params have no grad after total backward:")
-            for n in no_grad_list[:20]:
-                log(f"    {n}")
-            if len(no_grad_list) > 20:
-                log(f"    ... and {len(no_grad_list)-20} more")
+        # Test 2: Negative Control
+        log(f"\n--- NEGATIVE CONTROL (cfg.LOSS.DETACH_POSE_FOR_PROJ=False) ---")
+        cfg.LOSS.DETACH_POSE_FOR_PROJ = False
+        res_negative = run_tests(model, input_pose, input_image, gt_pose_6d, kp2d, kp_conf, pose_valid_mask, gt_orig_joint_img, orig_joint_trunc, log)
+        
+        diff_proj_actual = res_negative['body_joint_proj'].get('diffusion', 'NONE')
+        if diff_proj_actual == 'GRAD>0':
+            log(f"  ✓ Negative control passed: body_joint_proj propagated gradient to diffusion (got {diff_proj_actual}).")
         else:
-            log("  All trainable params received gradient. ✓")
+            log(f"  ✗ Negative control FAILED: expected body_joint_proj to propagate gradient to diffusion, got {diff_proj_actual}.")
+            all_pass = False
 
         # ---- Verdict ----
         if mismatches:
-            log(f"\nFAIL - {len(mismatches)} expectation mismatches:")
+            log(f"\nFAIL - {len(mismatches)} expectation mismatches in NORMAL mode:")
             for m in mismatches:
                 log(f"  {m[0]}/{m[1]}: expected {m[2]}, got {m[3]}")
             all_pass = False
         else:
-            log(f"\nAll expectations matched.")
+            log(f"\nAll expectations matched in NORMAL mode.")
 
         if all_pass:
             log("PASS - Gradient paths are isolated correctly.")

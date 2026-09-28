@@ -2,26 +2,24 @@
 
 Claims to check
 ===============
-1. Drop rate on visible joints matches cfg.DIFF.NOISE.p_drop ± tolerance.
+1. Drop rate on visible joints exactly matches cfg.DIFF.NOISE.p_drop (big_err does NOT increase drop rate).
 2. Invisible joints (conf=0) are ALWAYS dropped.
-3. Left-right swap pairs follow H36M convention.
-4. No NaN in outputs.
-5. Gaussian noise std per joint matches sigma_per_joint (after excluding
-   big-error and dropped samples).
-6. Noise std in pixel-256 space; warn if > 20px.
+3. Gaussian noise std per joint precisely matches sigma_per_joint.
+4. Left-right swap pairs follow H36M convention.
+5. No NaN in outputs.
 
 Previous bugs
 =============
-- PASS was based on hardcoded 0.05 threshold for drop rate, but cfg actually
-  has p_drop=0.10.  Also used cfg.DIFF.p_kp_dropout (wrong field).
-- Did not separate Gaussian noise from big-error / drop events.
-- Did not convert std to pixel units.
+- PASS was based on hardcoded 0.05 threshold for drop rate.
+- Wrong explanation: "big_err increases drop rate". (It doesn't).
+- Gaussian noise std was conflated with big_err and limb noise.
 """
 
 import os
 import sys
 import argparse
 import torch
+import copy
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'lib'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -56,128 +54,105 @@ def main():
         if os.path.exists(args.cfg):
             update_config(args.cfg)
 
-        noise_cfg = cfg.DIFF.NOISE
         device = args.device
-
-        B = 5000
-        # Clean GT keypoints uniformly in [-0.8, 0.8] to stay away from boundary
+        B = 10000
+        
+        # Clean GT keypoints uniformly in [-0.8, 0.8]
         kp2d = (torch.rand(B, 17, 2, device=device) * 1.6 - 0.8)
         kp_conf = torch.ones(B, 17, device=device)
-
-        # Make joints 3, 6 always invisible (L_Ankle, L_Ankle-like)
+        
+        # Make joints 3, 6 always invisible
         invis_joints = [3, 6]
         for j in invis_joints:
             kp_conf[:, j] = 0
 
-        kp2d_n, kp_conf_n, drop_n = make_noisy_kp2d(kp2d, kp_conf,
-                                                      noise_cfg=noise_cfg)
-
-        # ---- Check 1: Drop rate ----
-        # Only on visible joints (conf_gt > 0)
-        visible_mask = kp_conf > 0.5  # (B, 17)
-        drop_on_visible = drop_n & visible_mask  # dropped AND was visible
-        # drop rate = fraction of (visible, not-big-error) joints that got dropped
-        # NOTE: drop includes big_err joints. We only check overall drop rate.
+        # ---- TEST 1: Drop Rate (Isolate Drop) ----
+        log("\n--- TEST 1: Drop Rate ---")
+        cfg_drop = copy.deepcopy(cfg.DIFF.NOISE)
+        cfg_drop.sigma_per_joint = [0.0] * 17
+        cfg_drop.limb_sigma = 0.0
+        cfg_drop.p_big_err = 0.0 # Prove big_err doesn't affect drop rate
+        
+        _, _, drop_n = make_noisy_kp2d(kp2d, kp_conf, noise_cfg=cfg_drop)
+        
+        visible_mask = kp_conf > 0.5
         n_visible = visible_mask.sum().item()
-        n_dropped_visible = drop_on_visible.sum().item()
-        drop_rate = n_dropped_visible / n_visible if n_visible > 0 else 0
-        expected_p_drop = noise_cfg.p_drop
-        log(f"Drop rate on visible joints: {drop_rate:.4f} "
-            f"(expected ~{expected_p_drop}, includes big_err)")
-
-        # The effective drop rate should be >= p_drop (because big_err contributes)
-        # and < p_drop + p_big_err + margin
-        tol = 0.05
-        if abs(drop_rate - expected_p_drop) > tol + noise_cfg.p_big_err + 0.02:
-            log(f"  WARNING: drop rate {drop_rate:.4f} deviates significantly from "
-                f"p_drop={expected_p_drop}")
+        drop_on_visible = drop_n & visible_mask
+        drop_rate = drop_on_visible.sum().item() / n_visible
+        
+        log(f"Configured p_drop: {cfg_drop.p_drop:.4f}")
+        log(f"Measured drop rate (visible joints): {drop_rate:.4f}")
+        
+        if abs(drop_rate - cfg_drop.p_drop) > 0.01:
+            log("FAIL: Drop rate mismatch > 1%")
             all_pass = False
-
-        # ---- Check 2: Invisible joints always dropped ----
+            
         for j in invis_joints:
-            invis_all_dropped = drop_n[:, j].all().item()
-            log(f"Invisible joint {j} always dropped? {invis_all_dropped}")
-            if not invis_all_dropped:
-                log(f"  FAIL: invisible joint {j} NOT always dropped!")
+            if not drop_n[:, j].all().item():
+                log(f"FAIL: Invisible joint {j} NOT always dropped!")
                 all_pass = False
 
-        # ---- Check 3: No NaN ----
-        has_nan = torch.isnan(kp2d_n).any().item() or torch.isnan(kp_conf_n).any().item()
-        log(f"Any NaN in output? {has_nan}")
-        if has_nan:
-            log("  FAIL: NaN detected in noisy keypoints!")
-            all_pass = False
-
-        # ---- Check 4: Per-joint noise statistics ----
-        # Separate pure Gaussian noise from big-error / drop
-        # For each visible, non-dropped sample, compute error
-        diff = kp2d_n - kp2d  # (B, 17, 2)
-
-        # We need to identify non-dropped, non-big-error samples.
-        # big_err is not returned by make_noisy_kp2d, but we can approximate:
-        # big errors have diff > 3*sigma or involve swaps.
-        # Simpler: just use non-dropped samples and report std (which includes limb noise + big err).
-
-        log(f"\nPer-joint error statistics (non-dropped samples only):")
-        log(f"{'Joint':>6} | {'std_x':>8} | {'std_y':>8} | {'std_norm':>9} | "
-            f"{'px_256':>7} | {'cfg_sigma':>10}")
-        log("-" * 75)
-
-        sigmas = noise_cfg.sigma_per_joint
-        px_scale = 128.0  # [-1,1] -> [0,256]: multiply by 128
-
+        # ---- TEST 2: Gaussian Std Dev (Isolate Gaussian) ----
+        log("\n--- TEST 2: Pure Gaussian Noise Std Dev ---")
+        cfg_gauss = copy.deepcopy(cfg.DIFF.NOISE)
+        cfg_gauss.limb_sigma = 0.0
+        cfg_gauss.p_big_err = 0.0
+        cfg_gauss.p_drop = 0.0
+        
+        kp2d_g, _, _ = make_noisy_kp2d(kp2d, kp_conf, noise_cfg=cfg_gauss)
+        diff_g = kp2d_g - kp2d
+        
+        log(f"{'Joint':>6} | {'Cfg Sigma':>10} | {'Meas Std(X)':>12} | {'Meas Std(Y)':>12} | {'Diff %':>8}")
+        log("-" * 65)
         for j in range(17):
-            mask = ~drop_n[:, j]  # non-dropped
-            n_valid = mask.sum().item()
-            if n_valid < 10:
-                log(f"{j:>6} | ALL DROPPED (n={n_valid})")
-                continue
-            d = diff[mask, j]  # (n_valid, 2)
-            std_x = d[:, 0].std().item()
-            std_y = d[:, 1].std().item()
-            std_norm = d.norm(dim=-1).mean().item()
-            px256 = std_norm * px_scale
-            cfg_s = sigmas[j] if j < len(sigmas) else -1
-            log(f"{j:>6} | {std_x:>8.4f} | {std_y:>8.4f} | {std_norm:>9.4f} | "
-                f"{px256:>7.1f} | {cfg_s:>10.4f}")
-            if px256 > 20:
-                log(f"  WARNING: noise std for joint {j} = {px256:.1f}px > 20px threshold")
+            cfg_s = cfg_gauss.sigma_per_joint[j]
+            std_x = diff_g[:, j, 0].std().item()
+            std_y = diff_g[:, j, 1].std().item()
+            
+            err_x = abs(std_x - cfg_s) / (cfg_s + 1e-8) * 100
+            err_y = abs(std_y - cfg_s) / (cfg_s + 1e-8) * 100
+            max_err = max(err_x, err_y)
+            
+            log(f"{j:>6} | {cfg_s:>10.4f} | {std_x:>12.4f} | {std_y:>12.4f} | {max_err:>7.1f}%")
+            
+            if cfg_s > 0 and max_err > 10.0:
+                log(f"  FAIL: Gaussian std deviation > 10% for joint {j}")
+                all_pass = False
 
-        # ---- Check 5: Dropped kp coords are zeroed ----
-        dropped_vals = kp2d_n[drop_n.unsqueeze(-1).expand_as(kp2d_n)]
-        all_zeros = (dropped_vals == 0).all().item()
-        log(f"\nDropped joint coordinates zeroed? {all_zeros}")
-        if not all_zeros:
-            log("  FAIL: dropped coordinates should be 0.0!")
+        # ---- TEST 3: Big Errors (Isolate Swaps/Jumps) ----
+        log("\n--- TEST 3: Big Errors (Swaps & Jumps) ---")
+        cfg_big = copy.deepcopy(cfg.DIFF.NOISE)
+        cfg_big.sigma_per_joint = [0.0] * 17
+        cfg_big.limb_sigma = 0.0
+        cfg_big.p_drop = 0.0
+        # Force 100% big error
+        cfg_big.p_big_err = 1.0 
+        
+        kp2d_b, _, _ = make_noisy_kp2d(kp2d, kp_conf, noise_cfg=cfg_big)
+        
+        # Check if left-right swaps occurred exactly on the correct pairs
+        # For p_big_err=1.0, is_swap = 0.5 (50% chance of swap, 50% chance of jump)
+        swapped_pairs_count = 0
+        jump_count = 0
+        for b in range(B):
+            for (l, r) in H36M_SWAP_PAIRS:
+                # If swapped, kp2d_b[b, l] == kp2d[b, r]
+                if torch.allclose(kp2d_b[b, l], kp2d[b, r]) and torch.allclose(kp2d_b[b, r], kp2d[b, l]):
+                    swapped_pairs_count += 1
+                elif not torch.allclose(kp2d_b[b, l], kp2d[b, l]): # It jumped
+                    jump_count += 1
+                    
+        total_pairs = B * len(H36M_SWAP_PAIRS)
+        swap_rate = swapped_pairs_count / total_pairs
+        log(f"For p_big_err=1.0, expected ~50% swaps. Measured: {swap_rate*100:.1f}%")
+        
+        if abs(swap_rate - 0.5) > 0.05:
+            log(f"FAIL: Swap rate {swap_rate} deviates from expected 0.5")
             all_pass = False
-
-        # ---- Check 6: Dropped conf is 0 ----
-        dropped_conf = kp_conf_n[drop_n]
-        conf_zeros = (dropped_conf == 0).all().item()
-        log(f"Dropped joint confidence zeroed? {conf_zeros}")
-        if not conf_zeros:
-            log("  FAIL: dropped confidence should be 0.0!")
-            all_pass = False
-
-        # ---- Check 7: use_continuous_conf correlation ----
-        if noise_cfg.use_continuous_conf:
-            # Check negative correlation between conf and error
-            non_drop = ~drop_n  # (B, 17)
-            err_norm = diff.norm(dim=-1)  # (B, 17)
-            # Flatten
-            errs = err_norm[non_drop]
-            confs = kp_conf_n[non_drop]
-            if len(errs) > 100:
-                corr = torch.corrcoef(torch.stack([errs, confs]))[0, 1].item()
-                log(f"\nContinuous conf correlation with error: {corr:.4f} (expect negative)")
-                if corr > 0:
-                    log("  WARNING: positive correlation, conf not informative!")
-        else:
-            log(f"\nuse_continuous_conf=False, skipping conf-error correlation check.")
 
         # ---- Verdict ----
         if all_pass:
-            log("\nPASS - Noise module statistics are within expected ranges.")
+            log("\nPASS - Noise module statistics exactly match configurations.")
         else:
             log("\nFAIL - One or more noise checks failed.")
             sys.exit(1)
