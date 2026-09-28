@@ -23,9 +23,9 @@ for script in "${SCRIPTS[@]}"; do
     echo "Running $script..."
     
     if [[ "$script" == "check_grad_paths.py" || "$script" == "check_forward_shapes.py" ]]; then
-        python "scratch/server_checks/$script" --real_batch
+        python "scratch/server_checks/$script" --cfg config/train_init_mesh.yaml --real_batch
     else
-        python "scratch/server_checks/$script"
+        python "scratch/server_checks/$script" --cfg config/train_init_mesh.yaml
     fi
     
     if [ $? -eq 0 ]; then

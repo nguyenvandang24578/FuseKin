@@ -15,11 +15,11 @@ set SCRIPTS=check_mask_3dpw.py check_overlay.py check_roundtrip_6d.py check_grad
 for %%s in (%SCRIPTS%) do (
     echo Running %%s...
     if "%%s"=="check_grad_paths.py" (
-        python scratch\server_checks\%%s --real_batch
+        python scratch\server_checks\%%s --cfg config\train_init_mesh.yaml --real_batch
     ) else if "%%s"=="check_forward_shapes.py" (
-        python scratch\server_checks\%%s --real_batch
+        python scratch\server_checks\%%s --cfg config\train_init_mesh.yaml --real_batch
     ) else (
-        python scratch\server_checks\%%s
+        python scratch\server_checks\%%s --cfg config\train_init_mesh.yaml
     )
     if !ERRORLEVEL! EQU 0 (
         set STATUS=PASS
