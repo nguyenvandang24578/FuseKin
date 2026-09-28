@@ -128,11 +128,16 @@ class ARTS(nn.Module):
         if kp_3d is not None and kp_3d.dim() == 4:
             kp_3d = kp_3d[:, -1]
 
+        cam = smpl_output.get("cam", None)
+        if cam is not None and cam.dim() == 3:
+            cam = cam[:, -1]
+
         return {
             "joint_img": kp_3d,
             "smpl_mesh_cam": verts,
             "smpl_pose": theta[:, 3:75],
             "smpl_shape": theta[:, 75:],
+            "cam_param": cam,
         }
 
     def forward_teacher(self, image, gt_pose_3d, is_train):
@@ -156,14 +161,15 @@ class ARTS(nn.Module):
             feature_map, _ = self.get_image_features(image)
             pose_3d = self.lift_2d_to_3d(pose_2d) / 1000      # mm -> m
             pose_3d = pose_3d - pose_3d[:, 0:1, :]            # root-relative như đầu vào teacher
+            print(f"Student lifted 3D pose (root-rel): min={pose_3d.min().item():.3f}, max={pose_3d.max().item():.3f}")
 
-        out, feats = self.smpl_model(
+        spin_out, pred_pose_6d, pred_shape, pred_cam, feats = self.smpl_model(
             joints=pose_3d,
             img_feats=feature_map,
             is_train=is_train,
             return_features=True
         )
-        smpl_output = out[-1]
+        smpl_output = spin_out
         result = self.format_smpl_output(smpl_output)
         result['feat'] = feats['joint_out']
         result['feat_global'] = feats['concat_feat']

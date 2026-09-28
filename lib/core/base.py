@@ -597,8 +597,19 @@ class Student_Trainer:
 
         self.jotr_coord_loss = JOTRCoordLoss()
         self.jotr_param_loss = JOTRParamLoss()
-        self.awl = AutomaticWeightedLoss(4).cuda()
+        self.coordLoss = CoordLoss(has_valid=True)
+        
+        hpe_dim = cfg.MODEL.get('hpe_dim', 512)
+        self.feat_projector = torch.nn.Sequential(
+            torch.nn.Linear(hpe_dim, hpe_dim * 2),
+            torch.nn.GELU(),
+            torch.nn.Linear(hpe_dim * 2, hpe_dim)
+        ).cuda()
+        
+        self.awl = AutomaticWeightedLoss(5).cuda()
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
+        self.optimizer.add_param_group({'params': self.feat_projector.parameters(), 'weight_decay': 0})
+        
         # Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
             import os
@@ -608,8 +619,11 @@ class Student_Trainer:
                 if 'awl_state_dict' in ckpt:
                     self.awl.load_state_dict(ckpt['awl_state_dict'])
                     print('===> AWL weights restored from checkpoint')
+                if 'projector_state_dict' in ckpt:
+                    self.feat_projector.load_state_dict(ckpt['projector_state_dict'])
+                    print('===> Projector weights restored from checkpoint')
             except Exception as e:
-                print(f'===> Could not restore AWL weights: {e}')
+                print(f'===> Could not restore AWL/Projector weights: {e}')
 
         if cfg.TRAIN.wandb:
             wandb.init(config=cfg,
@@ -621,6 +635,7 @@ class Student_Trainer:
 
     def train(self, epoch):
         self.model.train()
+        self.feat_projector.train()
 
         lr_check(self.optimizer, epoch)
         running_loss = 0.0
@@ -636,6 +651,7 @@ class Student_Trainer:
             
             gt_smplpose = targets['pose_param'].cuda()
             gt_smplshape = targets['shape_param'].cuda()
+            gt_mesh_cam = targets['smpl_mesh_cam'].cuda()
             is_3d = meta['is_3D'].cuda()
             is_valid_fit = meta['is_valid_fit'].cuda()
             
@@ -670,7 +686,9 @@ class Student_Trainer:
             # ---------- loss mềm: student bắt chước teacher (tầng feature) ----------
             s_feat = model_output['feat']
             t_feat = t_out['feat'].detach()
-            kd_feat = (1 - (F.normalize(s_feat, dim=-1) * F.normalize(t_feat, dim=-1)).sum(-1)).mean()
+            
+            s_feat_proj = self.feat_projector(s_feat)
+            kd_feat = (1 - (F.normalize(s_feat_proj, dim=-1) * F.normalize(t_feat, dim=-1)).sum(-1)).mean()
             kd_loss = kd_feat
 
             # ---------------------------------------------------------
@@ -721,11 +739,13 @@ class Student_Trainer:
             fit_shape_valid = is_valid_fit[:, None]
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
+            mesh_loss = self.coordLoss(pred_mesh, gt_mesh_cam, is_valid_fit[:, None, None])
             loss_dict = {
                 'smpl_joint_cam': loss_smpl_joint_cam,
                 'smpl_pose': smpl_pose_loss,
                 'smpl_shape': smpl_shape_loss,
                 'body_joint_proj': loss_body_joint_proj,
+                'mesh_loss': mesh_loss,
             }
             loss_dict = self.awl(loss_dict)
             hard_loss = sum(loss_dict.values())
@@ -742,6 +762,7 @@ class Student_Trainer:
                         'train_loss/smpl_joint_cam': loss_smpl_joint_cam.detach(),
                         'train_loss/smpl_pose': smpl_pose_loss.detach(),
                         'train_loss/smpl_shape': smpl_shape_loss.detach(),
+                        'train_loss/mesh': mesh_loss.detach(),
                         'train_loss/kd_feat': kd_feat.detach(),
                         'train_loss/hard_total': hard_loss.detach(),
                         'train_loss/total': loss.detach(),
@@ -754,6 +775,7 @@ class Student_Trainer:
                     f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
                     f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
                     f'smpl: {(smpl_pose_loss + smpl_shape_loss).item():.3f} '
+                    f'mesh: {mesh_loss.item():.3f} '
                     f'kd_feat: {kd_feat.item():.3f} '
                     f'tl: {total_loss.item():.3f}'
                 )
