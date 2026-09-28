@@ -76,7 +76,7 @@ def main():
         def run_check(mode_name, is_train):
             log(f"\nRunning {mode_name} mode...")
             out = model(
-                input_image, input_pose, is_train=is_train, use_gt_3d=is_train,
+                input_pose, input_image, is_train=is_train,
                 gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,
                 pose_valid_mask=pose_valid_mask
             )
