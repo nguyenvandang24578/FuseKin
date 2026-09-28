@@ -33,16 +33,28 @@ def main():
     try:
         N = 2000
         device = args.device
-        aa = torch.randn(N, 3, device=device)
+        
+        # Sample axis angles uniformly in [0, pi)
+        aa_raw = torch.randn(N, 3, device=device)
+        aa_raw_norms = aa_raw.norm(dim=-1, keepdim=True) + 1e-8
+        aa_norms = torch.rand(N, 1, device=device) * 3.14159
+        aa = aa_raw / aa_raw_norms * aa_norms
         
         # i) aa -> 6d -> aa
         r6d = axis_angle_to_rot6d(aa)
         aa_back = rot6d_to_axis_angle(r6d)
-        err_aa = (aa - aa_back).norm(dim=-1).max().item()
+        
+        # Compute geodesic distance between aa and aa_back
+        r_from_aa = rodrigues(aa).reshape(N, 3, 3)
+        r_from_aa_back = rodrigues(aa_back).reshape(N, 3, 3)
+        r1_t_r2 = torch.bmm(r_from_aa.transpose(1, 2), r_from_aa_back)
+        trace = r1_t_r2.diagonal(dim1=1, dim2=2).sum(dim=1)
+        angle_diff = torch.acos(((trace - 1.0) / 2.0).clamp(-1.0, 1.0))
+        err_aa_max = angle_diff.max().item()
+        err_aa_mean = angle_diff.mean().item()
         
         # ii) rot6d_to_rotmat(6d) == rodrigues(aa)
         r_from_6d = rot6d_to_rotmat(r6d).reshape(N, 3, 3)
-        r_from_aa = rodrigues(aa).reshape(N, 3, 3)
         err_mat = (r_from_6d - r_from_aa).abs().max().item()
         
         # iii) layout check
@@ -52,14 +64,15 @@ def main():
         expected_6d = torch.stack([col0[:,0], col1[:,0], col0[:,1], col1[:,1], col0[:,2], col1[:,2]], dim=-1)
         err_layout = (r6d - expected_6d).abs().max().item()
         
-        log(f"Error aa roundtrip: {err_aa:.2e}")
+        log(f"Error aa roundtrip (geodesic max): {err_aa_max:.2e}")
+        log(f"Error aa roundtrip (geodesic mean): {err_aa_mean:.2e}")
         log(f"Error matrix:       {err_mat:.2e}")
         log(f"Error layout:       {err_layout:.2e}")
         
-        if err_aa < 1e-3 and err_mat < 1e-3 and err_layout < 1e-5:
+        if err_aa_max < 1e-4 and err_mat < 1e-3 and err_layout < 1e-5:
             log("PASS - Roundtrip and matrix consistency are perfect.")
         else:
-            log(f"FAIL - Errors too large! err_aa={err_aa}, err_mat={err_mat}, err_layout={err_layout}")
+            log(f"FAIL - Errors too large! err_aa_max={err_aa_max}, err_mat={err_mat}, err_layout={err_layout}")
             sys.exit(1)
             
     except Exception as e:

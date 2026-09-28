@@ -54,7 +54,7 @@ class ARTS(nn.Module):
             self.pose_lifter = None
 
         if self.mode in ("teacher", "student"):
-            self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim)
+            self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim, depth = 3)
         elif self.mode == "ARTS":
             self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim * 2)
         else:
@@ -139,16 +139,16 @@ class ARTS(nn.Module):
         with torch.no_grad():
             feature_map, _ = self.get_image_features(image)
 
-        out, feats = self.smpl_model(
+        spin_out, pred_pose_6d, pred_shape, pred_cam, feature = self.smpl_model(
             joints=gt_pose_3d,
             img_feats=feature_map,
             is_train=is_train,
             return_features=True
         )
-        smpl_output = out[-1]
+        smpl_output = spin_out
         result = self.format_smpl_output(smpl_output)
-        result['feat'] = feats['joint_out']
-        result['feat_global'] = feats['concat_feat']
+        result['feat'] = feature['joint_out']
+        result['feat_global'] = feature['concat_feat']
         return result
 
     def forward_student(self, image, pose_2d, is_train):

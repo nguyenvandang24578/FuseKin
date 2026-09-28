@@ -47,11 +47,15 @@ def main():
             log(f"Processing {ds_name} dataset...")
             mask_sum = None
             total_samples = 0
+            poses_500 = []
             
             for i in tqdm(range(len(ds))):
                 inputs, targets, meta = ds[i]
                 mask = meta['fit_param_valid'] # (72,)
                 mask_24 = mask.reshape(24, 3)[:, 0] # (24,)
+                
+                if i < 500:
+                    poses_500.append(targets['pose_param'])
                 
                 if mask_sum is None:
                     mask_sum = mask_24.copy()
@@ -61,7 +65,12 @@ def main():
 
             stats[ds_name]['total'] = total_samples
             stats[ds_name]['joints'] = {}
-            for j_idx, joint_name in enumerate(smpl.joints_name):
+            
+            poses_500 = np.stack(poses_500) # (<=500, 72)
+            poses_24 = poses_500.reshape(-1, 24, 3) # (<=500, 24, 3)
+            poses_std = poses_24.std(axis=0) # (24, 3)
+            
+            for j_idx, joint_name in enumerate(smpl.joints_name[:24]):
                 valid_count = float(mask_sum[j_idx])
                 ratio = valid_count / total_samples if total_samples > 0 else 0
                 stats[ds_name]['joints'][joint_name] = {
@@ -72,7 +81,8 @@ def main():
                 
                 if ratio < 1.0:
                     status = "ALL SAMPLES" if ratio == 0 else "PARTIAL"
-                    log(f"  [{ds_name}] {joint_name}: mask=0 ({status}) - {valid_count}/{total_samples} valid")
+                    j_std = poses_std[j_idx]
+                    log(f"  [{ds_name}] {joint_name}: mask=0 ({status}) - {valid_count}/{total_samples} valid | GT std on 500 samples: {j_std.mean():.4f} (xyz: {j_std[0]:.4f}, {j_std[1]:.4f}, {j_std[2]:.4f})")
 
         with open(json_file, 'w') as f:
             json.dump(stats, f, indent=4)

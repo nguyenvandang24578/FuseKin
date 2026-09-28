@@ -208,7 +208,7 @@ class Teacher(nn.Module):
         cam = spin_out['cam'].squeeze(1)         # (B, 3)
         
         if return_features:
-            return pose_6d, shape, cam, {
+            return spin_out, pose_6d, shape, cam, {
                 'joint_out': joint_out,      # (B, 17, C) - per-joint tokens
                 'img_out': img_out,          # (B, H*W, C) - unpooled image tokens
                 'concat_feat': concat_feat,  # (B, 1024) - global pooled feature

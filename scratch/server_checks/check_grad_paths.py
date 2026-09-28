@@ -10,6 +10,15 @@ from core.config import update_config, cfg
 from models.Multimodel import Pose2Mesh
 from utils.jotr_dataset import get_train_dataset
 
+import numpy as np
+
+def to_tensor(x, device):
+    if isinstance(x, np.ndarray):
+        return torch.from_numpy(x).float().unsqueeze(0).to(device)
+    elif torch.is_tensor(x):
+        return x.float().unsqueeze(0).to(device)
+    return x
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cfg', type=str, default='experiment/mesh_3dpw.yaml')
@@ -43,11 +52,17 @@ def main():
             inputs, targets, meta = ds[0]
             
             # Prepare inputs with unsqueeze to add batch dim
-            input_image = inputs['img'].unsqueeze(0).to(args.device)
-            input_pose = inputs['joints'].unsqueeze(0).to(args.device)
+            input_image = to_tensor(inputs['img'], args.device)
+            input_pose = to_tensor(inputs['joints'], args.device)
             gt_pose_6d = torch.randn(1, 24, 6, device=args.device) # Dummy for diffusion loss
-            kp2d = targets['orig_joint_img'][:17, :2].unsqueeze(0).to(args.device)
-            kp_conf = meta['orig_joint_trunc'][:17].unsqueeze(0).squeeze(-1).to(args.device)
+            kp2d = to_tensor(targets['orig_joint_img'][:17, :2], args.device)
+            
+            orig_trunc = meta['orig_joint_trunc'][:17]
+            if isinstance(orig_trunc, np.ndarray):
+                kp_conf = torch.from_numpy(orig_trunc).float().unsqueeze(0).squeeze(-1).to(args.device)
+            else:
+                kp_conf = orig_trunc.float().unsqueeze(0).squeeze(-1).to(args.device)
+                
             pose_valid_mask = torch.ones(1, 24, device=args.device)
         else:
             log("Using FAKE random tensors...")
