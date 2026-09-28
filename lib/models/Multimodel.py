@@ -122,6 +122,7 @@ class Pose2Mesh(nn.Module):
                     gt_pose_6d, kp2d, kp_conf,
                     is_train=True, valid_mask=pose_valid_mask,
                 )
+                diff_loss = diff_loss.mean()
             else:
                 pred_x0 = self.diffusion(
                     None, kp2d, kp_conf, is_train=False,
