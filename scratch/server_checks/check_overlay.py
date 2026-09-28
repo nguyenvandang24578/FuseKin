@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'lib'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from core.config import update_config, cfg
-from utils.jotr_dataset import get_test_dataset
+from utils.jotr_dataset import get_train_dataset
 from utils.h36m_adapter import HUMAN36M_JOINTS
 
 
@@ -92,13 +92,14 @@ def main():
         if os.path.exists(args.cfg):
             update_config(args.cfg)
 
-        # Using test set for real detector keypoints
-        test_ds = get_test_dataset('3dpw', args)
+        # Using train set because it provides both orig_joint_img (GT) and inputs['joints'] (detector/openpose).
+        # The test split omits orig_joint_img in its targets dict.
+        train_ds = get_train_dataset('3dpw-train', args)
 
         hm_shape = cfg.output_hm_shape
         img_shape = cfg.input_img_shape
 
-        log(f"Processing {args.n_samples} test samples (using real detector keypoints)...")
+        log(f"Processing {args.n_samples} train samples (using dataset's provided openpose for detector)...")
         
         per_joint_dists = [[] for _ in range(17)]
         
@@ -111,8 +112,8 @@ def main():
         swapped_dist_total = 0.0
         pair_count = 0
 
-        for i in range(min(args.n_samples, len(test_ds))):
-            inputs, targets, meta = test_ds[i]
+        for i in range(min(args.n_samples, len(train_ds))):
+            inputs, targets, meta = train_ds[i]
 
             img_tensor = np.asarray(inputs['img'])
             img_np = img_tensor.transpose(1, 2, 0)

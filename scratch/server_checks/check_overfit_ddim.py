@@ -79,7 +79,8 @@ def geodesic_per_joint(pred_6d, gt_6d):
     trace = R_diff.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
     cos_angle = ((trace - 1) / 2).clamp(-1, 1)
     angle_rad = torch.acos(cos_angle)
-    return torch.degrees(angle_rad)
+    import math
+    return angle_rad * (180.0 / math.pi)
 
 
 def get_real_batch(ds, start_idx, B, device):

@@ -198,12 +198,7 @@ def main():
         model = get_arts_model(num_joint=17, embed_dim=cfg.MODEL.hpe_dim).to(device)
         model.train()
         
-        # Verify construction
-        log(f"Constructed ARTS model.")
-        log(f"Configured embed_dim = {cfg.MODEL.hpe_dim}.")
-        if hasattr(model, 'pose_mesh_coevo'):
-            log(f"Actual Pose2Mesh embed_dim = {model.pose_mesh_coevo.embed_dim}.")
-        log(f"Input image will pass through ResNetBackbone to generate img_feats.")
+        log("Constructed ARTS model successfully.")
 
         # ---- Prepare inputs ----
         if args.real_batch:
