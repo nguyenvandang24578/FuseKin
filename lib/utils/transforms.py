@@ -99,7 +99,7 @@ def rot6d_to_axis_angle(x):
     b3 = torch.cross(b1, b2)
     rot_mat = torch.stack((b1, b2, b3), dim=-1)  # 3x3 rotation matrix
 
-    rot_mat = torch.cat([rot_mat, torch.zeros((batch_size, 3, 1)).cuda().float()], 2)  # 3x4 rotation matrix
+    rot_mat = torch.cat([rot_mat, torch.zeros((batch_size, 3, 1), device=rot_mat.device, dtype=rot_mat.dtype)], 2)  # 3x4 rotation matrix
     axis_angle = rotation_matrix_to_angle_axis(rot_mat).reshape(-1, 3)  # axis-angle
     axis_angle[torch.isnan(axis_angle)] = 0.0
     return axis_angle

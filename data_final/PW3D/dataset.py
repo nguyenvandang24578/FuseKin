@@ -36,6 +36,7 @@ class PW3D(torch.utils.data.Dataset):
 
         # SMPL joint set
         self.smpl = SMPL()
+        
         self.face = self.smpl.face
         self.joint_regressor = self.smpl.joint_regressor
         self.vertex_num = self.smpl.vertex_num
@@ -386,8 +387,15 @@ class PW3D(torch.utils.data.Dataset):
 
                 # SMPL pose parameter validity
                 smpl_param_valid = np.ones((self.smpl.orig_joint_num, 3), dtype=np.float32)
-                for name in ('L_Ankle', 'R_Ankle', 'L_Toe', 'R_Toe', 'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand'):
-                    smpl_param_valid[self.joints_name.index(name)] = 0
+                from core.config import cfg
+                if getattr(cfg.DATASET, 'FORCE_FULL_FIT_MASK_3DPW', False):
+                    # Flag overrides mask to all ones (do nothing to the ones-array)
+                    if not hasattr(self, '_printed_mask_warning'):
+                        print("\n[WARNING] 3DPW dataset: FORCE_FULL_FIT_MASK_3DPW=True! Overriding mask to all ones.\n")
+                        self._printed_mask_warning = True
+                else:
+                    for name in ('L_Ankle', 'R_Ankle', 'L_Toe', 'R_Toe', 'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand'):
+                        smpl_param_valid[self.joints_name.index(name)] = 0
                 smpl_param_valid = smpl_param_valid.reshape(-1)
 
                 is_valid_fit = True

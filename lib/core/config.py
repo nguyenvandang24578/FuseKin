@@ -64,6 +64,7 @@ cfg.camera_3d_size = cfg.bbox_3d_size  # alias for get_camera_trans
 cfg.DATASET.focal = cfg.focal
 cfg.DATASET.princpt = cfg.princpt
 cfg.DATASET.camera_3d_size = cfg.camera_3d_size
+cfg.DATASET.FORCE_FULL_FIT_MASK_3DPW = False  # Override fit_param_valid to all-ones for 3DPW
 
 ###############SMPL mean data#################
 cfg.DATASET.BASE_DATA_DIR = 'data_final/base_data'
@@ -137,6 +138,54 @@ cfg.MOTIONBERT.lambda_lg = 0.0
 cfg.MOTIONBERT.lambda_a = 0.0
 cfg.MOTIONBERT.lambda_av = 0.0
 
+""" Diffusion (SMPL_HyperDiff) """
+cfg.DIFF = edict()
+cfg.DIFF.num_timesteps = 1000
+cfg.DIFF.sampling_timesteps = 10
+cfg.DIFF.ddim_eta = 0.0
+cfg.DIFF.dim_feat = 256
+cfg.DIFF.dim_rep = 512
+cfg.DIFF.n_layers = 4
+cfg.DIFF.num_heads = 8
+cfg.DIFF.mlp_ratio = 4.0
+cfg.DIFF.drop_path_rate = 0.1
+cfg.DIFF.layer_scale_init = 1e-5
+cfg.DIFF.loss_type = 'mse'          # 'mse' or 'l1'
+cfg.DIFF.p_kp_dropout = 0.05       # condition-dropout probability
+cfg.DIFF.t_sampling = 'uniform'    # 'uniform' or 'sqrt' (bias toward large t)
+cfg.DIFF.eval_kp_mode = 'detector' # 'gt', 'noisy_gt', 'detector'
+
+cfg.DIFF.NOISE = edict()
+# PLACEHOLDER sigmas — calibrate with real detector errors on val 3DPW
+cfg.DIFF.NOISE.sigma_per_joint = [
+    0.02, 0.03, 0.04, 0.06,   # Pelvis, R_Hip, R_Knee, R_Ankle
+    0.03, 0.04, 0.06,          # L_Hip, L_Knee, L_Ankle
+    0.02, 0.03, 0.04, 0.04,   # Torso, Neck, Nose, Head
+    0.03, 0.05, 0.07,          # L_Shoulder, L_Elbow, L_Wrist
+    0.03, 0.05, 0.07,          # R_Shoulder, R_Elbow, R_Wrist
+]
+cfg.DIFF.NOISE.limb_sigma = 0.02
+cfg.DIFF.NOISE.p_big_err = 0.02
+cfg.DIFF.NOISE.p_drop = 0.10
+cfg.DIFF.NOISE.k = 5.0             # conf decay rate with error
+cfg.DIFF.NOISE.use_continuous_conf = False
+cfg.DIFF.NOISE.warmup_epochs = 0   # 0 = no curriculum
+cfg.DIFF.NOISE.warmup_scale_start = 0.3
+
+""" Loss """
+cfg.LOSS = edict()
+cfg.LOSS.diff_w = 1.0
+cfg.LOSS.w_proj = 1.0              # body_joint_proj weight
+cfg.LOSS.w_shape = 1.0             # smpl_shape weight
+cfg.LOSS.w_joint_cam = 0.0         # OFF by default
+cfg.LOSS.w_mesh = 0.0              # OFF by default
+cfg.LOSS.w_pose = 0.0              # OFF by default
+cfg.LOSS.t_min_for_smpl = 500      # only compute aux SMPL losses when t >= this
+cfg.LOSS.DETACH_POSE_FOR_PROJ = True # Detach pose (but not shape) for 2D projection loss
+
+""" Model (continued) """
+cfg.MODEL.REFINER = 'diffusion'    # 'hypergcn' or 'diffusion'
+
 """ Test Detail """
 cfg.TEST = edict()
 cfg.TEST.batch_size = 64
@@ -145,12 +194,19 @@ cfg.TEST.vis = False
 cfg.TEST.weight_path = './experiment/pretrained/mesh_3dpw.pth.tar'
 
 
-def _update_dict(k, v):
+def _update_dict(cfg_sub, v, prefix=''):
+    """Recursively update *cfg_sub* (an edict) with values from dict *v*.
+
+    Supports nested edicts: if a value in *v* is a dict AND the corresponding
+    key in *cfg_sub* is also an edict, recurse.  Otherwise overwrite directly.
+    """
     for vk, vv in v.items():
-        if vk in cfg[k]:
-            cfg[k][vk] = vv
+        if vk not in cfg_sub:
+            raise ValueError("{}{} not exist in config.py".format(prefix, vk))
+        if isinstance(vv, dict) and isinstance(cfg_sub[vk], edict):
+            _update_dict(cfg_sub[vk], vv, prefix='{}{}.'.format(prefix, vk))
         else:
-            raise ValueError("{}.{} not exist in config.py".format(k, vk))
+            cfg_sub[vk] = vv
 
 
 def update_config(config_file):
@@ -160,7 +216,7 @@ def update_config(config_file):
         for k, v in exp_config.items():
             if k in cfg:
                 if isinstance(v, dict):
-                    _update_dict(k, v)
+                    _update_dict(cfg[k], v, prefix='{}.'.format(k))
                 else:
                     if k == 'SCALES':
                         cfg[k][0] = (tuple(v))
@@ -168,3 +224,4 @@ def update_config(config_file):
                         cfg[k] = v
             else:
                 raise ValueError("{} not exist in config.py".format(k))
+

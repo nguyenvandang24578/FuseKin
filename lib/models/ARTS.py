@@ -169,7 +169,9 @@ class ARTS(nn.Module):
         result['feat_global'] = feats['concat_feat']
         return result
 
-    def forward_arts(self, image, pose_input, is_train, use_gt_3d=False):
+    def forward_arts(self, image, pose_input, is_train, use_gt_3d=False,
+                     gt_pose_6d=None, kp2d=None, kp_conf=None,
+                     pose_valid_mask=None):
         with torch.no_grad():
             ft_map, global_feature = self.get_image_features(image)
             
@@ -185,18 +187,28 @@ class ARTS(nn.Module):
             pose_3d,
             ft_map,
             is_train=is_train,
+            gt_pose_6d=gt_pose_6d,
+            kp2d=kp2d,
+            kp_conf=kp_conf,
+            pose_valid_mask=pose_valid_mask,
         )
         # MotionBERT outputs 3D joints in millimeters; convert to meters so
         # joint_img shares the unit of the GT joints used in the training loss.
         output["joint_img"] = pose_3d
         return output
 
-    def forward(self, image, joints, is_train=True, use_gt_3d=False):
+    def forward(self, image, joints, is_train=True, use_gt_3d=False,
+                gt_pose_6d=None, kp2d=None, kp_conf=None,
+                pose_valid_mask=None):
         if self.mode == "teacher":
             return self.forward_teacher(image, joints, is_train)
         if self.mode == "student":
             return self.forward_student(image, joints, is_train)
-        return self.forward_arts(image, joints, is_train, use_gt_3d)
+        return self.forward_arts(
+            image, joints, is_train, use_gt_3d,
+            gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,
+            pose_valid_mask=pose_valid_mask,
+        )
 
 
 def get_model(num_joint, embed_dim, depth=None):

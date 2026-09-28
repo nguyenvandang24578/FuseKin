@@ -16,6 +16,7 @@ from utils.jotr_dataset import get_test_dataset as get_jotr_test_dataset
 from utils.jotr_dataset import get_train_dataset as get_jotr_train_dataset
 from utils.jotr_evaluation import evaluate_3dpw_subset
 from utils.transforms import cam2pixel
+from models.smpl_hyperdiff import axis_angle_to_rot6d, make_noisy_kp2d
 
 def get_dataloader(args, dataset_names, is_train):
     dataset_split = 'TRAIN' if is_train else 'TEST'
@@ -155,6 +156,15 @@ class Trainer:
 
     def train(self, epoch):
         self.model.train()
+        use_diffusion = getattr(cfg.MODEL, 'REFINER', 'hypergcn') == 'diffusion'
+
+        # Noise curriculum warmup
+        warmup_ep = getattr(cfg.DIFF.NOISE, 'warmup_epochs', 0)
+        if warmup_ep > 0 and epoch <= warmup_ep:
+            warmup_scale = cfg.DIFF.NOISE.warmup_scale_start + \
+                (1.0 - cfg.DIFF.NOISE.warmup_scale_start) * (epoch / warmup_ep)
+        else:
+            warmup_scale = 1.0
 
         lr_check(self.optimizer, epoch)
         running_loss = 0.0
@@ -162,56 +172,79 @@ class Trainer:
         for i, (inputs, targets, meta) in enumerate(batch_generator):
             # convert to cuda
             input_image = inputs['img'].cuda().float()
-            input_pose = inputs['joints'].cuda().float() # keypoint 2D Ä‘áº§u vÃ o
-            gt_orig_joint_cam = targets['orig_joint_cam'].cuda() #ÄÃ¢y lÃ  tá»a Ä‘á»™ 3D thá»±c táº¿ Ä‘o Ä‘Æ°á»£c tá»« cÃ¡c cáº£m biáº¿n
-            gt_fit_joint_cam = targets['fit_joint_cam'].cuda() # tá»a Ä‘á»™ 3D sinh ra tá»« smpl prj
-            orig_joint_valid = meta['orig_joint_valid'].cuda() #mask, = 0 thÃ¬ k tÃ­nh loss
-            fit_joint_trunc = meta['fit_joint_trunc'].cuda() # mask
-            
+            input_pose = inputs['joints'].cuda().float()
+            gt_orig_joint_cam = targets['orig_joint_cam'].cuda()
+            gt_fit_joint_cam = targets['fit_joint_cam'].cuda()
+            orig_joint_valid = meta['orig_joint_valid'].cuda()
+            fit_joint_trunc = meta['fit_joint_trunc'].cuda()
+
             gt_smplpose = targets['pose_param'].cuda()
             gt_smplshape = targets['shape_param'].cuda()
             gt_mesh_cam = targets['smpl_mesh_cam'].cuda()
             is_3d = meta['is_3D'].cuda()
             is_valid_fit = meta['is_valid_fit'].cuda()
-            
-            # model_output = self.model(input_image, input_pose, is_train=True)
-            # Tạm skip MotionBERT, đưa trực tiếp GT 3D (đã là meter và root-relative) vào pose_mesh_coevo
-            gt_pose_input = gt_fit_joint_cam - gt_fit_joint_cam[:, 0:1, :]  # root-relative
-            model_output = self.model(input_image, gt_pose_input, is_train=True, use_gt_3d=True)
+
+            # ---- Prepare diffusion inputs ----
+            gt_pose_6d = None
+            kp2d = None
+            kp_conf = None
+            pose_valid_mask = None
+
+            if use_diffusion:
+                # Convert GT axis-angle (B,72) -> 6D (B,24,6)
+                B = gt_smplpose.shape[0]
+                gt_pose_6d = axis_angle_to_rot6d(
+                    gt_smplpose.reshape(-1, 3)
+                ).reshape(B, 24, 6)
+
+                # GT 2D keypoints: heatmap [0,64) -> normalise to [-1,1]
+                kp2d_gt = targets['orig_joint_img'].cuda()[:, :, :2].clone()
+                kp2d_gt[:, :, 0] = kp2d_gt[:, :, 0] / cfg.output_hm_shape[2] * 2 - 1
+                kp2d_gt[:, :, 1] = kp2d_gt[:, :, 1] / cfg.output_hm_shape[1] * 2 - 1
+                kp_conf_gt = meta['orig_joint_trunc'].cuda().squeeze(-1).float()
+
+                # Apply noise augmentation to condition
+                kp2d, kp_conf, _ = make_noisy_kp2d(
+                    kp2d_gt, kp_conf_gt,
+                    noise_cfg=cfg.DIFF.NOISE,
+                    warmup_scale=warmup_scale,
+                )
+
+                # Joint validity mask for loss: fit_param_valid (B,72) -> (B,24)
+                fit_pv = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
+                pose_valid_mask = fit_pv.reshape(B, 24, 3)[:, :, 0]
+
+            # ---- Forward ----
+            gt_pose_input = gt_fit_joint_cam - gt_fit_joint_cam[:, 0:1, :]
+            model_output = self.model(
+                input_image, gt_pose_input, is_train=True, use_gt_3d=True,
+                gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,
+                pose_valid_mask=pose_valid_mask,
+            )
 
             pred_mesh = model_output['smpl_mesh_cam']
             pred_smplpose = model_output['smpl_pose']
             pred_smplshape = model_output['smpl_shape']
             cam_param = model_output['cam_param']
-            # Regress H36M-17 joints from the predicted mesh, root-relative to
-            # match gt_fit_joint_cam (the dataset subtracts the pelvis).
+
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
             pred_pose = pred_pose - pred_pose[:, 0:1, :]
 
-            # NOTE: no body_joint_cam loss here. In ARTS mode joint_img is the
-            # output of the frozen MotionBERT lifter (computed under no_grad), so
-            # a loss on it would produce zero gradient — it is intentionally dropped.
+            # ---- Compute individual losses ----
             loss_smpl_joint_cam = self.jotr_coord_loss(
-                pred_pose, gt_fit_joint_cam, fit_joint_trunc * is_valid_fit[:, None, None]).mean()
+                pred_pose, gt_fit_joint_cam,
+                fit_joint_trunc * is_valid_fit[:, None, None]
+            ).mean()
 
-            # 2D projection loss.
-            # Dùng Weak Perspective Projection của SPIN (từ cam_param: scale, tx, ty)
-            cam = model_output['cam_param'] # (B, 3)
+            # 2D projection loss (cam training signal)
+            # Use smpl_mesh_cam_proj which optionally detaches pose but keeps shape attached
+            cam = model_output['cam_param']
             scale = cam[:, 0:1, None]
-            trans = cam[:, 1:3, None].transpose(1, 2) # (B, 1, 2)
-            
-            # Lấy 17 khớp 3D (Root-relative)
-            pred_pose_17 = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
-            
-            # Chiếu 3D xuống 2D (tọa độ normalize [-1, 1])
+            trans = cam[:, 1:3, None].transpose(1, 2)
+            pred_pose_17 = torch.matmul(self.J_regressor[None, :, :], model_output['smpl_mesh_cam_proj'])
             proj_2d = scale * pred_pose_17[:, :, :2] + trans
-            
-            # Đổi từ [-1, 1] sang tọa độ pixel của ảnh input (ví dụ: 256x256)
             proj_pixel = (proj_2d + 1.0) * 0.5 * cfg.input_img_shape[0]
-            
-            # Chuẩn hóa về tọa độ heatmap (ví dụ: 64x64)
             pred_joint_proj = proj_pixel * (cfg.output_hm_shape[1] / cfg.input_img_shape[0])
-            
             loss_body_joint_proj = self.jotr_coord_loss(
                 pred_joint_proj,
                 targets['orig_joint_img'].cuda()[:, :, :2],
@@ -223,43 +256,61 @@ class Trainer:
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
             mesh_loss = self.coordLoss(pred_mesh, gt_mesh_cam, is_valid_fit[:, None, None])
-            loss_dict = {
-                'smpl_joint_cam': loss_smpl_joint_cam,
-                'smpl_pose': smpl_pose_loss,
-                'smpl_shape': smpl_shape_loss,
-                'body_joint_proj': loss_body_joint_proj,
-                'mesh_loss': mesh_loss,
-            }
-            loss_dict = self.awl(loss_dict)
-            loss = sum(loss_dict.values())
+
+            # ---- Combine losses ----
+            if use_diffusion:
+                diff_loss = model_output['diff_loss']
+                loss = cfg.LOSS.diff_w * diff_loss
+                loss = loss + cfg.LOSS.w_proj  * loss_body_joint_proj
+                loss = loss + cfg.LOSS.w_shape * smpl_shape_loss
+                if cfg.LOSS.w_joint_cam > 0:
+                    loss = loss + cfg.LOSS.w_joint_cam * loss_smpl_joint_cam
+                if cfg.LOSS.w_mesh > 0:
+                    loss = loss + cfg.LOSS.w_mesh * mesh_loss
+                if cfg.LOSS.w_pose > 0:
+                    loss = loss + cfg.LOSS.w_pose * smpl_pose_loss
+            else:
+                loss_dict = {
+                    'smpl_joint_cam': loss_smpl_joint_cam,
+                    'smpl_pose': smpl_pose_loss,
+                    'smpl_shape': smpl_shape_loss,
+                    'body_joint_proj': loss_body_joint_proj,
+                    'mesh_loss': mesh_loss,
+                }
+                loss_dict = self.awl(loss_dict)
+                loss = sum(loss_dict.values())
+                diff_loss = torch.zeros(1, device=input_image.device)
 
             # update weights
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
+
             # log
             running_loss += float(loss.detach().item())
             if cfg.TRAIN.wandb:
-                wandb.log(
-                    {
-                        'train_loss/smpl_joint_cam': loss_smpl_joint_cam.detach(),
-                        'train_loss/smpl_pose': smpl_pose_loss.detach(),
-                        'train_loss/smpl_shape': smpl_shape_loss.detach(),
-                        'train_loss/body_joint_proj': loss_body_joint_proj.detach(),
-                        'train_loss/mesh': mesh_loss.detach(),
-                    }
-                )
+                log_dict = {
+                    'train_loss/smpl_joint_cam': loss_smpl_joint_cam.detach(),
+                    'train_loss/smpl_pose': smpl_pose_loss.detach(),
+                    'train_loss/smpl_shape': smpl_shape_loss.detach(),
+                    'train_loss/body_joint_proj': loss_body_joint_proj.detach(),
+                    'train_loss/mesh': mesh_loss.detach(),
+                }
+                if use_diffusion:
+                    log_dict['train_loss/diff'] = diff_loss.detach()
+                wandb.log(log_dict)
 
             if i % self.print_freq == 0:
                 total_loss = loss.detach()
-                batch_generator.set_description(
-                    f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
-                    f'proj2d: {loss_body_joint_proj.item():.3f} '
-                    f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
-                    f'smpl: {(smpl_pose_loss + smpl_shape_loss).item():.3f} '
-                    f'mesh: {mesh_loss.item():.3f} '
-                    f'tl: {total_loss.item():.3f}'
-                )
+                desc = (f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
+                        f'proj2d: {loss_body_joint_proj.item():.3f} '
+                        f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
+                        f'shape: {smpl_shape_loss.item():.3f} '
+                        f'mesh: {mesh_loss.item():.3f} ')
+                if use_diffusion:
+                    desc += f'diff: {diff_loss.item():.4f} '
+                desc += f'tl: {total_loss.item():.3f}'
+                batch_generator.set_description(desc)
 
         self.loss_history.append(running_loss / len(batch_generator))
         for i, pg in enumerate(self.optimizer.param_groups):

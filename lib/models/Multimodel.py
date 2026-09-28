@@ -14,9 +14,9 @@ from models.hypergcn import HYPERGCv2
 from models.teacher import Teacher
 from models.Core_model import CrossAttentionBlock
 from models.common import Vposer
-from models.smpl_mps import SMPL
+from models.smpl_hyperdiff import SMPL_HyperDiff
+
 from utils.transforms import rot6d_to_axis_angle
-from geometry import rot6d_to_rotmat
 TEACHER_CHPT = cfg.MODEL.TEACHER
 SMPL_MODEL_DIR = 'data_final/base_data'
 SMPL_MEAN_PARAMS = 'data_final/base_data/smpl_mean_params.npz'
@@ -26,14 +26,23 @@ class Pose2Mesh(nn.Module):
     def __init__(self, num_joint, embed_dim=512, smpl_head_hidden_dim: int = 256, smpl_head_depth: int = 3):
         super(Pose2Mesh, self).__init__()
 
+        self.refiner = getattr(cfg.MODEL, 'REFINER', 'diffusion')
+
         self.vposer = Vposer()
         for param in self.vposer.parameters():
             param.requires_grad = False
         self.vposer.eval()
-        self.smpl = SMPL(
-            SMPL_MODEL_DIR,
-            create_transl=False
+
+        from utils.smpl import SMPL as SMPLModel
+        self.human_model = SMPLModel()
+        self.human_model_layer = self.human_model.layer['neutral']
+        self.joint_regressor = self.human_model.joint_regressor
+        self.register_buffer(
+            'joint_regressor_t',
+            torch.from_numpy(self.joint_regressor).float()
         )
+
+        # --- OLD pose path (kept for checkpoint compat) ---
         self.pose_embed  = nn.Linear(6, embed_dim)
         self.shape_embed  = nn.Linear(10, embed_dim)
 
@@ -62,71 +71,136 @@ class Pose2Mesh(nn.Module):
         self.gamma_proj = nn.Linear(1024, embed_dim)
         self.beta_proj  = nn.Linear(1024, embed_dim)
         self.norm = nn.LayerNorm(embed_dim)
-    def forward(self, joints, img_feats,  is_train=True, J_regressor=None):
-        batch_size = img_feats.shape[0]
 
-        pred_pose_6d, pred_shape, pred_cam, feature = self.fusion(joints, img_feats, is_train=is_train, J_regressor=J_regressor, return_features=True)
-        
+        # --- NEW diffusion path ---
+        if self.refiner == 'diffusion':
+            self.diffusion = SMPL_HyperDiff()
+            # Freeze old pose-path params so they don't cause DDP "unused param" errors.
+            # They remain in state_dict for checkpoint compatibility.
+            _old_pose_modules = [
+                self.pose_embed, self.pose_context_attn, self.norm,
+                self.node_pe, self.spatial_hypers, self.root_pose_head,
+                self.body_pose_head, self.gamma_proj, self.beta_proj,
+            ]
+            for mod in _old_pose_modules:
+                for p in mod.parameters():
+                    p.requires_grad = False
+
+    def forward(self, joints, img_feats, is_train=True, J_regressor=None,
+                gt_pose_6d=None, kp2d=None, kp_conf=None, pose_valid_mask=None):
+        """
+        Args (new optional params — don't change positional order):
+            gt_pose_6d     : (B,24,6) GT 6D rotations (train only)
+            kp2d           : (B,17,2) 2D keypoints in [-1,1]
+            kp_conf        : (B,17) binary/continuous confidence
+            pose_valid_mask: (B,24) joint validity for diff_loss masking
+        """
+        batch_size = img_feats.shape[0]
+        device = img_feats.device
+
+        # ============================================================
+        # 1. Teacher fusion  (always runs — provides cam/shape features)
+        # ============================================================
+        pred_pose_6d, pred_shape, pred_cam, feature = self.fusion(
+            joints, img_feats, is_train=is_train,
+            J_regressor=J_regressor, return_features=True
+        )
         if isinstance(feature, dict):
             global_ft = feature['concat_feat']
         else:
             global_ft = feature
 
-        pose_token = self.pose_embed(pred_pose_6d)   # (B, 24, C)
+        # ============================================================
+        # 2. Pose prediction
+        # ============================================================
+        diff_loss = torch.zeros(1, device=device).squeeze()
+
+        if self.refiner == 'diffusion':
+            # ----- diffusion path -----
+            if is_train and gt_pose_6d is not None:
+                pred_x0, diff_loss = self.diffusion(
+                    gt_pose_6d, kp2d, kp_conf,
+                    is_train=True, valid_mask=pose_valid_mask,
+                )
+            else:
+                pred_x0 = self.diffusion(
+                    None, kp2d, kp_conf, is_train=False,
+                )
+            full_pose = rot6d_to_axis_angle(
+                pred_x0.reshape(-1, 6)
+            ).reshape(batch_size, -1)
+        else:
+            # ----- legacy HYPERGCv2 path -----
+            pose_token = self.pose_embed(pred_pose_6d)
+            shape_emb_ = self.shape_embed(pred_shape)
+
+            img_out = feature['img_out']
+            joint_out_ctx = feature['joint_out']
+            context_tokens = torch.cat([img_out, joint_out_ctx], dim=1)
+            pose_token_ctx = self.pose_context_attn(
+                pose_token, context_tokens, context_tokens
+            )
+            idx = torch.arange(24, device=device)
+            dang = self.norm(pose_token_ctx) + self.node_pe(idx)
+            for hyper_layer in self.spatial_hypers:
+                dang, _aux = hyper_layer(dang)
+            pose_global = dang.mean(dim=1)
+            root_feat = dang[:, 0, :]
+            root_pose_6d = self.root_pose_head(root_feat)
+            root_pose = rot6d_to_axis_angle(root_pose_6d)
+            pose_latent = self.body_pose_head(pose_global)
+            body_pose = self.vposer(pose_latent)
+            full_pose = torch.cat([root_pose, body_pose], dim=1)
+            pred_x0 = None
+
+        # ============================================================
+        # 3. Camera  (unchanged)
+        # ============================================================
+        cam_param = self.cam_head(global_ft)
+
+        # ============================================================
+        # 4. Shape  (unchanged)
+        #    NOTE: shape_token uses pred_shape from SPIN (self.fusion).
+        #    This is intentional — the SPIN shape init is still useful.
+        # ============================================================
         shape_emb = self.shape_embed(pred_shape)
-        
         shape_token = self.shape_token.weight.unsqueeze(0).expand(batch_size, 1, -1)
         shape_emb = shape_emb.unsqueeze(1)
         shape_token = shape_token + shape_emb
-
-        # --- Cross-attention: each pose token attends to spatial image + joint tokens ---
-        img_out = feature['img_out']         # (B, H*W, C)
-        joint_out_ctx = feature['joint_out'] # (B, 17, C)
-        context_tokens = torch.cat([img_out, joint_out_ctx], dim=1)  # (B, H*W+17, C)
-
-        pose_token_ctx = self.pose_context_attn(
-            pose_token, context_tokens, context_tokens
-        )  # (B, 24, C) — each joint attends to its relevant image/joint regions
-
-        idx = torch.arange(24, device=pose_token_ctx.device)
-        dang = self.norm(pose_token_ctx) + self.node_pe(idx)
-
-        dang_hyper = dang
-        for hyper_layer in self.spatial_hypers:
-            dang_hyper, aux = hyper_layer(dang_hyper)
-        pose_token_op = dang_hyper
-
-
-        pose_global = pose_token_op.mean(dim=1)
-        root_feat   = pose_token_op[:, 0, :]
-
-        root_pose_6d = self.root_pose_head(root_feat)
-        root_pose = rot6d_to_axis_angle(root_pose_6d)
-
-        pose_latent = self.body_pose_head(pose_global)
-        body_pose = self.vposer(pose_latent)
-
-        full_pose = torch.cat([root_pose, body_pose], dim=1)
-
-        cam_param = self.cam_head(global_ft)
-
         global_ft_seq = global_ft.unsqueeze(1)
         shape_output = self.fuse_shape(shape_token, global_ft_seq, global_ft_seq)
         f_shape = self.shape_head(shape_output)
         shape_param = f_shape.reshape(batch_size, -1)
 
+        # ============================================================
+        # 5. SMPL forward  (unchanged)
+        # ============================================================
         cam_trans = self.get_camera_trans(cam_param)
         joint_proj, joint_cam, mesh_cam, mesh_cam_render = self.get_coord(
             full_pose, shape_param, cam_trans
         )
-        return {
+        
+        from core.config import cfg
+        if is_train and getattr(cfg.LOSS, 'DETACH_POSE_FOR_PROJ', True):
+            _, _, mesh_cam_proj, _ = self.get_coord(
+                full_pose.detach(), shape_param, cam_trans
+            )
+        else:
+            mesh_cam_proj = mesh_cam
+
+        result = {
             'joint_proj': joint_proj,
             'joint_cam': joint_cam,
             'smpl_mesh_cam': mesh_cam,
+            'smpl_mesh_cam_proj': mesh_cam_proj,
             'smpl_pose': full_pose,
             'smpl_shape': shape_param,
-            'cam_param': cam_trans
+            'cam_param': cam_trans,
         }
+        if self.refiner == 'diffusion':
+            result['diff_loss'] = diff_loss
+            result['pred_pose_6d_refined'] = pred_x0
+        return result
 
     def get_camera_trans(self, cam_param):
         """Convert predicted camera parameters to camera translation.
@@ -161,20 +235,15 @@ class Pose2Mesh(nn.Module):
             mesh_cam_render: (B, 6890, 3) absolute mesh vertices
         """
         batch_size = smpl_pose.shape[0]
-        # Pose2Mesh dự đoán full_pose dạng axis-angle (72D)
-        # Chúng ta có thể truyền thẳng (B, 69) và (B, 3) vào smplx và bật pose2rot=True
-        pred_output = self.smpl(
-            betas=smpl_shape,
-            body_pose=smpl_pose[:, 3:],
-            global_orient=smpl_pose[:, :3],
-            transl=smpl_trans,
-            pose2rot=True,
-        )
-        mesh_cam = pred_output.vertices
-        joint_cam = pred_output.joints
+        mesh_cam, _ = self.human_model_layer(smpl_pose, smpl_shape, smpl_trans)
 
-        # Root joint index for OP MidHip in smpl_mps is 8
-        root_joint_idx = 8
+        joint_regressor = self.joint_regressor_t
+        joint_cam = torch.bmm(
+            joint_regressor[None, :, :].repeat(batch_size, 1, 1),
+            mesh_cam
+        )
+
+        root_joint_idx = self.human_model.root_joint_idx
 
         x = joint_cam[:, :, 0] / (joint_cam[:, :, 2] + 1e-4) * cfg.DATASET.focal[0] + cfg.DATASET.princpt[0]
         y = joint_cam[:, :, 1] / (joint_cam[:, :, 2] + 1e-4) * cfg.DATASET.focal[1] + cfg.DATASET.princpt[1]
@@ -193,8 +262,6 @@ class Pose2Mesh(nn.Module):
     def train(self, mode=True):
         super().train(mode)
         self.vposer.eval()
-        # self.fusion.eval()
-        # self.regressorspin.eval()
 
 class MLP(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int,
