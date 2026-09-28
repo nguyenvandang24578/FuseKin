@@ -387,8 +387,8 @@ class PW3D(torch.utils.data.Dataset):
 
                 # SMPL pose parameter validity
                 smpl_param_valid = np.ones((self.smpl.orig_joint_num, 3), dtype=np.float32)
-                from core.config import cfg
-                if getattr(cfg.DATASET, 'FORCE_FULL_FIT_MASK_3DPW', False):
+                from core.config import cfg as _cfg
+                if getattr(_cfg.DATASET, 'FORCE_FULL_FIT_MASK_3DPW', False):
                     # Flag overrides mask to all ones (do nothing to the ones-array)
                     if not hasattr(self, '_printed_mask_warning'):
                         print("\n[WARNING] 3DPW dataset: FORCE_FULL_FIT_MASK_3DPW=True! Overriding mask to all ones.\n")

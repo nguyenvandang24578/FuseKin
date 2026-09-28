@@ -44,7 +44,7 @@ def main():
         
         # Check drop rate
         drop_rate = drop_n[:, 0].float().mean().item()
-        log(f"Drop rate on visible joint: {drop_rate:.4f} (expected ~{cfg.DIFF.NOISE.drop_rate})")
+        log(f"Drop rate on visible joint: {drop_rate:.4f} (expected ~{cfg.DIFF.p_kp_dropout})")
         
         # Check invisible joint drop
         invis_dropped = drop_n[:, 5].all().item()

@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from models.smpl_hyperdiff import axis_angle_to_rot6d, axis_angle_to_rotmat
 from utils.transforms import rot6d_to_axis_angle
-from utils.geometry import rot6d_to_rotmat, rodrigues
+from geometry import rot6d_to_rotmat, rodrigues
 
 def parse_args():
     parser = argparse.ArgumentParser()
