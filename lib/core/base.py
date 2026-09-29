@@ -761,7 +761,7 @@ class Student_Trainer:
                         'train_loss/smpl_pose': smpl_pose_loss.detach(),
                         'train_loss/smpl_shape': smpl_shape_loss.detach(),
                         'train_loss/mesh': mesh_loss.detach(),
-                        'train_loss/kd_feat': kd_feat.detach(),
+                        'train_loss/kd_feat': kd_loss.detach(),
                         'train_loss/hard_total': hard_loss.detach(),
                         'train_loss/total': loss.detach(),
                     }
@@ -774,7 +774,7 @@ class Student_Trainer:
                     f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
                     f'smpl: {(smpl_pose_loss + smpl_shape_loss).item():.3f} '
                     f'mesh: {mesh_loss.item():.3f} '
-                    f'kd_feat: {kd_feat.item():.3f} '
+                    f'kd_feat: {kd_loss.item():.3f} '
                     f'tl: {total_loss.item():.3f}'
                 )
 
