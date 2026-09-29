@@ -684,12 +684,10 @@ class Student_Trainer:
                 t_out = self.teacher(input_image, gt_fit_joint_cam, is_train=False)
 
             # ---------- loss mềm: student bắt chước teacher (tầng feature) ----------
-            s_feat = model_output['feat']
-            t_feat = t_out['feat'].detach()
+            s_feat = model_output['feat_global']
+            t_feat = t_out['feat_global'].detach()
             
-            s_feat_proj = self.feat_projector(s_feat)
-            kd_feat = (1 - (F.normalize(s_feat_proj, dim=-1) * F.normalize(t_feat, dim=-1)).sum(-1)).mean()
-            kd_loss = kd_feat
+            kd_loss = F.mse_loss(s_feat, t_feat)
 
             # ---------------------------------------------------------
 
