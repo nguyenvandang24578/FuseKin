@@ -111,9 +111,10 @@ class ARTS(nn.Module):
             confidence = torch.ones_like(xy[..., :1])
         pose_xyc = torch.cat([xy, confidence], dim=-1)
 
-        repeated_frames = pose_xyc.unsqueeze(1).repeat(1, NUM_FRAMES, 1, 1)
-        pose_3d_all_frames = self.pose_lifter(repeated_frames)
-        return pose_3d_all_frames[:, NUM_FRAMES // 2]
+        # Truyền trực tiếp 1 frame tĩnh (F=1) vào thay vì lặp lại NUM_FRAMES lần
+        single_frame = pose_xyc.unsqueeze(1)  # (B, 1, 17, 3)
+        pose_3d = self.pose_lifter(single_frame)
+        return pose_3d[:, 0]  # Lấy kết quả của frame duy nhất đó
 
     def format_smpl_output(self, smpl_output):
         theta = smpl_output["theta"]
