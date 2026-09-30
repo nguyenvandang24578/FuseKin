@@ -17,6 +17,7 @@ from utils.jotr_dataset import get_train_dataset as get_jotr_train_dataset
 from utils.jotr_evaluation import evaluate_3dpw_subset
 from utils.transforms import cam2pixel
 from models.smpl_hyperdiff import axis_angle_to_rot6d, make_noisy_kp2d
+from models.common import SimCLR
 
 def get_dataloader(args, dataset_names, is_train):
     dataset_split = 'TRAIN' if is_train else 'TEST'
@@ -131,6 +132,11 @@ class Trainer:
         self.jotr_coord_loss = JOTRCoordLoss()
         self.jotr_param_loss = JOTRParamLoss()
         self.coordLoss = CoordLoss(has_valid=True)
+
+        # KD loss: SimCLR (NT-Xent) + MSE, as per L_NKR = L_SimCLR + L_MSE
+        self.simclr_loss = SimCLR(temperature=1.0).cuda()
+        self.kd_weight = getattr(cfg.MODEL, 'kd_weight', 0.5)
+
         # 5 losses now (including mesh_loss)
         self.awl = AutomaticWeightedLoss(5).cuda()
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
@@ -214,12 +220,13 @@ class Trainer:
                 fit_pv = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
                 pose_valid_mask = fit_pv.reshape(B, 24, 3)[:, :, 0]
 
-            # ---- Forward ----
+            # ---- Forward (pass GT 3D joints for teacher KD) ----
             gt_pose_input = gt_fit_joint_cam - gt_fit_joint_cam[:, 0:1, :]
             model_output = self.model(
                 input_image, gt_pose_input, is_train=True, use_gt_3d=True,
                 gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,
                 pose_valid_mask=pose_valid_mask,
+                gt_joints_3d=gt_pose_input,  # GT joints for teacher KD
             )
 
             pred_mesh = model_output['smpl_mesh_cam']
@@ -281,6 +288,26 @@ class Trainer:
                 loss = sum(loss_dict.values())
                 diff_loss = torch.zeros(1, device=input_image.device)
 
+            # ---- KD Loss: L_NKR = L_SimCLR + L_MSE ----
+            kd_loss = torch.zeros(1, device=input_image.device).squeeze()
+            if 's_feat_joint' in model_output and 't_feat_joint' in model_output:
+                s_feat_joint = model_output['s_feat_joint']
+                t_feat_joint = model_output['t_feat_joint'].detach()
+                s_feat_img = model_output['s_feat_img']
+                t_feat_img = model_output['t_feat_img'].detach()
+
+                # MSE component
+                mse_joint = F.mse_loss(s_feat_joint, t_feat_joint)
+                mse_img = F.mse_loss(s_feat_img, t_feat_img)
+
+                # SimCLR (NT-Xent) component
+                simclr_joint = self.simclr_loss(s_feat_joint, t_feat_joint)
+                simclr_img = self.simclr_loss(s_feat_img, t_feat_img)
+
+                kd_loss = (mse_joint + mse_img) + (simclr_joint + simclr_img)
+
+            loss = loss + self.kd_weight * kd_loss
+
             # update weights
             self.optimizer.zero_grad()
             loss.backward()
@@ -295,6 +322,7 @@ class Trainer:
                     'train_loss/smpl_shape': smpl_shape_loss.detach(),
                     'train_loss/body_joint_proj': loss_body_joint_proj.detach(),
                     'train_loss/mesh': mesh_loss.detach(),
+                    'train_loss/kd': kd_loss.detach(),
                 }
                 if use_diffusion:
                     log_dict['train_loss/diff'] = diff_loss.detach()
@@ -306,7 +334,8 @@ class Trainer:
                         f'proj2d: {loss_body_joint_proj.item():.3f} '
                         f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
                         f'shape: {smpl_shape_loss.item():.3f} '
-                        f'mesh: {mesh_loss.item():.3f} ')
+                        f'mesh: {mesh_loss.item():.3f} '
+                        f'kd: {kd_loss.item():.4f} ')
                 if use_diffusion:
                     desc += f'diff: {diff_loss.item():.4f} '
                 desc += f'tl: {total_loss.item():.3f}'

@@ -179,7 +179,7 @@ class ARTS(nn.Module):
 
     def forward_arts(self, image, pose_input, is_train, use_gt_3d=False,
                      gt_pose_6d=None, kp2d=None, kp_conf=None,
-                     pose_valid_mask=None):
+                     pose_valid_mask=None, gt_joints_3d=None):
         with torch.no_grad():
             ft_map, global_feature = self.get_image_features(image)
             
@@ -190,12 +190,7 @@ class ARTS(nn.Module):
             else:
                 # Dùng trực tiếp GT 3D (đã là đơn vị Mét và root-relative từ Trainer)
                 pose_3d = pose_input
-        # print(f"pose_3d.shape: {pose_3d.shape}")
-        # print(f"ft_map.shape: {ft_map.shape}")
-        # print(f"gt_pose_6d: {gt_pose_6d.shape}")
-        # print(f"kp2d: {kp2d.shape}")
-        # print(f"kp_conf: {kp_conf.shape}")
-        # print(f"pose_valid_mask: {pose_valid_mask.shape}")
+
         output = self.pose_mesh_coevo(
             pose_3d,
             ft_map,
@@ -204,6 +199,7 @@ class ARTS(nn.Module):
             kp2d=kp2d,
             kp_conf=kp_conf,
             pose_valid_mask=pose_valid_mask,
+            gt_joints_3d=gt_joints_3d,
         )
         # MotionBERT outputs 3D joints in millimeters; convert to meters so
         # joint_img shares the unit of the GT joints used in the training loss.
@@ -212,7 +208,7 @@ class ARTS(nn.Module):
 
     def forward(self, image, joints, is_train=True, use_gt_3d=False,
                 gt_pose_6d=None, kp2d=None, kp_conf=None,
-                pose_valid_mask=None):
+                pose_valid_mask=None, gt_joints_3d=None):
         if self.mode == "teacher":
             return self.forward_teacher(image, joints, is_train)
         if self.mode == "student":
@@ -220,7 +216,7 @@ class ARTS(nn.Module):
         return self.forward_arts(
             image, joints, is_train, use_gt_3d,
             gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,
-            pose_valid_mask=pose_valid_mask,
+            pose_valid_mask=pose_valid_mask, gt_joints_3d=gt_joints_3d,
         )
 
 

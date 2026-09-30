@@ -55,12 +55,63 @@ class Pose2Mesh(nn.Module):
             num_heads=8, mlp_ratio=4., qkv_bias=True,
             drop=0., attn_drop=0., drop_path=0.2, has_mlp=True
         )
-        self.fusion = Teacher(num_joint, embed_dim, vert_anchors = 16, horz_anchors = 16, depth = 3)
-        # pretrained_dict = torch.load(osp.join(cfg.MODEL.TEACHER, 'best.pth.tar'), weights_only=False)['model_state_dict']
-        # self.fusion.load_state_dict(pretrained_dict, strict=False)
-        # for param in self.fusion.parameters():
-        #     param.requires_grad = False
-        # self.fusion.eval()
+        self.student = Teacher(num_joint, embed_dim, vert_anchors = 16, horz_anchors = 16, depth = 3)
+
+        # --- Frozen teacher for KD (same architecture, loaded from checkpoint) ---
+        self.teacher = Teacher(num_joint, embed_dim, vert_anchors=16, horz_anchors=16, depth=3)
+        teacher_ckpt_path = getattr(cfg.MODEL, 'TEACHER', '')
+        if teacher_ckpt_path and osp.exists(teacher_ckpt_path):
+            import pickle as _pkl
+            class _NpUnpickler(_pkl.Unpickler):
+                def find_class(self, module, name):
+                    if module.startswith('numpy._core'):
+                        module = module.replace('numpy._core', 'numpy.core', 1)
+                    return super().find_class(module, name)
+            class _PklShim:
+                Unpickler = _NpUnpickler
+                load = _pkl.load; Pickler = _pkl.Pickler; dump = _pkl.dump
+
+            ckpt = torch.load(teacher_ckpt_path, map_location='cpu',
+                              pickle_module=_PklShim, weights_only=False)
+            state = ckpt
+            if isinstance(ckpt, dict):
+                for _k in ('model_state_dict', 'state_dict', 'model'):
+                    if _k in ckpt:
+                        state = ckpt[_k]; break
+
+            # 1) Strip 'module.' (DataParallel)
+            state = {(k[7:] if k.startswith('module.') else k): v
+                     for k, v in state.items()}
+            # 2) Remap old 'teacher_model.' → 'smpl_model.'
+            state = {(('smpl_model.' + k[len('teacher_model.'):]) if k.startswith('teacher_model.') else k): v
+                     for k, v in state.items()}
+            # 3) Strip 'smpl_model.' to get bare Teacher keys
+            state = {(k[len('smpl_model.'):] if k.startswith('smpl_model.') else k): v
+                     for k, v in state.items()}
+
+            # 4) Skip keys not in Teacher (pose_lifter, backbone, etc.) + shape mismatch
+            _skip = ('pose_lifter.', 'backbone.')
+            own = self.teacher.state_dict()
+            filtered = {}
+            for k, v in state.items():
+                if any(k.startswith(p) for p in _skip):
+                    continue
+                if k in own and own[k].shape != v.shape:
+                    print(f'  [Teacher KD] shape mismatch: {k} ckpt={tuple(v.shape)} model={tuple(own[k].shape)}')
+                    continue
+                filtered[k] = v
+
+            missing, unexpected = self.teacher.load_state_dict(filtered, strict=False)
+            print(f'[Pose2Mesh] Teacher loaded {len(filtered)} tensors. '
+                  f'missing={len(missing)}, unexpected={len(unexpected)}')
+            if missing:
+                print(f'  MISSING (first 5): {sorted(missing)[:5]}')
+        else:
+            print('[Pose2Mesh] WARNING: No teacher checkpoint found, teacher uses random weights.')
+        # Freeze teacher
+        for p in self.teacher.parameters():
+            p.requires_grad = False
+        self.teacher.eval()
 
         self.node_pe = nn.Embedding(17, embed_dim)
         self.num_hyper_layers = 3
@@ -105,7 +156,8 @@ class Pose2Mesh(nn.Module):
                     p.requires_grad = False
 
     def forward(self, joints, img_feats, is_train=True, J_regressor=None,
-                gt_pose_6d=None, kp2d=None, kp_conf=None, pose_valid_mask=None):
+                gt_pose_6d=None, kp2d=None, kp_conf=None, pose_valid_mask=None,
+                gt_joints_3d=None):
         """
         Args (new optional params — don't change positional order):
             gt_pose_6d     : (B,24,6) GT 6D rotations (train only)
@@ -117,9 +169,9 @@ class Pose2Mesh(nn.Module):
         device = img_feats.device
 
         # ============================================================
-        # 1. Teacher fusion  (always runs — provides cam/shape features)
+        # 1. Student fusion  (always runs — provides cam/shape features)
         # ============================================================
-        _, pred_pose_6d, pred_shape, pred_cam, feature = self.fusion(
+        _, pred_pose_6d, pred_shape, pred_cam, feature = self.student(
             joints, img_feats, is_train=is_train,
             J_regressor=J_regressor, return_features=True
         )
@@ -128,6 +180,17 @@ class Pose2Mesh(nn.Module):
             global_ft = feature['concat_feat']
         else:
             global_ft = feature
+
+        # ============================================================
+        # 1b. Teacher forward (frozen) for KD — only during training
+        # ============================================================
+        teacher_feature = None
+        if is_train and gt_joints_3d is not None:
+            with torch.no_grad():
+                _, _, _, _, teacher_feature = self.teacher(
+                    gt_joints_3d, img_feats, is_train=False,
+                    J_regressor=J_regressor, return_features=True
+                )
 
         # ============================================================
         # 2. Pose prediction
@@ -219,6 +282,16 @@ class Pose2Mesh(nn.Module):
         if self.refiner == 'diffusion':
             result['diff_loss'] = diff_loss
             result['pred_pose_6d_refined'] = pred_x0
+
+        # KD features (student side)
+        if isinstance(feature, dict):
+            result['s_feat_joint'] = feature['joint_out']
+            result['s_feat_img'] = feature['img_out']
+        # KD features (teacher side — only available during training)
+        if teacher_feature is not None and isinstance(teacher_feature, dict):
+            result['t_feat_joint'] = teacher_feature['joint_out']
+            result['t_feat_img'] = teacher_feature['img_out']
+
         return result
 
     def get_camera_trans(self, cam_param):
@@ -281,6 +354,7 @@ class Pose2Mesh(nn.Module):
     def train(self, mode=True):
         super().train(mode)
         self.vposer.eval()
+        self.teacher.eval()  # teacher always stays frozen
 
 class MLP(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int,
