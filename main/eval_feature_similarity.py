@@ -25,7 +25,7 @@ def main(args):
     # Lấy DataLoader và mô hình chưa bọc DataParallel
     val_loaders, val_datasets, student_model, _, _, _, _, _ = prepare_network(args, load_dir=args.student_checkpoint, is_train=False)
     
-    loader = val_loaders
+    loader = val_loaders[0]
 
     # Load Teacher Model
     print("Đang khởi tạo Teacher Model...")
@@ -100,7 +100,22 @@ def main(args):
                 input_pose2d = torch.cat([input_pose2d[..., :2], mask], dim=-1)
                 
             # --- 2. Đầu vào cho Teacher (Ảnh + Pose 3D Ground Truth) ---
-            gt_fit_joint_cam = targets['fit_joint_cam'].cuda()
+            # Tập Test 3DPW không trả về 'fit_joint_cam' trực tiếp, ta phải tự tính nó từ 'smpl_mesh_cam'
+            target_mesh_tensor = targets['smpl_mesh_cam'].cuda().float()
+            
+            # Khởi tạo ma trận hồi quy khớp H36M
+            h36m_regressor = torch.as_tensor(
+                val_datasets[0].h36m_joint_regressor,
+                device='cuda',
+                dtype=target_mesh_tensor.dtype,
+            )
+            # Nhân lưới Mesh với Regressor để ra 17 khớp 3D
+            gt_3d_joints = torch.matmul(
+                h36m_regressor.unsqueeze(0).expand(target_mesh_tensor.shape[0], -1, -1),
+                target_mesh_tensor,
+            )
+            # Chuyển về Root-relative (trừ đi tọa độ Root ở index 0)
+            gt_fit_joint_cam = gt_3d_joints - gt_3d_joints[:, 0:1, :]
             
             # --- 3. Trích xuất đặc trưng (Forward Pass) ---
             # Forward Student (có dùng thông tin 2D)
