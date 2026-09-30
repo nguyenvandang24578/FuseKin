@@ -639,6 +639,8 @@ class Student_Trainer:
 
         lr_check(self.optimizer, epoch)
         running_loss = 0.0
+        running_cos_joint = 0.0
+        running_cos_img = 0.0
         batch_generator = tqdm(self.batch_generator)
         for i, (inputs, targets, meta) in enumerate(batch_generator):
             # convert to cuda
@@ -684,10 +686,29 @@ class Student_Trainer:
                 t_out = self.teacher(input_image, gt_fit_joint_cam, is_train=False)
 
             # ---------- loss mềm: student bắt chước teacher (tầng feature) ----------
-            s_feat = model_output['feat_global']
-            t_feat = t_out['feat_global'].detach()
+            # Trích xuất đặc trưng Joint (17 khớp)
+            s_feat_joint = model_output['feat']
+            t_feat_joint = t_out['feat'].detach()
             
-            kd_loss = F.mse_loss(s_feat, t_feat)
+            # Trích xuất đặc trưng RGB (Token ảnh)
+            s_feat_img = model_output['feat_img']
+            t_feat_img = t_out['feat_img'].detach()
+            
+            # 1. Tính MSE Loss cho từng loại
+            mse_joint = F.mse_loss(s_feat_joint, t_feat_joint)
+            mse_img = F.mse_loss(s_feat_img, t_feat_img)
+            
+            # 2. Tính Cosine Loss cho từng loại
+            # Cần flatten về (B, -1) để so sánh hướng tổng thể của tensor
+            cos_joint = F.cosine_similarity(s_feat_joint.flatten(1), t_feat_joint.flatten(1), dim=-1)
+            cos_img = F.cosine_similarity(s_feat_img.flatten(1), t_feat_img.flatten(1), dim=-1)
+            
+            cosine_loss_joint = (1.0 - cos_joint).mean()
+            cosine_loss_img = (1.0 - cos_img).mean()
+            
+            # 3. Tổng hợp Knowledge Distillation Loss
+            # Trọng số 0.1 cho Cosine để cân bằng với MSE
+            kd_loss = (mse_joint + mse_img) + 0.1 * (cosine_loss_joint + cosine_loss_img)
 
             # ---------------------------------------------------------
 
@@ -754,6 +775,8 @@ class Student_Trainer:
             self.optimizer.step()
             # log
             running_loss += float(loss.detach().item())
+            running_cos_joint += float(cos_joint.mean().detach().item())
+            running_cos_img += float(cos_img.mean().detach().item())
             if cfg.TRAIN.wandb:
                 wandb.log(
                     {
@@ -779,7 +802,9 @@ class Student_Trainer:
                 )
 
         self.loss_history.append(running_loss / len(batch_generator))
-        print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}')
+        avg_cos_joint = running_cos_joint / len(batch_generator)
+        avg_cos_img = running_cos_img / len(batch_generator)
+        print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f} | Cosine Joint: {avg_cos_joint:.4f} | Cosine IMG: {avg_cos_img:.4f}')
 
 class Student_Tester:
     def __init__(self, args, load_dir=''):

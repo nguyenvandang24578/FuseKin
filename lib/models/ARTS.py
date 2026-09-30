@@ -154,6 +154,7 @@ class ARTS(nn.Module):
         smpl_output = spin_out
         result = self.format_smpl_output(smpl_output)
         result['feat'] = feature['joint_out']
+        result['feat_img'] = feature['img_out']
         result['feat_global'] = feature['concat_feat']
         return result
 
@@ -173,6 +174,7 @@ class ARTS(nn.Module):
         smpl_output = spin_out
         result = self.format_smpl_output(smpl_output)
         result['feat'] = feats['joint_out']
+        result['feat_img'] = feats['img_out']
         result['feat_global'] = feats['concat_feat']
         return result
 
