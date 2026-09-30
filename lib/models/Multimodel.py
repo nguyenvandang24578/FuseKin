@@ -56,27 +56,27 @@ class Pose2Mesh(nn.Module):
             drop=0., attn_drop=0., drop_path=0.2, has_mlp=True
         )
         self.fusion = Teacher(num_joint, embed_dim, vert_anchors = 16, horz_anchors = 16, depth = 3)
-        pretrained_dict = torch.load(osp.join(cfg.MODEL.TEACHER, 'best.pth.tar'), weights_only=False)['model_state_dict']
-        self.fusion.load_state_dict(pretrained_dict, strict=False)
-        for param in self.fusion.parameters():
-            param.requires_grad = False
-        self.fusion.eval()
+        # pretrained_dict = torch.load(osp.join(cfg.MODEL.TEACHER, 'best.pth.tar'), weights_only=False)['model_state_dict']
+        # self.fusion.load_state_dict(pretrained_dict, strict=False)
+        # for param in self.fusion.parameters():
+        #     param.requires_grad = False
+        # self.fusion.eval()
 
-        # self.node_pe = nn.Embedding(17, embed_dim)
-        # self.num_hyper_layers = 3
-        # self.spatial_hypers = create_layers(dim=embed_dim,
-        #                             n_layers=self.num_hyper_layers,
-        #                             mlp_ratio=4,
-        #                             act_layer=nn.GELU,
-        #                             attn_drop=0.,
-        #                             drop_rate=0.,
-        #                             drop_path_rate=0.,                                 
-        #                             use_layer_scale=True,                                  
-        #                             layer_scale_init_value=1e-5,
-        #                             use_adaptive_fusion=False,
-        #                             hierarchical=False,
-        #                             neighbour_num=4,
-        #                             )
+        self.node_pe = nn.Embedding(17, embed_dim)
+        self.num_hyper_layers = 3
+        self.spatial_hypers = create_layers(dim=embed_dim,
+                                    n_layers=self.num_hyper_layers,
+                                    mlp_ratio=4,
+                                    act_layer=nn.GELU,
+                                    attn_drop=0.,
+                                    drop_rate=0.,
+                                    drop_path_rate=0.,                                 
+                                    use_layer_scale=True,                                  
+                                    layer_scale_init_value=1e-5,
+                                    use_adaptive_fusion=False,
+                                    hierarchical=False,
+                                    neighbour_num=4,
+                                    )
 
         
         self.root_pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, 2)
@@ -154,15 +154,14 @@ class Pose2Mesh(nn.Module):
             joint_out_ctx = feature['joint_out']
             pose_token = self.pose_embed(pred_pose_6d) #(B, 24, dim)
 
-            # idx = torch.arange(17, device=device)
-            # dang = self.norm(joint_out_ctx) + self.node_pe(idx)
+            idx = torch.arange(17, device=device)
+            dang = self.norm(joint_out_ctx) + self.node_pe(idx)
             
-            # HGraph layer cần đầu vào [B, T, J, C] (T là thời gian, với ảnh tĩnh T=1)
-            # dang = dang.unsqueeze(1)
-            # dang = self.spatial_hypers(dang)
-            # dang = dang.squeeze(1) #(B, 17, dim)
+            dang = dang.unsqueeze(1)
+            dang = self.spatial_hypers(dang)
+            dang = dang.squeeze(1) #(B, 17, dim)
 
-            feat = self.pose_context_attn(pose_token, joint_out_ctx, joint_out_ctx)
+            feat = self.pose_context_attn(pose_token, dang, dang)
             
             pose_global = feat.mean(dim=1)
 
