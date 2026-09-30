@@ -61,11 +61,11 @@ def main(args):
         return hook
 
     # Gắn hook vào từng block của mô hình
-    # Cấu trúc: model -> module (vì DataParallel) -> fusion (thuộc Pose2Mesh) -> cfcer -> blocks
-    num_blocks = len(student_model.module.fusion.cfcer.blocks)
+    # Cấu trúc: model -> module (DataParallel) -> smpl_model (mạng Teacher bên trong ARTS) -> cfcer -> blocks
+    num_blocks = len(student_model.module.smpl_model.cfcer.blocks)
     for i in range(num_blocks):
-        student_model.module.fusion.cfcer.blocks[i].register_forward_hook(get_hook('student', i))
-        teacher_model.module.fusion.cfcer.blocks[i].register_forward_hook(get_hook('teacher', i))
+        student_model.module.smpl_model.cfcer.blocks[i].register_forward_hook(get_hook('student', i))
+        teacher_model.module.smpl_model.cfcer.blocks[i].register_forward_hook(get_hook('teacher', i))
 
     total_mse = 0.0
     total_cosine = 0.0
