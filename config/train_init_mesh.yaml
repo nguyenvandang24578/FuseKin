@@ -30,7 +30,7 @@ TRAIN:
     end_epoch: 30
     edge_loss_start: 2
     scheduler: 'step'
-    lr: 0.0001
+    lr: 0.0002
     lr_step: [8, 15, 23]
     lr_factor: 0.7
     warmup_epochs: 1

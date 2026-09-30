@@ -184,7 +184,7 @@ cfg.LOSS.t_min_for_smpl = 500      # only compute aux SMPL losses when t >= this
 cfg.LOSS.DETACH_POSE_FOR_PROJ = True # Detach pose (but not shape) for 2D projection loss
 
 """ Model (continued) """
-cfg.MODEL.REFINER = 'diffusion'    # 'hypergcn' or 'diffusion'
+cfg.MODEL.REFINER = 'hypergcn'    # 'hypergcn' or 'diffusion'
 
 """ Test Detail """
 cfg.TEST = edict()
