@@ -780,13 +780,13 @@ class Student_Trainer:
             if cfg.TRAIN.wandb:
                 wandb.log(
                     {
-                        'train_loss/smpl_joint_cam': loss_smpl_joint_cam.detach(),
-                        'train_loss/smpl_pose': smpl_pose_loss.detach(),
-                        'train_loss/smpl_shape': smpl_shape_loss.detach(),
-                        'train_loss/mesh': mesh_loss.detach(),
-                        'train_loss/kd_feat': kd_loss.detach(),
-                        'train_loss/hard_total': hard_loss.detach(),
-                        'train_loss/total': loss.detach(),
+                        'train_loss/smpl_joint_cam': loss_smpl_joint_cam.item(),
+                        'train_loss/smpl_pose': smpl_pose_loss.item(),
+                        'train_loss/smpl_shape': smpl_shape_loss.item(),
+                        'train_loss/mesh': mesh_loss.item(),
+                        'train_loss/kd_feat': kd_loss.item(),
+                        'train_loss/hard_total': hard_loss.item(),
+                        'train_loss/total': loss.item(),
                     }
                 )
 

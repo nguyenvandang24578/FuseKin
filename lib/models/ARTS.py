@@ -163,7 +163,6 @@ class ARTS(nn.Module):
             feature_map, _ = self.get_image_features(image)
             pose_3d = self.lift_2d_to_3d(pose_2d) / 1000      # mm -> m
             pose_3d = pose_3d - pose_3d[:, 0:1, :]            # root-relative như đầu vào teacher
-            print(f"Student lifted 3D pose (root-rel): min={pose_3d.min().item():.3f}, max={pose_3d.max().item():.3f}")
 
         spin_out, pred_pose_6d, pred_shape, pred_cam, feats = self.smpl_model(
             joints=pose_3d,
