@@ -11,6 +11,7 @@ from core.config import cfg
 import math
 
 from models.hypergcn import HYPERGCv2
+from models.HGraph import create_layers
 from models.teacher import Teacher
 from models.Core_model import CrossAttentionBlock
 from models.common import Vposer
@@ -48,24 +49,41 @@ class Pose2Mesh(nn.Module):
 
         self.fuse_shape = CrossAttentionBlock(q_dim=512, k_dim=1024, v_dim=1024, kv_num = 1, num_heads=8, mlp_ratio=4., qkv_bias=True,
                                         drop=0., attn_drop=0., drop_path=0.2, has_mlp=True)
-        # Cross-attention: each pose token attends to spatial img + joint tokens
         self.pose_context_attn = CrossAttentionBlock(
             q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim,
-            kv_num=273,  # 16*16 + 17; actual length is dynamic thanks to CrossAttention fix
+            kv_num=17,
             num_heads=8, mlp_ratio=4., qkv_bias=True,
             drop=0., attn_drop=0., drop_path=0.2, has_mlp=True
         )
         self.fusion = Teacher(num_joint, embed_dim, vert_anchors = 16, horz_anchors = 16, depth = 3)
-        self.node_pe = nn.Embedding(24, embed_dim)
+        pretrained_dict = torch.load(osp.join(cfg.MODEL.TEACHER, 'best.pth.tar'), weights_only=False)['model_state_dict']
+        self.fusion.load_state_dict(pretrained_dict, strict=False)
+        for param in self.fusion.parameters():
+            param.requires_grad = False
+        self.fusion.eval()
+
+        self.node_pe = nn.Embedding(17, embed_dim)
         self.num_hyper_layers = 3
-        self.spatial_hypers = nn.ModuleList([
-            HYPERGCv2(embed_dim, embed_dim, num_edges=5)
-            for _ in range(self.num_hyper_layers)
-        ])
+        self.spatial_hypers = create_layers(dim=embed_dim,
+                                    n_layers=self.num_hyper_layers,
+                                    mlp_ratio=4,
+                                    act_layer=nn.GELU,
+                                    attn_drop=0.,
+                                    drop_rate=0.,
+                                    drop_path_rate=0.,                                 
+                                    use_layer_scale=True,                                  
+                                    layer_scale_init_value=1e-5,
+                                    use_adaptive_fusion=False,
+                                    hierarchical=False,
+                                    neighbour_num=4,
+                                    )
+
+        
         self.root_pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, 2)
         self.body_pose_head = MLP(embed_dim, smpl_head_hidden_dim, 32, smpl_head_depth)
         self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
         self.cam_head = MLP(1024, smpl_head_hidden_dim, 3, 2)
+        
         self.shape_token = nn.Embedding(1, embed_dim)
         # deprecated, kept for backward-compat with old checkpoints
         self.gamma_proj = nn.Linear(1024, embed_dim)
@@ -105,6 +123,7 @@ class Pose2Mesh(nn.Module):
             joints, img_feats, is_train=is_train,
             J_regressor=J_regressor, return_features=True
         )
+
         if isinstance(feature, dict):
             global_ft = feature['concat_feat']
         else:
@@ -132,21 +151,22 @@ class Pose2Mesh(nn.Module):
             ).reshape(batch_size, -1)
         else:
             # ----- legacy HYPERGCv2 path -----
-            pose_token = self.pose_embed(pred_pose_6d)
-            shape_emb_ = self.shape_embed(pred_shape)
-
-            img_out = feature['img_out']
             joint_out_ctx = feature['joint_out']
-            context_tokens = torch.cat([img_out, joint_out_ctx], dim=1)
-            pose_token_ctx = self.pose_context_attn(
-                pose_token, context_tokens, context_tokens
-            )
-            idx = torch.arange(24, device=device)
-            dang = self.norm(pose_token_ctx) + self.node_pe(idx)
-            for hyper_layer in self.spatial_hypers:
-                dang, _aux = hyper_layer(dang)
-            pose_global = dang.mean(dim=1)
-            root_feat = dang[:, 0, :]
+            pose_token = self.pose_embed(pred_pose_6d) #(B, 24, dim)
+
+            idx = torch.arange(17, device=device)
+            dang = self.norm(joint_out_ctx) + self.node_pe(idx)
+            
+            # HGraph layer cần đầu vào [B, T, J, C] (T là thời gian, với ảnh tĩnh T=1)
+            dang = dang.unsqueeze(1)
+            dang = self.spatial_hypers(dang)
+            dang = dang.squeeze(1) #(B, 17, dim)
+
+            feat = self.pose_context_attn(pose_token, dang, dang)
+            
+            pose_global = feat.mean(dim=1)
+
+            root_feat = feat[:, 0, :]
             root_pose_6d = self.root_pose_head(root_feat)
             root_pose = rot6d_to_axis_angle(root_pose_6d)
             pose_latent = self.body_pose_head(pose_global)
