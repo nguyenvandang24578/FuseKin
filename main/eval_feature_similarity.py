@@ -25,7 +25,7 @@ def main(args):
     # Lấy DataLoader và mô hình chưa bọc DataParallel
     val_loaders, val_datasets, student_model, _, _, _, _, _ = prepare_network(args, load_dir=args.student_checkpoint, is_train=False)
     
-    loader = val_loaders[0]
+    loader = val_loaders
 
     # Load Teacher Model
     print("Đang khởi tạo Teacher Model...")
