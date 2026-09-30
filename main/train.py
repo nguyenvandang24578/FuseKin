@@ -12,6 +12,10 @@ from core.config import cfg, update_config
 import warnings
 warnings.filterwarnings("ignore")
 
+import cv2
+cv2.setNumThreads(0)
+cv2.ocl.setUseOpenCL(False)
+
 parser = argparse.ArgumentParser(description='Train Pose2Mesh')
 parser.add_argument('--seed', type=int, default=123, help='random seed to use. Default=123')
 parser.add_argument('--resume_training', action='store_true', help='Resume Training')
