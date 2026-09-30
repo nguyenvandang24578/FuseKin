@@ -83,20 +83,24 @@ def prepare_network(args, load_dir='', is_train=True):
             model.load_state_dict(checkpoint['model_state_dict'])
 
         if is_train:
-            optimizer.load_state_dict(checkpoint['optim_state_dict'])
-            for state in optimizer.state.values():
-                for k, v in state.items():
-                    if torch.is_tensor(v):
-                        state[k] = v.cuda()
-            curr_lr = 0.0
+            try:
+                optimizer.load_state_dict(checkpoint['optim_state_dict'])
+                for state in optimizer.state.values():
+                    for k, v in state.items():
+                        if torch.is_tensor(v):
+                            state[k] = v.cuda()
+                curr_lr = 0.0
 
-            for param_group in optimizer.param_groups:
-                curr_lr = param_group['lr']
+                for param_group in optimizer.param_groups:
+                    curr_lr = param_group['lr']
 
-            lr_state = checkpoint['scheduler_state_dict']
-            # update lr_scheduler
-            lr_state['milestones'], lr_state['gamma'] = Counter(cfg.TRAIN.lr_step), cfg.TRAIN.lr_factor
-            lr_scheduler.load_state_dict(lr_state)
+                lr_state = checkpoint['scheduler_state_dict']
+                # update lr_scheduler
+                lr_state['milestones'], lr_state['gamma'] = Counter(cfg.TRAIN.lr_step), cfg.TRAIN.lr_factor
+                lr_scheduler.load_state_dict(lr_state)
+                print("==> Optimizer state loaded successfully.")
+            except Exception as e:
+                print(f"==> [Warning] Cannot load optimizer state (usually due to architecture change). Starting with fresh optimizer. Error: {e}")
 
             loss_history = checkpoint['train_log']
             test_error_history = checkpoint['test_log']
