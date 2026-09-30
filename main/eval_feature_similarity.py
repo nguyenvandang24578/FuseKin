@@ -81,7 +81,13 @@ def main(args):
     print("=========================================")
     
     with torch.no_grad():
-        for inputs, targets, meta in tqdm(loader, desc="Evaluating"):
+        for step, (inputs, targets, meta) in enumerate(tqdm(loader, desc="Evaluating")):
+            if step == 0:
+                print("\n[DEBUG] Các keys có sẵn trong 1 batch của DataLoader (3DPW):")
+                print(f"  - inputs keys : {list(inputs.keys())}")
+                print(f"  - targets keys: {list(targets.keys())}")
+                print(f"  - meta keys   : {list(meta.keys())}\n")
+                
             input_image = inputs['img'].cuda().float()
             
             # --- 1. Đầu vào cho Student (Ảnh + Pose 2D) ---
