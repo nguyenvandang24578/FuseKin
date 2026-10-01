@@ -669,6 +669,8 @@ class Student_Trainer:
 
         lr_check(self.optimizer, epoch)
         running_loss = 0.0
+        running_cos_joint = 0.0
+        running_cos_img = 0.0
         batch_generator = tqdm(self.batch_generator)
         for i, (inputs, targets, meta) in enumerate(batch_generator):
             # convert to cuda
@@ -800,6 +802,15 @@ class Student_Trainer:
             self.optimizer.step()
             # log
             running_loss += float(loss.detach().item())
+            with torch.no_grad():
+                cos_joint = F.cosine_similarity(
+                    s_feat_joint.flatten(1), t_feat_joint.flatten(1), dim=-1
+                ).mean().item()
+                cos_img = F.cosine_similarity(
+                    s_feat_img.flatten(1), t_feat_img.flatten(1), dim=-1
+                ).mean().item()
+            running_cos_joint += cos_joint
+            running_cos_img += cos_img
             if cfg.TRAIN.wandb:
                 wandb.log(
                     {
@@ -829,7 +840,15 @@ class Student_Trainer:
                 )
 
         self.loss_history.append(running_loss / len(batch_generator))
-        print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}')
+        avg_cos_joint = running_cos_joint / len(batch_generator)
+        avg_cos_img = running_cos_img / len(batch_generator)
+        print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f} | '
+              f'CosSim Joint: {avg_cos_joint:.4f} | CosSim IMG: {avg_cos_img:.4f}')
+        if cfg.TRAIN.wandb:
+            wandb.log({
+                'epoch_metric/cos_sim_joint': avg_cos_joint,
+                'epoch_metric/cos_sim_img': avg_cos_img,
+            })
 
 class Student_Tester:
     def __init__(self, args, load_dir=''):
