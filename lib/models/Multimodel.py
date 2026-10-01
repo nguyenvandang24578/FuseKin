@@ -106,6 +106,10 @@ class Pose2Mesh(nn.Module):
                 print(f'  MISSING (first 5): {sorted(missing)[:5]}')
         else:
             print('[Pose2Mesh] WARNING: No student checkpoint (cfg.MODEL.STUDENT) found, fusion uses random weights.')
+        # Freeze fusion — dùng như feature extractor cố định
+        for p in self.fusion.parameters():
+            p.requires_grad = False
+        self.fusion.eval()
 
         self.node_pe = nn.Embedding(17, embed_dim)
         self.num_hyper_layers = 3
@@ -326,6 +330,7 @@ class Pose2Mesh(nn.Module):
     def train(self, mode=True):
         super().train(mode)
         self.vposer.eval()
+        self.fusion.eval()  # frozen feature extractor
 
 class MLP(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int,

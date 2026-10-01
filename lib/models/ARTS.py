@@ -190,12 +190,12 @@ class ARTS(nn.Module):
             else:
                 # Dùng trực tiếp GT 3D (đã là đơn vị Mét và root-relative từ Trainer)
                 pose_3d = pose_input
-        print(f"pose_3d.shape: {pose_3d.shape}")
-        print(f"ft_map.shape: {ft_map.shape}")
-        print(f"gt_pose_6d: {gt_pose_6d.shape}")
-        print(f"kp2d: {kp2d.shape}")
-        print(f"kp_conf: {kp_conf.shape}")
-        print(f"pose_valid_mask: {pose_valid_mask.shape}")
+        # print(f"pose_3d.shape: {pose_3d.shape}")
+        # print(f"ft_map.shape: {ft_map.shape}")
+        # print(f"gt_pose_6d: {gt_pose_6d.shape}")
+        # print(f"kp2d: {kp2d.shape}")
+        # print(f"kp_conf: {kp_conf.shape}")
+        # print(f"pose_valid_mask: {pose_valid_mask.shape}")
         output = self.pose_mesh_coevo(
             pose_3d,
             ft_map,
