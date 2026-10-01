@@ -366,7 +366,7 @@ class MuCo(torch.utils.data.Dataset):
         smpl_param_valid = smpl_param_valid.reshape(-1)
 
         inputs = {'img': img, 'joints': input_muco_joint_img[:, :2], 'joints_mask': muco_joint_trunc}
-        targets = {'orig_joint_img': muco_joint_img, 'fit_joint_img': smpl_joint_img, 'orig_joint_cam': muco_joint_cam, 'fit_joint_cam': smpl_joint_cam, 'pose_param': smpl_pose, 'shape_param': smpl_shape}
+        targets = {'orig_joint_img': muco_joint_img, 'fit_joint_img': smpl_joint_img, 'orig_joint_cam': muco_joint_cam, 'fit_joint_cam': smpl_joint_cam, 'pose_param': smpl_pose, 'shape_param': smpl_shape, 'smpl_mesh_cam': smpl_mesh_cam}
         meta_info = {'orig_joint_valid': muco_joint_valid, 'orig_joint_trunc': muco_joint_trunc, 'fit_param_valid': smpl_param_valid, 'fit_joint_trunc': smpl_joint_trunc, 'is_valid_fit': float(is_valid_fit), 'is_3D': float(True)}
 
         return inputs, targets, meta_info

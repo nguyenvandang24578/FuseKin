@@ -358,9 +358,12 @@ class PW3D(torch.utils.data.Dataset):
                 h36m_coord_img[:, :2] = np.dot(img2bb_trans, h36m_img_xy1.transpose(1, 0)).transpose(1, 0)[:, :2]
                 h36m_coord_img[:, 0] = h36m_coord_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
                 h36m_coord_img[:, 1] = h36m_coord_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+                h36m_coord_img[:, 2] = h36m_coord_img[:, 2] - h36m_coord_img[self.h36m_root_joint_idx][2]
+                h36m_coord_img[:, 2] = (h36m_coord_img[:, 2] / (cfg.bbox_3d_size / 2) + 1) / 2. * cfg.output_hm_shape[0]
                 orig_joint_trunc = (
                     (h36m_coord_img[:, 0] >= 0) * (h36m_coord_img[:, 0] < cfg.output_hm_shape[2]) *
-                    (h36m_coord_img[:, 1] >= 0) * (h36m_coord_img[:, 1] < cfg.output_hm_shape[1])
+                    (h36m_coord_img[:, 1] >= 0) * (h36m_coord_img[:, 1] < cfg.output_hm_shape[1]) *
+                    (h36m_coord_img[:, 2] >= 0) * (h36m_coord_img[:, 2] < cfg.output_hm_shape[0])
                 ).reshape(-1, 1).astype(np.float32)
                 orig_joint_img = h36m_coord_img.astype(np.float32)
 
@@ -372,9 +375,23 @@ class PW3D(torch.utils.data.Dataset):
                 smpl_mesh_cam = smpl_mesh_cam - root_cam
                 smpl_mesh_cam = np.dot(rot_aug_mat, smpl_mesh_cam.transpose(1, 0)).transpose(1, 0).astype(np.float32)
 
-                # For 3DPW the fitted-SMPL target and the GT target come from the
-                # same mesh, so fit reuses the same H36M-17 joints.
-                fit_joint_cam = orig_joint_cam.copy()
+                # Compute fit_joint_img from smpl_coord_img
+                smpl_coord_img_xy1 = np.concatenate((smpl_coord_img[:, :2], np.ones_like(smpl_coord_img[:, 0:1])), 1)
+                smpl_coord_img[:, :2] = np.dot(img2bb_trans, smpl_coord_img_xy1.transpose(1, 0)).transpose(1, 0)[:, :2]
+                smpl_coord_img[:, 0] = smpl_coord_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+                smpl_coord_img[:, 1] = smpl_coord_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+                smpl_coord_img[:, 2] = smpl_coord_img[:, 2] - smpl_joint_cam[self.root_joint_idx][2]
+                smpl_coord_img[:, 2] = (smpl_coord_img[:, 2] / (cfg.bbox_3d_size / 2) + 1) / 2. * cfg.output_hm_shape[0]
+                
+                fit_joint_trunc = (
+                    (smpl_coord_img[:, 0] >= 0) * (smpl_coord_img[:, 0] < cfg.output_hm_shape[2]) *
+                    (smpl_coord_img[:, 1] >= 0) * (smpl_coord_img[:, 1] < cfg.output_hm_shape[1]) *
+                    (smpl_coord_img[:, 2] >= 0) * (smpl_coord_img[:, 2] < cfg.output_hm_shape[0])
+                ).reshape(-1, 1).astype(np.float32)
+                fit_joint_img = smpl_coord_img.astype(np.float32)
+                
+                fit_joint_cam = smpl_joint_cam - smpl_joint_cam[self.root_joint_idx, None]
+                fit_joint_cam = np.dot(rot_aug_mat, fit_joint_cam.transpose(1, 0)).transpose(1, 0).astype(np.float32)
 
                 smpl_pose = np.array(smpl_param['pose'], dtype=np.float32).reshape(-1,3)
                 root_pose = smpl_pose[self.root_joint_idx,:]
@@ -399,30 +416,30 @@ class PW3D(torch.utils.data.Dataset):
                 smpl_param_valid = smpl_param_valid.reshape(-1)
 
                 is_valid_fit = True
-                fit_joint_trunc = np.ones((num_h36m, 1), dtype=np.float32)
+                # fit_joint_trunc is already set above
             else:
                 orig_joint_img = np.zeros((num_h36m, 3), dtype=np.float32)
+                fit_joint_img = np.zeros((self.joint_num, 3), dtype=np.float32)
                 orig_joint_cam = np.zeros((num_h36m, 3), dtype=np.float32)
-                fit_joint_cam = np.zeros((num_h36m, 3), dtype=np.float32)
+                fit_joint_cam = np.zeros((self.joint_num, 3), dtype=np.float32)
                 orig_joint_trunc = np.zeros((num_h36m, 1), dtype=np.float32)
                 smpl_pose = np.zeros((72), dtype=np.float32)
                 smpl_shape = np.zeros((10), dtype=np.float32)
-                fit_joint_trunc = np.zeros((num_h36m, 1), dtype=np.float32)
+                fit_joint_trunc = np.zeros((self.joint_num, 1), dtype=np.float32)
                 smpl_param_valid = np.zeros((self.smpl.orig_joint_num*3), dtype=np.float32)
                 is_valid_fit = False
 
             # Keep the 2D input pose 3-column (x, y, conf) to match the test
             # branch so the model receives the same input format in both phases.
-            inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc}
-            targets = {'orig_joint_img': orig_joint_img, 'orig_joint_cam': orig_joint_cam, 'fit_joint_cam': fit_joint_cam, 'pose_param': smpl_pose, 'shape_param': smpl_shape, 'smpl_mesh_cam': smpl_mesh_cam}
+            inputs = {'img': img, 'joints': joint_coord_img[:, :2], 'joints_mask': joint_trunc}
+            targets = {'orig_joint_img': orig_joint_img, 'fit_joint_img': fit_joint_img, 'orig_joint_cam': orig_joint_cam, 'fit_joint_cam': fit_joint_cam, 'pose_param': smpl_pose, 'shape_param': smpl_shape, 'smpl_mesh_cam': smpl_mesh_cam}
             meta_info = {
                 'orig_joint_valid': orig_joint_valid,
                 'orig_joint_trunc': orig_joint_trunc,
                 'fit_param_valid': smpl_param_valid,
                 'fit_joint_trunc': fit_joint_trunc,
                 'is_valid_fit': float(is_valid_fit),
-                'is_3D': float(True),
-                **raw_smpl_stats,
+                'is_3D': float(True)
             }
             return inputs, targets, meta_info
         else:

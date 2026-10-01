@@ -362,7 +362,7 @@ class MSCOCO(torch.utils.data.Dataset):
             targets = {
                 'orig_joint_img': coco_joint_img, 'fit_joint_img': smpl_joint_img, 
                 'orig_joint_cam': coco_joint_cam, 'fit_joint_cam': smpl_joint_cam,
-                'pose_param': smpl_pose, 'shape_param': smpl_shape
+                'pose_param': smpl_pose, 'shape_param': smpl_shape, 'smpl_mesh_cam': smpl_mesh_cam
             }
             meta_info = {
                 'orig_joint_valid': coco_joint_valid, 'orig_joint_trunc': coco_joint_trunc,
