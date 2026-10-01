@@ -158,11 +158,18 @@ class ARTS(nn.Module):
         result['feat_global'] = feature['concat_feat']
         return result
 
-    def forward_student(self, image, pose_2d, is_train):
+    def forward_student(self, image, pose_2d, is_train, gt_pose_3d=None, alpha=1.0):
         with torch.no_grad():
             feature_map, _ = self.get_image_features(image)
-            pose_3d = self.lift_2d_to_3d(pose_2d) / 1000      # mm -> m
-            pose_3d = pose_3d - pose_3d[:, 0:1, :]            # root-relative như đầu vào teacher
+            lifter_pose_3d = self.lift_2d_to_3d(pose_2d) / 1000      # mm -> m
+            lifter_pose_3d = lifter_pose_3d - lifter_pose_3d[:, 0:1, :]            # root-relative như đầu vào teacher
+
+        if is_train and gt_pose_3d is not None and alpha < 1.0:
+            noise = torch.randn_like(gt_pose_3d) * 0.03 # 3cm noise
+            noisy_gt = gt_pose_3d + noise
+            pose_3d = (1.0 - alpha) * noisy_gt + alpha * lifter_pose_3d
+        else:
+            pose_3d = lifter_pose_3d
 
         spin_out, pred_pose_6d, pred_shape, pred_cam, feats = self.smpl_model(
             joints=pose_3d,
@@ -208,11 +215,11 @@ class ARTS(nn.Module):
 
     def forward(self, image, joints, is_train=True, use_gt_3d=False,
                 gt_pose_6d=None, kp2d=None, kp_conf=None,
-                pose_valid_mask=None, gt_joints_3d=None):
+                pose_valid_mask=None, gt_joints_3d=None, alpha=1.0):
         if self.mode == "teacher":
             return self.forward_teacher(image, joints, is_train)
         if self.mode == "student":
-            return self.forward_student(image, joints, is_train)
+            return self.forward_student(image, joints, is_train, gt_pose_3d=gt_joints_3d, alpha=alpha)
         return self.forward_arts(
             image, joints, is_train, use_gt_3d,
             gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,

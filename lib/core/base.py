@@ -697,8 +697,17 @@ class Student_Trainer:
             # print(f"gt_smplshape shape: {gt_smplshape.shape}")
             # print(f"is_3d shape: {is_3d.shape}")
             # print(f"is_valid_fit shape: {is_valid_fit.shape}")
+            # Calculate curriculum alpha
+            warmup_epochs = getattr(cfg.TRAIN, 'curriculum_epochs', 15.0)
+            alpha = min(1.0, float(epoch) / float(warmup_epochs))
+            
+            gt_pose_input = gt_fit_joint_cam - gt_fit_joint_cam[:, 0:1, :]
+            
             # Feed 2D pose to model (which routes to MotionBERT in Student mode)
-            model_output = self.model(input_image, input_pose2d, is_train=True)
+            model_output = self.model(
+                input_image, input_pose2d, is_train=True,
+                gt_joints_3d=gt_pose_input, alpha=alpha
+            )
 
             pred_mesh = model_output['smpl_mesh_cam']
             pred_smplpose = model_output['smpl_pose']
