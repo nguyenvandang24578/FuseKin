@@ -37,6 +37,7 @@ class MSCOCO(torch.utils.data.Dataset):
         self.coco_skeleton = ( (1, 2), (0, 1), (0, 2), (2, 4), (1, 3), (6, 8), (8, 10), (5, 7), (7, 9), (12, 14), (14, 16), (11, 13), (13, 15), (5, 6), (11, 12) )
         self.coco_flip_pairs = ( (1, 2), (3, 4), (5, 6), (7, 8), (9, 10), (11, 12), (13, 14), (15, 16) )
         self.coco_joint_regressor = np.load(osp.join(cfg.DATASET.jotr_data_root, 'MSCOCO', 'J_regressor_coco_hip_smpl.npy'))
+        self.h36m_joint_regressor = np.load(osp.join(cfg.DATASET.jotr_data_root, 'Human36M', 'J_regressor_h36m_correct.npy'))
 
         # smpl skeleton
         self.smpl = SMPL()
