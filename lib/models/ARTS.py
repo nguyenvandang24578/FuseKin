@@ -44,7 +44,7 @@ class ARTS(nn.Module):
         mb_config['dim_rep'] = 512  # dim_rep luôn là 512 kể cả bản Lite
         mb_config['mlp_ratio'] = mb_mlp_ratio
 
-        if self.mode != "ARTS":
+        if self.mode != "teacher":
             self.pose_lifter = DSTformer(
                 norm_layer=partial(nn.LayerNorm, eps=1e-6),
                 **mb_config,
@@ -56,7 +56,7 @@ class ARTS(nn.Module):
         if self.mode in ("teacher", "student"):
             self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim, depth = 3)
         elif self.mode == "ARTS":
-            self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim * 2)
+            self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim)
         else:
             raise ValueError(f"Mode không hợp lệ: {self.mode}. Chọn teacher, student hoặc ARTS.")
 
@@ -190,12 +190,12 @@ class ARTS(nn.Module):
             else:
                 # Dùng trực tiếp GT 3D (đã là đơn vị Mét và root-relative từ Trainer)
                 pose_3d = pose_input
-        # print(f"pose_3d.shape: {pose_3d.shape}")
-        # print(f"ft_map.shape: {ft_map.shape}")
-        # print(f"gt_pose_6d: {gt_pose_6d.shape}")
-        # print(f"kp2d: {kp2d.shape}")
-        # print(f"kp_conf: {kp_conf.shape}")
-        # print(f"pose_valid_mask: {pose_valid_mask.shape}")
+        print(f"pose_3d.shape: {pose_3d.shape}")
+        print(f"ft_map.shape: {ft_map.shape}")
+        print(f"gt_pose_6d: {gt_pose_6d.shape}")
+        print(f"kp2d: {kp2d.shape}")
+        print(f"kp_conf: {kp_conf.shape}")
+        print(f"pose_valid_mask: {pose_valid_mask.shape}")
         output = self.pose_mesh_coevo(
             pose_3d,
             ft_map,

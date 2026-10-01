@@ -56,11 +56,56 @@ class Pose2Mesh(nn.Module):
             drop=0., attn_drop=0., drop_path=0.2, has_mlp=True
         )
         self.fusion = Teacher(num_joint, embed_dim, vert_anchors = 16, horz_anchors = 16, depth = 3)
-        # pretrained_dict = torch.load(osp.join(cfg.MODEL.TEACHER, 'best.pth.tar'), weights_only=False)['model_state_dict']
-        # self.fusion.load_state_dict(pretrained_dict, strict=False)
-        # for param in self.fusion.parameters():
-        #     param.requires_grad = False
-        # self.fusion.eval()
+        # --- Load trained student weights into fusion ---
+        student_ckpt_path = getattr(cfg.MODEL, 'STUDENT', '')
+        if student_ckpt_path and osp.exists(student_ckpt_path):
+            import pickle as _pkl
+            class _NpUnpickler(_pkl.Unpickler):
+                def find_class(self, module, name):
+                    if module.startswith('numpy._core'):
+                        module = module.replace('numpy._core', 'numpy.core', 1)
+                    return super().find_class(module, name)
+            class _PklShim:
+                Unpickler = _NpUnpickler
+                load = _pkl.load; Pickler = _pkl.Pickler; dump = _pkl.dump
+
+            ckpt = torch.load(student_ckpt_path, map_location='cpu',
+                              pickle_module=_PklShim, weights_only=False)
+            state = ckpt
+            if isinstance(ckpt, dict):
+                for _k in ('model_state_dict', 'state_dict', 'model'):
+                    if _k in ckpt:
+                        state = ckpt[_k]; break
+
+            # 1) Strip 'module.' (DataParallel)
+            state = {(k[7:] if k.startswith('module.') else k): v
+                     for k, v in state.items()}
+            # 2) Remap old 'teacher_model.' → 'smpl_model.'
+            state = {(('smpl_model.' + k[len('teacher_model.'):]) if k.startswith('teacher_model.') else k): v
+                     for k, v in state.items()}
+            # 3) Strip 'smpl_model.' to get bare Teacher keys
+            state = {(k[len('smpl_model.'):] if k.startswith('smpl_model.') else k): v
+                     for k, v in state.items()}
+
+            # 4) Skip keys not in Teacher (pose_lifter, backbone, etc.) + shape mismatch
+            _skip = ('pose_lifter.', 'backbone.')
+            own = self.fusion.state_dict()
+            filtered = {}
+            for k, v in state.items():
+                if any(k.startswith(p) for p in _skip):
+                    continue
+                if k in own and own[k].shape != v.shape:
+                    print(f'  [Fusion/Student] shape mismatch: {k} ckpt={tuple(v.shape)} model={tuple(own[k].shape)}')
+                    continue
+                filtered[k] = v
+
+            missing, unexpected = self.fusion.load_state_dict(filtered, strict=False)
+            print(f'[Pose2Mesh] Fusion loaded from student: {len(filtered)} tensors. '
+                  f'missing={len(missing)}, unexpected={len(unexpected)}')
+            if missing:
+                print(f'  MISSING (first 5): {sorted(missing)[:5]}')
+        else:
+            print('[Pose2Mesh] WARNING: No student checkpoint (cfg.MODEL.STUDENT) found, fusion uses random weights.')
 
         self.node_pe = nn.Embedding(17, embed_dim)
         self.num_hyper_layers = 3
