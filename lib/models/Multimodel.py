@@ -106,10 +106,8 @@ class Pose2Mesh(nn.Module):
                 print(f'  MISSING (first 5): {sorted(missing)[:5]}')
         else:
             print('[Pose2Mesh] WARNING: No student checkpoint (cfg.MODEL.STUDENT) found, fusion uses random weights.')
-        # Freeze fusion — dùng như feature extractor cố định
-        for p in self.fusion.parameters():
-            p.requires_grad = False
-        self.fusion.eval()
+        # Fusion is trainable with a lower learning rate (configured in Trainer)
+        # BatchNorm stays in eval mode via train() override to keep statistics stable
 
         self.node_pe = nn.Embedding(17, embed_dim)
         self.num_hyper_layers = 3
