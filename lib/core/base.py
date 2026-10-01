@@ -627,6 +627,7 @@ class Student_Trainer:
         self.jotr_coord_loss = JOTRCoordLoss()
         self.jotr_param_loss = JOTRParamLoss()
         self.coordLoss = CoordLoss(has_valid=True)
+        self.simclr_loss = SimCLR(temperature=1.0).cuda()
         
         hpe_dim = cfg.MODEL.get('hpe_dim', 512)
         self.feat_projector = torch.nn.Sequential(
@@ -668,8 +669,6 @@ class Student_Trainer:
 
         lr_check(self.optimizer, epoch)
         running_loss = 0.0
-        running_cos_joint = 0.0
-        running_cos_img = 0.0
         batch_generator = tqdm(self.batch_generator)
         for i, (inputs, targets, meta) in enumerate(batch_generator):
             # convert to cuda
@@ -715,6 +714,8 @@ class Student_Trainer:
                 t_out = self.teacher(input_image, gt_fit_joint_cam, is_train=False)
 
             # ---------- loss mềm: student bắt chước teacher (tầng feature) ----------
+            # L_NKR = L_SimCLR + L_MSE
+
             # Trích xuất đặc trưng Joint (17 khớp)
             s_feat_joint = model_output['feat']
             t_feat_joint = t_out['feat'].detach()
@@ -723,21 +724,16 @@ class Student_Trainer:
             s_feat_img = model_output['feat_img']
             t_feat_img = t_out['feat_img'].detach()
             
-            # 1. Tính MSE Loss cho từng loại
+            # 1. MSE component
             mse_joint = F.mse_loss(s_feat_joint, t_feat_joint)
             mse_img = F.mse_loss(s_feat_img, t_feat_img)
             
-            # 2. Tính Cosine Loss cho từng loại
-            # Cần flatten về (B, -1) để so sánh hướng tổng thể của tensor
-            cos_joint = F.cosine_similarity(s_feat_joint.flatten(1), t_feat_joint.flatten(1), dim=-1)
-            cos_img = F.cosine_similarity(s_feat_img.flatten(1), t_feat_img.flatten(1), dim=-1)
+            # 2. SimCLR (NT-Xent) component
+            simclr_joint = self.simclr_loss(s_feat_joint, t_feat_joint)
+            simclr_img = self.simclr_loss(s_feat_img, t_feat_img)
             
-            cosine_loss_joint = (1.0 - cos_joint).mean()
-            cosine_loss_img = (1.0 - cos_img).mean()
-            
-            # 3. Tổng hợp Knowledge Distillation Loss
-            # Trọng số 0.1 cho Cosine để cân bằng với MSE
-            kd_loss = (mse_joint + mse_img) + 0.1 * (cosine_loss_joint + cosine_loss_img)
+            # 3. Tổng hợp Knowledge Distillation Loss: L_NKR = L_MSE + L_SimCLR
+            kd_loss = (mse_joint + mse_img) + (simclr_joint + simclr_img)
 
             # ---------------------------------------------------------
 
@@ -804,8 +800,6 @@ class Student_Trainer:
             self.optimizer.step()
             # log
             running_loss += float(loss.detach().item())
-            running_cos_joint += float(cos_joint.mean().detach().item())
-            running_cos_img += float(cos_img.mean().detach().item())
             if cfg.TRAIN.wandb:
                 wandb.log(
                     {
@@ -814,6 +808,10 @@ class Student_Trainer:
                         'train_loss/smpl_shape': smpl_shape_loss.item(),
                         'train_loss/mesh': mesh_loss.item(),
                         'train_loss/kd_feat': kd_loss.item(),
+                        'train_loss/mse_joint': mse_joint.item(),
+                        'train_loss/mse_img': mse_img.item(),
+                        'train_loss/simclr_joint': simclr_joint.item(),
+                        'train_loss/simclr_img': simclr_img.item(),
                         'train_loss/hard_total': hard_loss.item(),
                         'train_loss/total': loss.item(),
                     }
@@ -826,14 +824,12 @@ class Student_Trainer:
                     f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
                     f'smpl: {(smpl_pose_loss + smpl_shape_loss).item():.3f} '
                     f'mesh: {mesh_loss.item():.3f} '
-                    f'kd_feat: {kd_loss.item():.3f} '
+                    f'kd: {kd_loss.item():.3f} '
                     f'tl: {total_loss.item():.3f}'
                 )
 
         self.loss_history.append(running_loss / len(batch_generator))
-        avg_cos_joint = running_cos_joint / len(batch_generator)
-        avg_cos_img = running_cos_img / len(batch_generator)
-        print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f} | Cosine Joint: {avg_cos_joint:.4f} | Cosine IMG: {avg_cos_img:.4f}')
+        print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}')
 
 class Student_Tester:
     def __init__(self, args, load_dir=''):
