@@ -53,6 +53,7 @@ cfg.DATASET.jotr_data_root = os.environ.get(
     osp.abspath(osp.join(cfg.root_dir, 'data_final')),
 )
 cfg.use_gt_info = True
+cfg.update_bbox = False
 cfg.input_img_shape = (256, 256)
 cfg.output_hm_shape = (64, 64, 64)
 cfg.bbox_3d_size = 2

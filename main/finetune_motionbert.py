@@ -38,7 +38,7 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
     for i, (inputs_b, targets_b, meta_b) in tqdm(enumerate(train_loader), total=len(train_loader)):
         joints_2d = inputs_b['joints'].to(device)       # (B, 17, 2)
         joints_mask = inputs_b['joints_mask'].to(device) # (B, 17, 1)
-        target_3d = targets_b['orig_joint_cam'].to(device) # (B, 17, 3)
+        target_3d = targets_b['fit_joint_cam'].to(device) # (B, 17, 3)
 
         # Prepare MotionBERT input (append mask as confidence)
         pose2d_3ch = torch.cat([joints_2d, joints_mask], dim=-1) # (B, 17, 3)
@@ -120,13 +120,17 @@ def main():
     print(f"Using device: {device} (Total GPUs active: {num_gpus})")
 
     # Prepare Dataset
-    print("Loading 3DPW dataset...")
-    train_dataset = get_train_dataset('3dpw-train', opts)
+    dataset_names = cfg.DATASET.train_list
+    print(f"Loading datasets: {dataset_names}")
+    dataset_list = [get_train_dataset(name, opts) for name in dataset_names]
+    
+    from data_final.dataset import MultipleDatasets
+    trainset_loader = MultipleDatasets(dataset_list, make_same_len=True)
         
-    # Create DataLoader with MotionBERT batch size
+    # Create DataLoader with MotionBERT batch size (multiplied by number of datasets to maintain effective batch size)
     train_loader = DataLoader(
-        dataset=train_dataset,
-        batch_size=mb_cfg.batch_size,
+        dataset=trainset_loader,
+        batch_size=mb_cfg.batch_size * len(dataset_list),
         shuffle=True,
         num_workers=cfg.DATASET.workers,
         pin_memory=True
