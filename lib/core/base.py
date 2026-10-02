@@ -127,31 +127,6 @@ class Trainer:
         self.h36m_from_smpl30 = [smpl30_joints.index(name) for name in h36m_joints]
 
         self.model = torch.nn.DataParallel(self.model).cuda()
-
-        # ---- Discriminative LR: fusion params get 1/10 of base LR ----
-        fusion_lr_scale = getattr(cfg.MODEL, 'fusion_lr_scale', 0.1)
-        fusion_param_ids = set()
-        # Collect fusion parameter IDs (through DataParallel → module)
-        for p in self.model.module.pose_mesh_coevo.fusion.parameters():
-            fusion_param_ids.add(id(p))
-
-        # Rebuild optimizer param groups: split fusion vs rest
-        base_lr = self.optimizer.defaults['lr']
-        non_fusion_params = []
-        fusion_params = []
-        for pg in self.optimizer.param_groups:
-            for p in pg['params']:
-                if id(p) in fusion_param_ids:
-                    fusion_params.append(p)
-                else:
-                    non_fusion_params.append(p)
-
-        # Clear existing param groups and re-add with discriminative LR
-        self.optimizer.param_groups.clear()
-        self.optimizer.add_param_group({'params': non_fusion_params, 'lr': base_lr})
-        self.optimizer.add_param_group({'params': fusion_params, 'lr': base_lr * fusion_lr_scale})
-        print(f'[Trainer] Discriminative LR: fusion={base_lr * fusion_lr_scale:.1e}, rest={base_lr:.1e}')
-
         self.jotr_coord_loss = JOTRCoordLoss()
         self.jotr_param_loss = JOTRParamLoss()
         self.coordLoss = CoordLoss(has_valid=True)
