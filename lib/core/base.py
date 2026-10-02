@@ -744,12 +744,20 @@ class Student_Trainer:
             t_feat_img_norm = F.normalize(t_feat_img, p=2, dim=-1)
             mse_joint_per_sample = (s_feat_joint_norm - t_feat_joint_norm).pow(2).flatten(1).mean(1)
             mse_img_per_sample = (s_feat_img_norm - t_feat_img_norm).pow(2).flatten(1).mean(1)
-            cosine_joint_per_sample = 1.0 - F.cosine_similarity(
-                s_feat_joint.flatten(1), t_feat_joint.flatten(1), dim=-1
+            valid_joint = fit_joint_trunc
+            if valid_joint.dim() == 3:
+                valid_joint = valid_joint.squeeze(-1)
+            valid_joint = valid_joint * is_valid_fit[:, None]
+            joint_cos_per_token = F.cosine_similarity(
+                s_feat_joint, t_feat_joint, dim=-1
             )
-            cosine_img_per_sample = 1.0 - F.cosine_similarity(
-                s_feat_img.flatten(1), t_feat_img.flatten(1), dim=-1
+            cosine_joint_per_sample = 1.0 - (
+                joint_cos_per_token * valid_joint
+            ).sum(-1) / valid_joint.sum(-1).clamp_min(1.0)
+            img_cos_per_token = F.cosine_similarity(
+                s_feat_img, t_feat_img, dim=-1
             )
+            cosine_img_per_sample = 1.0 - img_cos_per_token.mean(-1)
 
             # Relational distillation preserves the geometry between joint tokens.
             student_joint_rel = F.normalize(s_feat_joint, dim=-1) @ F.normalize(s_feat_joint, dim=-1).transpose(-1, -2)
@@ -774,10 +782,6 @@ class Student_Trainer:
                 )
 
             privileged_pred = model_output['privileged_3d']
-            valid_joint = fit_joint_trunc
-            if valid_joint.dim() == 3:
-                valid_joint = valid_joint.squeeze(-1)
-            valid_joint = valid_joint * is_valid_fit[:, None]
             privileged_error = F.smooth_l1_loss(
                 privileged_pred, gt_pose_input, reduction='none').mean(-1)
             privileged_per_sample = (
@@ -869,12 +873,8 @@ class Student_Trainer:
             # log
             running_loss += float(loss.detach().item())
             with torch.no_grad():
-                cos_joint = F.cosine_similarity(
-                    s_feat_joint.flatten(1), t_feat_joint.flatten(1), dim=-1
-                ).mean().item()
-                cos_img = F.cosine_similarity(
-                    s_feat_img.flatten(1), t_feat_img.flatten(1), dim=-1
-                ).mean().item()
+                cos_joint = (1.0 - cosine_joint_per_sample).mean().item()
+                cos_img = (1.0 - cosine_img_per_sample).mean().item()
             running_cos_joint += cos_joint
             running_cos_img += cos_img
             running_attention += attention_per_sample.mean().item()
