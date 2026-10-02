@@ -108,8 +108,8 @@ class Pose2Mesh(nn.Module):
             print('[Pose2Mesh] WARNING: No student checkpoint (cfg.MODEL.STUDENT) found, fusion uses random weights.')
         # Fusion is trainable with a lower learning rate (configured in Trainer)
         # BatchNorm stays in eval mode via train() override to keep statistics stable
-
-
+        for p in self.fusion.parameters():
+            p.requires_grad = False
         self.node_pe = nn.Embedding(17, embed_dim)
         self.num_hyper_layers = 3
         self.spatial_hypers = create_layers(dim=embed_dim,
