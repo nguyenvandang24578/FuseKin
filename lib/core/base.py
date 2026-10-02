@@ -732,22 +732,35 @@ class Student_Trainer:
             # Trích xuất đặc trưng RGB (Token ảnh)
             s_feat_img = model_output['feat_img']
             t_feat_img = t_out['feat_img'].detach()
+
+            # --- CẢI TIẾN 1: Sử dụng tầng Projector ---
+            # Do đầu vào của Student thiếu thông tin hơn Teacher, dùng projector
+            # để giúp Student ánh xạ đặc trưng của mình lên không gian của Teacher dễ hơn.
+            s_feat_joint_proj = self.feat_projector(s_feat_joint)
+            s_feat_img_proj = self.feat_projector(s_feat_img)
             
-            # 1. Tính MSE Loss cho từng loại
-            mse_joint = F.mse_loss(s_feat_joint, t_feat_joint)
-            mse_img = F.mse_loss(s_feat_img, t_feat_img)
+            # --- CẢI TIẾN 2: Chuẩn hóa L2 trước khi tính MSE ---
+            # Giúp bỏ qua sự chênh lệch về độ lớn, chỉ tập trung vào biểu diễn tương đối
+            s_feat_joint_norm = F.normalize(s_feat_joint_proj, p=2, dim=-1)
+            t_feat_joint_norm = F.normalize(t_feat_joint, p=2, dim=-1)
+            s_feat_img_norm = F.normalize(s_feat_img_proj, p=2, dim=-1)
+            t_feat_img_norm = F.normalize(t_feat_img, p=2, dim=-1)
+            
+            # 1. Tính MSE Loss trên đặc trưng đã chuẩn hóa
+            mse_joint = F.mse_loss(s_feat_joint_norm, t_feat_joint_norm)
+            mse_img = F.mse_loss(s_feat_img_norm, t_feat_img_norm)
             
             # 2. Tính Cosine Loss cho từng loại
             # Cần flatten về (B, -1) để so sánh hướng tổng thể của tensor
-            cos_joint = F.cosine_similarity(s_feat_joint.flatten(1), t_feat_joint.flatten(1), dim=-1)
-            cos_img = F.cosine_similarity(s_feat_img.flatten(1), t_feat_img.flatten(1), dim=-1)
+            cos_joint = F.cosine_similarity(s_feat_joint_proj.flatten(1), t_feat_joint.flatten(1), dim=-1)
+            cos_img = F.cosine_similarity(s_feat_img_proj.flatten(1), t_feat_img.flatten(1), dim=-1)
             
             cosine_loss_joint = (1.0 - cos_joint).mean()
             cosine_loss_img = (1.0 - cos_img).mean()
             
             # 3. Tổng hợp Knowledge Distillation Loss
-            # Trọng số 0.1 cho Cosine để cân bằng với MSE
-            kd_loss = (mse_joint + mse_img) + 0.1 * (cosine_loss_joint + cosine_loss_img)
+            # Tăng trọng số cho Cosine Loss lên 1.0 vì học sinh cần chú trọng học hướng của biểu diễn
+            kd_loss = (mse_joint + mse_img) + 1.0 * (cosine_loss_joint + cosine_loss_img)
 
             # ---------------------------------------------------------
 
