@@ -908,6 +908,12 @@ class Student_Trainer:
                     f'smpl: {(smpl_pose_loss + smpl_shape_loss).item():.3f} '
                     f'mesh: {mesh_loss.item():.3f} '
                     f'kd: {kd_loss.item():.3f} '
+                    f'cJ: {cos_joint:.3f} '
+                    f'cI: {cos_img:.3f} '
+                    f'attn: {attention_per_sample.mean().item():.3f} '
+                    f'rel: {relation_per_sample.mean().item():.3f} '
+                    f'priv: {privileged_loss.item():.3f} '
+                    f'w: {adaptive_weight.mean().item():.2f} '
                     f'tl: {total_loss.item():.3f}'
                 )
 
