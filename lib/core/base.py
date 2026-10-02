@@ -628,8 +628,10 @@ class Student_Trainer:
         self.jotr_coord_loss = JOTRCoordLoss()
         self.jotr_param_loss = JOTRParamLoss()
         self.coordLoss = CoordLoss(has_valid=True)
-        
+
         hpe_dim = cfg.MODEL.get('hpe_dim', 512)
+        # Kept for optimizer/checkpoint compatibility; direct feature KD below
+        # intentionally does not use this projector.
         self.feat_projector = torch.nn.Sequential(
             torch.nn.Linear(hpe_dim, hpe_dim * 2),
             torch.nn.GELU(),
@@ -671,6 +673,10 @@ class Student_Trainer:
         running_loss = 0.0
         running_cos_joint = 0.0
         running_cos_img = 0.0
+        running_attention = 0.0
+        running_relation = 0.0
+        running_privileged = 0.0
+        running_adaptive_weight = 0.0
         batch_generator = tqdm(self.batch_generator)
         for i, (inputs, targets, meta) in enumerate(batch_generator):
             # convert to cuda
@@ -730,19 +736,19 @@ class Student_Trainer:
             s_feat_img = model_output['feat_img']
             t_feat_img = t_out['feat_img'].detach()
 
-            s_feat_joint_proj = self.feat_projector(s_feat_joint)
-            s_feat_img_proj = self.feat_projector(s_feat_img)
-            s_feat_joint_norm = F.normalize(s_feat_joint_proj, p=2, dim=-1)
+            # Student and Teacher share the same cfcer representation size.
+            # Distill the actual outputs so the optimized loss matches the logged cosine.
+            s_feat_joint_norm = F.normalize(s_feat_joint, p=2, dim=-1)
             t_feat_joint_norm = F.normalize(t_feat_joint, p=2, dim=-1)
-            s_feat_img_norm = F.normalize(s_feat_img_proj, p=2, dim=-1)
+            s_feat_img_norm = F.normalize(s_feat_img, p=2, dim=-1)
             t_feat_img_norm = F.normalize(t_feat_img, p=2, dim=-1)
             mse_joint_per_sample = (s_feat_joint_norm - t_feat_joint_norm).pow(2).flatten(1).mean(1)
             mse_img_per_sample = (s_feat_img_norm - t_feat_img_norm).pow(2).flatten(1).mean(1)
             cosine_joint_per_sample = 1.0 - F.cosine_similarity(
-                s_feat_joint_proj.flatten(1), t_feat_joint.flatten(1), dim=-1
+                s_feat_joint.flatten(1), t_feat_joint.flatten(1), dim=-1
             )
             cosine_img_per_sample = 1.0 - F.cosine_similarity(
-                s_feat_img_proj.flatten(1), t_feat_img.flatten(1), dim=-1
+                s_feat_img.flatten(1), t_feat_img.flatten(1), dim=-1
             )
 
             # Relational distillation preserves the geometry between joint tokens.
@@ -871,6 +877,10 @@ class Student_Trainer:
                 ).mean().item()
             running_cos_joint += cos_joint
             running_cos_img += cos_img
+            running_attention += attention_per_sample.mean().item()
+            running_relation += relation_per_sample.mean().item()
+            running_privileged += privileged_loss.item()
+            running_adaptive_weight += adaptive_weight.mean().item()
             if cfg.TRAIN.wandb:
                 wandb.log(
                     {
@@ -879,9 +889,12 @@ class Student_Trainer:
                         'train_loss/smpl_shape': smpl_shape_loss.item(),
                         'train_loss/mesh': mesh_loss.item(),
                         'train_loss/kd_feat': kd_loss.item(),
+                        'train_loss/kd_attention': attention_per_sample.mean().item(),
+                        'train_loss/kd_relation': relation_per_sample.mean().item(),
                         'train_loss/mse_joint': mse_joint_per_sample.mean().item(),
                         'train_loss/mse_img': mse_img_per_sample.mean().item(),
                         'train_loss/privileged_3d': privileged_loss.item(),
+                        'train_loss/adaptive_kd_weight': adaptive_weight.mean().item(),
                         'train_loss/hard_total': hard_loss.item(),
                         'train_loss/total': loss.item(),
                     }
@@ -901,12 +914,24 @@ class Student_Trainer:
         self.loss_history.append(running_loss / len(batch_generator))
         avg_cos_joint = running_cos_joint / len(batch_generator)
         avg_cos_img = running_cos_img / len(batch_generator)
+        avg_attention = running_attention / len(batch_generator)
+        avg_relation = running_relation / len(batch_generator)
+        avg_privileged = running_privileged / len(batch_generator)
+        avg_adaptive_weight = running_adaptive_weight / len(batch_generator)
         print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f} | '
               f'CosSim Joint: {avg_cos_joint:.4f} | CosSim IMG: {avg_cos_img:.4f}')
+        print(f'  KD attention: {avg_attention:.4f} | '
+              f'KD relation: {avg_relation:.4f} | '
+              f'Privileged 3D: {avg_privileged:.4f} | '
+              f'Adaptive weight: {avg_adaptive_weight:.4f}')
         if cfg.TRAIN.wandb:
             wandb.log({
                 'epoch_metric/cos_sim_joint': avg_cos_joint,
                 'epoch_metric/cos_sim_img': avg_cos_img,
+                'epoch_metric/kd_attention': avg_attention,
+                'epoch_metric/kd_relation': avg_relation,
+                'epoch_metric/privileged_3d': avg_privileged,
+                'epoch_metric/adaptive_kd_weight': avg_adaptive_weight,
             })
 
 class Student_Tester:
