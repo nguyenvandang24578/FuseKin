@@ -55,6 +55,8 @@ class ARTS(nn.Module):
 
         if self.mode in ("teacher", "student"):
             self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim, depth = 3)
+            if self.mode == "student":
+                self.privileged_joint_head = nn.Linear(embed_dim, 3)
         elif self.mode == "ARTS":
             self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim * 2)
         else:
@@ -156,6 +158,7 @@ class ARTS(nn.Module):
         result['feat'] = feature['joint_out']
         result['feat_img'] = feature['img_out']
         result['feat_global'] = feature['concat_feat']
+        result['feat_layers'] = feature['layers']
         return result
 
     def forward_student(self, image, pose_2d, is_train, gt_pose_3d=None, alpha=1.0):
@@ -163,14 +166,7 @@ class ARTS(nn.Module):
             feature_map, _ = self.get_image_features(image)
             lifter_pose_3d = self.lift_2d_to_3d(pose_2d) / 1000      # mm -> m
             lifter_pose_3d = lifter_pose_3d - lifter_pose_3d[:, 0:1, :]            # root-relative như đầu vào teacher
-
-        if is_train and gt_pose_3d is not None and alpha < 1.0:
-            noise = torch.randn_like(gt_pose_3d) * 0.03 # 3cm noise
-            noisy_gt = gt_pose_3d + noise
-            pose_3d = (1.0 - alpha) * noisy_gt + alpha * lifter_pose_3d
-        else:
-            pose_3d = lifter_pose_3d
-
+        pose_3d  = lifter_pose_3d
         spin_out, pred_pose_6d, pred_shape, pred_cam, feats = self.smpl_model(
             joints=pose_3d,
             img_feats=feature_map,
@@ -182,6 +178,8 @@ class ARTS(nn.Module):
         result['feat'] = feats['joint_out']
         result['feat_img'] = feats['img_out']
         result['feat_global'] = feats['concat_feat']
+        result['feat_layers'] = feats['layers']
+        result['privileged_3d'] = self.privileged_joint_head(feats['joint_out'])
         return result
 
     def forward_arts(self, image, pose_input, is_train, use_gt_3d=False,

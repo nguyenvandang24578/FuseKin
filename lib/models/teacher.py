@@ -75,8 +75,9 @@ class RGBJointCrossTransformerBlock(nn.Module):
         n = x.shape[1]
         return x.view(b, n, self.h, self.d_k).transpose(1, 2)  # (b,h,n,d_k)
 
-    def forward(self, rgb_tok, joint_tok):
+    def forward(self, rgb_tok, joint_tok, return_intermediate=False):
         b = rgb_tok.shape[0]
+        intermediate = []
 
         rgb_norm = self.ln_rgb1(rgb_tok)
         joint_norm = self.ln_joint1(joint_tok)
@@ -105,6 +106,16 @@ class RGBJointCrossTransformerBlock(nn.Module):
         joint_out = self.coef5(joint_out) + self.coef6(self.mlp_joint(self.ln_joint2(joint_out)))
         rgb_out = self.coef7(rgb_out) + self.coef8(self.mlp_rgb(self.ln_rgb2(rgb_out)))
 
+        if return_intermediate:
+            intermediate.append({
+                'img': rgb_out,
+                'joint': joint_out,
+                'attn_joint_to_img': attn_j,
+                'attn_img_to_joint': attn_r,
+            })
+
+        if return_intermediate:
+            return rgb_out, joint_out, intermediate
         return rgb_out, joint_out
 
 
@@ -116,9 +127,19 @@ class RGBJointCrossTransformer(nn.Module):
             for _ in range(depth)
         ])
 
-    def forward(self, rgb_tok, joint_tok):
+    def forward(self, rgb_tok, joint_tok, return_intermediate=False):
+        intermediate = []
         for block in self.blocks:
-            rgb_tok, joint_tok = block(rgb_tok, joint_tok)
+            block_output = block(
+                rgb_tok, joint_tok, return_intermediate=return_intermediate
+            )
+            if return_intermediate:
+                rgb_tok, joint_tok, block_features = block_output
+                intermediate.extend(block_features)
+            else:
+                rgb_tok, joint_tok = block_output
+        if return_intermediate:
+            return rgb_tok, joint_tok, intermediate
         return rgb_tok, joint_tok
 
 
@@ -186,7 +207,14 @@ class Teacher(nn.Module):
         img_tok = img_tok + pos_emb
         
         # 3. Cross Attention fusion
-        img_out, joint_out = self.cfcer(img_tok, joints_tok)
+        cfcer_output = self.cfcer(
+            img_tok, joints_tok, return_intermediate=return_features
+        )
+        if return_features:
+            img_out, joint_out, layer_features = cfcer_output
+        else:
+            img_out, joint_out = cfcer_output
+            layer_features = []
         
         # 4. Global Pooling & Fusion
         # Lấy trung bình dọc theo chiều token
@@ -212,6 +240,7 @@ class Teacher(nn.Module):
                 'joint_out': joint_out,      # (B, 17, C) - per-joint tokens
                 'img_out': img_out,          # (B, H*W, C) - unpooled image tokens
                 'concat_feat': concat_feat,  # (B, 1024) - global pooled feature
+                'layers': layer_features,
             }
         return pose_6d, shape, cam
 # ============================================================

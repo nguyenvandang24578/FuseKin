@@ -724,43 +724,78 @@ class Student_Trainer:
             with torch.no_grad():
                 t_out = self.teacher(input_image, gt_fit_joint_cam, is_train=False)
 
-            # ---------- loss mềm: student bắt chước teacher (tầng feature) ----------
-            # Trích xuất đặc trưng Joint (17 khớp)
+            # ---------- privileged reconstruction + multi-level distillation ----------
             s_feat_joint = model_output['feat']
             t_feat_joint = t_out['feat'].detach()
-            
-            # Trích xuất đặc trưng RGB (Token ảnh)
             s_feat_img = model_output['feat_img']
             t_feat_img = t_out['feat_img'].detach()
 
-            # --- CẢI TIẾN 1: Sử dụng tầng Projector ---
-            # Do đầu vào của Student thiếu thông tin hơn Teacher, dùng projector
-            # để giúp Student ánh xạ đặc trưng của mình lên không gian của Teacher dễ hơn.
             s_feat_joint_proj = self.feat_projector(s_feat_joint)
             s_feat_img_proj = self.feat_projector(s_feat_img)
-            
-            # --- CẢI TIẾN 2: Chuẩn hóa L2 trước khi tính MSE ---
-            # Giúp bỏ qua sự chênh lệch về độ lớn, chỉ tập trung vào biểu diễn tương đối
             s_feat_joint_norm = F.normalize(s_feat_joint_proj, p=2, dim=-1)
             t_feat_joint_norm = F.normalize(t_feat_joint, p=2, dim=-1)
             s_feat_img_norm = F.normalize(s_feat_img_proj, p=2, dim=-1)
             t_feat_img_norm = F.normalize(t_feat_img, p=2, dim=-1)
-            
-            # 1. Tính MSE Loss trên đặc trưng đã chuẩn hóa
-            mse_joint = F.mse_loss(s_feat_joint_norm, t_feat_joint_norm)
-            mse_img = F.mse_loss(s_feat_img_norm, t_feat_img_norm)
-            
-            # 2. Tính Cosine Loss cho từng loại
-            # Cần flatten về (B, -1) để so sánh hướng tổng thể của tensor
-            cos_joint = F.cosine_similarity(s_feat_joint_proj.flatten(1), t_feat_joint.flatten(1), dim=-1)
-            cos_img = F.cosine_similarity(s_feat_img_proj.flatten(1), t_feat_img.flatten(1), dim=-1)
-            
-            cosine_loss_joint = (1.0 - cos_joint).mean()
-            cosine_loss_img = (1.0 - cos_img).mean()
-            
-            # 3. Tổng hợp Knowledge Distillation Loss
-            # Tăng trọng số cho Cosine Loss lên 1.0 vì học sinh cần chú trọng học hướng của biểu diễn
-            kd_loss = (mse_joint + mse_img) + 1.0 * (cosine_loss_joint + cosine_loss_img)
+            mse_joint_per_sample = (s_feat_joint_norm - t_feat_joint_norm).pow(2).flatten(1).mean(1)
+            mse_img_per_sample = (s_feat_img_norm - t_feat_img_norm).pow(2).flatten(1).mean(1)
+            cosine_joint_per_sample = 1.0 - F.cosine_similarity(
+                s_feat_joint_proj.flatten(1), t_feat_joint.flatten(1), dim=-1
+            )
+            cosine_img_per_sample = 1.0 - F.cosine_similarity(
+                s_feat_img_proj.flatten(1), t_feat_img.flatten(1), dim=-1
+            )
+
+            # Relational distillation preserves the geometry between joint tokens.
+            student_joint_rel = F.normalize(s_feat_joint, dim=-1) @ F.normalize(s_feat_joint, dim=-1).transpose(-1, -2)
+            teacher_joint_rel = F.normalize(t_feat_joint, dim=-1) @ F.normalize(t_feat_joint, dim=-1).transpose(-1, -2)
+            relation_per_sample = (student_joint_rel - teacher_joint_rel).pow(2).flatten(1).mean(1)
+
+            layer_per_sample = torch.zeros_like(mse_joint_per_sample)
+            attention_per_sample = torch.zeros_like(mse_joint_per_sample)
+            for student_layer, teacher_layer in zip(
+                    model_output.get('feat_layers', []), t_out.get('feat_layers', [])):
+                teacher_joint_layer = teacher_layer['joint'].detach()
+                teacher_img_layer = teacher_layer['img'].detach()
+                layer_per_sample = layer_per_sample + (
+                    (F.normalize(student_layer['joint'], dim=-1) - F.normalize(teacher_joint_layer, dim=-1)).pow(2).flatten(1).mean(1)
+                    + (F.normalize(student_layer['img'], dim=-1) - F.normalize(teacher_img_layer, dim=-1)).pow(2).flatten(1).mean(1)
+                )
+                teacher_attn_j = teacher_layer['attn_joint_to_img'].detach()
+                teacher_attn_r = teacher_layer['attn_img_to_joint'].detach()
+                attention_per_sample = attention_per_sample + (
+                    F.kl_div((student_layer['attn_joint_to_img'] + 1e-8).log(), teacher_attn_j, reduction='none').sum(-1).mean((-1, -2))
+                    + F.kl_div((student_layer['attn_img_to_joint'] + 1e-8).log(), teacher_attn_r, reduction='none').sum(-1).mean((-1, -2))
+                )
+
+            privileged_pred = model_output['privileged_3d']
+            valid_joint = fit_joint_trunc
+            if valid_joint.dim() == 3:
+                valid_joint = valid_joint.squeeze(-1)
+            valid_joint = valid_joint * is_valid_fit[:, None]
+            privileged_error = F.smooth_l1_loss(
+                privileged_pred, gt_pose_input, reduction='none').mean(-1)
+            privileged_per_sample = (
+                privileged_error * valid_joint
+            ).sum(-1) / valid_joint.sum(-1).clamp_min(1.0)
+
+            # Hard samples receive more KD, but the weight is bounded and detached.
+            pose_gap = (pred_pose_rootrel - gt_pose_input).abs().mean(-1)
+            pose_gap = (pose_gap * valid_joint).sum(-1) / valid_joint.sum(-1).clamp_min(1.0)
+            adaptive_beta = self.kd_weight * min(1.0, float(epoch) / 10.0)
+            adaptive_weight = torch.clamp(
+                1.0 + adaptive_beta * pose_gap / pose_gap.detach().mean().clamp_min(1e-6),
+                min=0.5, max=2.0
+            ).detach()
+
+            kd_per_sample = (
+                mse_joint_per_sample + mse_img_per_sample
+                + cosine_joint_per_sample + cosine_img_per_sample
+                + 0.25 * layer_per_sample
+                + 0.10 * relation_per_sample
+                + 0.05 * attention_per_sample
+            )
+            kd_loss = (adaptive_weight * kd_per_sample).mean()
+            privileged_loss = privileged_per_sample.mean()
 
             # ---------------------------------------------------------
 
@@ -820,7 +855,7 @@ class Student_Trainer:
             }
             loss_dict = self.awl(loss_dict)
             hard_loss = sum(loss_dict.values())
-            loss = 0.5  * hard_loss + 0.5 * kd_loss
+            loss = 0.5 * hard_loss + 0.5 * kd_loss + privileged_loss
             # update weights
             self.optimizer.zero_grad()
             loss.backward()
@@ -844,8 +879,9 @@ class Student_Trainer:
                         'train_loss/smpl_shape': smpl_shape_loss.item(),
                         'train_loss/mesh': mesh_loss.item(),
                         'train_loss/kd_feat': kd_loss.item(),
-                        'train_loss/mse_joint': mse_joint.item(),
-                        'train_loss/mse_img': mse_img.item(),
+                        'train_loss/mse_joint': mse_joint_per_sample.mean().item(),
+                        'train_loss/mse_img': mse_img_per_sample.mean().item(),
+                        'train_loss/privileged_3d': privileged_loss.item(),
                         'train_loss/hard_total': hard_loss.item(),
                         'train_loss/total': loss.item(),
                     }
