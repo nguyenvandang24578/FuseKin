@@ -37,6 +37,7 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
 
     for i, (inputs_b, targets_b, meta_b) in tqdm(enumerate(train_loader), total=len(train_loader)):
         joints_2d = inputs_b['joints'].to(device)       # (B, 17, 2)
+        joints_2d = joints_2d[:, :, :2]
         joints_mask = inputs_b['joints_mask'].to(device) # (B, 17, 1)
 
         # FIX: Use orig_joint_img (2.5D projected coords in heatmap space)
@@ -67,7 +68,7 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
             # Root relative (same as MotionBERT train.py line 168)
             mb_input[..., :2] = mb_input[..., :2] - mb_input[:, :, 0:1, :2]
             target_3d_seq = target_3d_seq - target_3d_seq[:, :, 0:1, :]
-
+        print(mb_input.shape)
         # Forward pass
         predicted_3d = model(mb_input) # (B, 243, 17, 3)
 
