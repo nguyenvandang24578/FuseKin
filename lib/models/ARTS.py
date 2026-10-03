@@ -77,11 +77,37 @@ class ARTS(nn.Module):
         print(f"Load MotionBERT xong. Thiếu: {missing}. Thừa: {unexpected}.")
 
     def freeze_backbone_and_pose_lifter(self):
-        for module in (self.backbone, self.pose_lifter):
-            if module is not None:
-                for param in module.parameters():
-                    param.requires_grad = False
-                module.eval()
+        # 1. Freeze toàn bộ Backbone (ResNet50)
+        if self.backbone is not None:
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+            self.backbone.eval()
+            
+        # 2. Freeze phần đầu, Unfreeze vài layer cuối của MotionBERT (pose_lifter)
+        if self.pose_lifter is not None:
+            # Khóa toàn bộ trước
+            for param in self.pose_lifter.parameters():
+                param.requires_grad = False
+                
+            # Mở khóa 2 khối Transformer cuối cùng
+            n_unfreeze = 2
+            depth = len(self.pose_lifter.blocks_st)
+            
+            for i in range(depth - n_unfreeze, depth):
+                for param in self.pose_lifter.blocks_st[i].parameters():
+                    param.requires_grad = True
+                if hasattr(self.pose_lifter, 'blocks_ts'):
+                    for param in self.pose_lifter.blocks_ts[i].parameters():
+                        param.requires_grad = True
+                        
+            # Mở khóa các layer dự đoán cuối (Norm, Pre-logits, Head)
+            for module in [self.pose_lifter.norm, self.pose_lifter.pre_logits, self.pose_lifter.head]:
+                if module is not None:
+                    for param in module.parameters():
+                        param.requires_grad = True
+                        
+            # Chú ý: pose_lifter có thể vẫn set .eval() bên ngoài (như trong hàm train()), 
+            # nhưng các param unfrozen vẫn sẽ được cập nhật gradient bình thường.
 
     def train(self, mode=True):
         super().train(mode)
@@ -161,8 +187,11 @@ class ARTS(nn.Module):
     def forward_student(self, image, pose_2d, is_train):
         with torch.no_grad():
             feature_map, _ = self.get_image_features(image)
-            pose_3d = self.lift_2d_to_3d(pose_2d) / 1000      # mm -> m
-            pose_3d = pose_3d - pose_3d[:, 0:1, :]            # root-relative như đầu vào teacher
+            
+        # Tính pose_3d ở NGOÀI no_grad để MotionBERT có thể nhận gradient
+        pose_3d_raw = self.lift_2d_to_3d(pose_2d)
+        pose_3d = pose_3d_raw / 1000      # mm -> m
+        pose_3d = pose_3d - pose_3d[:, 0:1, :]            # root-relative như đầu vào teacher
 
         spin_out, pred_pose_6d, pred_shape, pred_cam, feats = self.smpl_model(
             joints=pose_3d,
@@ -175,6 +204,7 @@ class ARTS(nn.Module):
         result['feat'] = feats['joint_out']
         result['feat_img'] = feats['img_out']
         result['feat_global'] = feats['concat_feat']
+        result['pose_3d'] = pose_3d_raw # Output nguyên bản của MB để tính loss auxiliary
         return result
 
     def forward_arts(self, image, pose_input, is_train, use_gt_3d=False,

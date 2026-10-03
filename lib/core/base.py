@@ -216,7 +216,7 @@ class Trainer:
             # ---- Forward ----
             gt_pose_input = gt_fit_joint_cam - gt_fit_joint_cam[:, 0:1, :]
             model_output = self.model(
-                input_image, gt_pose_input, is_train=True, use_gt_3d=True,
+                input_image, gt_pose_input, is_train=True, use_gt_3d=False,
                 gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,
                 pose_valid_mask=pose_valid_mask,
             )
@@ -604,10 +604,17 @@ class Student_Trainer:
             torch.nn.GELU(),
             torch.nn.Linear(hpe_dim * 2, hpe_dim)
         ).cuda()
-        
-        self.awl = AutomaticWeightedLoss(5).cuda()
+        self.awl = AutomaticWeightedLoss(6).cuda()
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
         self.optimizer.add_param_group({'params': self.feat_projector.parameters(), 'weight_decay': 0})
+        
+        # Add MotionBERT unfrozen parameters to optimizer with a smaller LR
+        if hasattr(self.model.module, 'pose_lifter') and self.model.module.pose_lifter is not None:
+            mb_params = [p for p in self.model.module.pose_lifter.parameters() if p.requires_grad]
+            if mb_params:
+                mb_lr = cfg.TRAIN.lr * 0.1 if hasattr(cfg.TRAIN, 'lr') else 1e-5
+                self.optimizer.add_param_group({'params': mb_params, 'lr': mb_lr, 'weight_decay': 1e-4})
+                print(f"===> Added {len(mb_params)} unfrozen MotionBERT parameter tensors to optimizer with LR={mb_lr}")
         
         # Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
@@ -758,12 +765,32 @@ class Student_Trainer:
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
             mesh_loss = self.coordLoss(pred_mesh, gt_mesh_cam, is_valid_fit[:, None, None])
+            # --- TÍNH LOSS AUXILIARY CHO MOTIONBERT ---
+            if 'pose_3d' in model_output:
+                mb_pred_3d = model_output['pose_3d'] 
+
+                # Chuẩn hóa GT giống cách huấn luyện MotionBERT
+                gt_normalized = gt_orig_joint_img.clone()
+                gt_normalized[..., 0] = gt_normalized[..., 0] / cfg.output_hm_shape[2] * 2 - 1
+                gt_normalized[..., 1] = gt_normalized[..., 1] / cfg.output_hm_shape[1] * 2 - 1
+                gt_normalized[..., 2] = gt_normalized[..., 2] / cfg.output_hm_shape[0] * 2
+
+                # Đưa về root-relative
+                mb_pred_3d = mb_pred_3d - mb_pred_3d[:, 0:1, :]
+                gt_normalized = gt_normalized - gt_normalized[:, 0:1, :]
+
+                # Tính Loss dùng CoordLoss có sẵn (orig_joint_valid_30 là mask [B, 30, 1], ta lấy 17 khớp H36M đầu tiên)
+                loss_mb_3d = self.coordLoss(mb_pred_3d, gt_normalized, orig_joint_valid_30[:, :17, :])
+            else:
+                loss_mb_3d = torch.tensor(0.0).cuda()
+
             loss_dict = {
                 'smpl_joint_cam': loss_smpl_joint_cam,
                 'smpl_pose': smpl_pose_loss,
                 'smpl_shape': smpl_shape_loss,
                 'body_joint_proj': loss_body_joint_proj,
                 'mesh_loss': mesh_loss,
+                'mb_3d': loss_mb_3d,
             }
             loss_dict = self.awl(loss_dict)
             hard_loss = sum(loss_dict.values())
