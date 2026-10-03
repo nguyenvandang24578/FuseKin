@@ -25,15 +25,37 @@ JOINT_NAMES = (
     'R_Shoulder', 'R_Elbow', 'R_Wrist',
 )
 
+# H36M 17-joint skeleton edges (same convention as main/debug_motionbert.py)
+SKELETON = [
+    (0, 1), (1, 2), (2, 3),           # R_Leg
+    (0, 4), (4, 5), (5, 6),           # L_Leg
+    (0, 7), (7, 8), (8, 9), (9, 10),  # Spine & Head
+    (8, 14), (14, 15), (15, 16),      # R_Arm
+    (8, 11), (11, 12), (12, 13),      # L_Arm
+]
+
 
 def load_models(args):
     update_config(args.config)
     cfg.TRAIN.wandb = False
+    lifter_checkpoint = args.lifter_checkpoint or cfg.MODEL.get(
+        'motionbert_pretrained', ''
+    )
+    if not lifter_checkpoint:
+        raise ValueError(
+            'Missing lifter checkpoint. Provide --lifter_checkpoint or '
+            'set MODEL.motionbert_pretrained in the config.'
+        )
+    cfg.MODEL.motionbert_pretrained = lifter_checkpoint
 
     print('Loading Student checkpoint...')
     val_loaders, val_datasets, student, _, _, _, _, _ = prepare_network(
-        args, load_dir=args.student_checkpoint, is_train=False
+        args,
+        load_dir=args.student_checkpoint if args.split == 'test' else '',
+        is_train=args.split == 'train'
     )
+    if args.split == 'train':
+        load_model_weights(student, args.student_checkpoint)
 
     teacher = copy.deepcopy(student)
     teacher.mode = 'teacher'
@@ -67,17 +89,87 @@ def pca_2d(features):
     return projected.astype(np.float32)
 
 
-def save_csv(path, confidence, joint_cosine, img_cosine, relation_error, attention_error):
+def pearson_correlation(first, second):
+    first = np.asarray(first, dtype=np.float64)
+    second = np.asarray(second, dtype=np.float64)
+    first_centered = first - first.mean()
+    second_centered = second - second.mean()
+    denominator = np.sqrt(
+        np.square(first_centered).sum() * np.square(second_centered).sum()
+    )
+    if denominator <= 1e-12:
+        return 0.0
+    return float((first_centered * second_centered).sum() / denominator)
+
+
+def draw_3d_skeleton(ax, joint_3d, color_joint='r', color_bone='b', title=''):
+    """Draw 3D skeleton on a matplotlib 3D axes (same convention as debug_motionbert.py)."""
+    x = joint_3d[:, 0]
+    y = -joint_3d[:, 1]   # Flip Y (image Y-down -> 3D Y-up)
+    z = joint_3d[:, 2]
+
+    ax.scatter(x, z, y, c=color_joint, marker='o', s=20)
+    for (p1, p2) in SKELETON:
+        ax.plot([x[p1], x[p2]], [z[p1], z[p2]], [y[p1], y[p2]], c=color_bone)
+
+    all_coords = np.stack([x, y, z], axis=0)
+    ranges = all_coords.max(axis=1) - all_coords.min(axis=1)
+    max_range = max(ranges.max() / 2.0, 1e-6)
+    mids = (all_coords.max(axis=1) + all_coords.min(axis=1)) * 0.5
+    ax.set_xlim(mids[0] - max_range, mids[0] + max_range)
+    ax.set_ylim(mids[2] - max_range, mids[2] + max_range)
+    ax.set_zlim(mids[1] - max_range, mids[1] + max_range)
+    ax.view_init(elev=15, azim=-90)
+    ax.set_xlabel('X')
+    ax.set_ylabel('Depth Z')
+    ax.set_zlabel('Y')
+    ax.set_title(title, fontsize=10)
+
+
+def save_pose_comparison(output_dir, sample_index, gt_joint, pred_joint, error):
+    import matplotlib.pyplot as plt
+
+    pose_dir = os.path.join(output_dir, 'pose3d_compare')
+    os.makedirs(pose_dir, exist_ok=True)
+
+    fig = plt.figure(figsize=(15, 5))
+
+    ax1 = fig.add_subplot(131, projection='3d')
+    draw_3d_skeleton(ax1, gt_joint, color_joint='green', color_bone='blue',
+                      title='GT 3D (Root Relative)')
+
+    ax2 = fig.add_subplot(132, projection='3d')
+    draw_3d_skeleton(ax2, pred_joint, color_joint='red', color_bone='orange',
+                      title='Lifter Pred 3D (Root Relative)')
+
+    ax3 = fig.add_subplot(133, projection='3d')
+    draw_3d_skeleton(ax3, gt_joint, color_joint='green', color_bone='blue',
+                      title=f'Overlap (err={error:.4f} m)')
+    px, py, pz = pred_joint[:, 0], -pred_joint[:, 1], pred_joint[:, 2]
+    ax3.scatter(px, pz, py, c='red', s=20)
+    for (p1, p2) in SKELETON:
+        ax3.plot([px[p1], px[p2]], [pz[p1], pz[p2]], [py[p1], py[p2]], c='orange')
+
+    fig.suptitle(f'Sample {sample_index:04d}')
+    fig.tight_layout()
+    fig.savefig(os.path.join(pose_dir, f'pose3d_{sample_index:04d}.jpg'),
+                dpi=120, bbox_inches='tight')
+    plt.close(fig)
+
+
+def save_csv(path, confidence, pose_error, joint_cosine, img_cosine,
+             relation_error, attention_error):
     with open(path, 'w', newline='', encoding='utf-8') as handle:
         writer = csv.writer(handle)
         writer.writerow([
-            'sample', 'mean_confidence', 'joint_cosine',
+            'sample', 'mean_confidence', 'pose_error', 'joint_cosine',
             'image_cosine', 'relation_error', 'attention_error',
         ])
         for index in range(len(confidence)):
             writer.writerow([
                 index,
                 float(confidence[index]),
+                float(pose_error[index]),
                 float(joint_cosine[index]),
                 float(img_cosine[index]),
                 float(relation_error[index]),
@@ -189,31 +281,55 @@ def save_visualizations(output_dir, confidence, joint_cosine, img_cosine,
 
 def main(args):
     val_loaders, datasets, student, teacher = load_models(args)
-    loader = val_loaders[0]
+    loader = val_loaders if args.split == 'train' else val_loaders[0]
     dataset = datasets[0]
 
     confidence_values = []
+    pose_error_values = []
     joint_cosine_values = []
+    joint_cosine_mean_values = []
     image_cosine_values = []
     relation_error_values = []
     attention_error_values = []
     student_joint_values = []
     teacher_joint_values = []
+    pose_vis_count = 0
 
     with torch.no_grad():
-        for step, (inputs, targets, _) in enumerate(tqdm(loader, desc='Extracting features')):
+        for step, (inputs, targets, meta) in enumerate(tqdm(loader, desc='Extracting features')):
             if args.max_batches > 0 and step >= args.max_batches:
                 break
 
             image = inputs['img'].cuda().float()
             pose2d = inputs['joints'].cuda().float()
-            if pose2d.shape[-1] < 3:
-                raise ValueError('Expected pose2d input with (x, y, confidence).')
+            joints_mask = inputs['joints_mask'].cuda().float()
 
-            target_mesh = targets['smpl_mesh_cam'].cuda().float()
-            teacher_pose = get_teacher_pose(target_mesh, dataset)
+            if args.split == 'train':
+                teacher_pose = targets['fit_joint_cam'].cuda().float()
+            else:
+                target_mesh = targets['smpl_mesh_cam'].cuda().float()
+                teacher_pose = get_teacher_pose(target_mesh, dataset)
 
-            student_out = student(image, pose2d, is_train=False)
+            lifter_pose = student.module.lift_2d_to_3d(pose2d, joints_mask=joints_mask) / 1000.0
+            lifter_pose = lifter_pose - lifter_pose[:, 0:1, :]
+            pose_error = (
+                lifter_pose - teacher_pose
+            ).norm(dim=-1).mean(dim=-1)
+
+            if args.num_pose_vis > 0 and pose_vis_count < args.num_pose_vis:
+                gt_np = teacher_pose.cpu().numpy()
+                pred_np = lifter_pose.cpu().numpy()
+                err_np = pose_error.cpu().numpy()
+                for b in range(gt_np.shape[0]):
+                    if pose_vis_count >= args.num_pose_vis:
+                        break
+                    save_pose_comparison(
+                        args.output_dir, pose_vis_count,
+                        gt_np[b], pred_np[b], err_np[b],
+                    )
+                    pose_vis_count += 1
+
+            student_out = student(image, pose2d, is_train=False, joints_mask=joints_mask)
             teacher_out = teacher(image, teacher_pose, is_train=False)
 
             student_joint = student_out['feat'].flatten(1)
@@ -221,9 +337,19 @@ def main(args):
             student_joint_pooled = student_out['feat'].mean(dim=1)
             teacher_joint_pooled = teacher_out['feat'].mean(dim=1)
 
-            joint_cosine = F.cosine_similarity(
+            joint_cos_per_token = F.cosine_similarity(
                 student_out['feat'], teacher_out['feat'], dim=-1
             )
+            joint_mask = meta.get('orig_joint_trunc')
+            if joint_mask is None:
+                joint_mask = torch.ones_like(joint_cos_per_token)
+            else:
+                joint_mask = joint_mask.cuda().float()
+                if joint_mask.dim() == 3:
+                    joint_mask = joint_mask.squeeze(-1)
+            joint_cosine_mean = (   
+                joint_cos_per_token * joint_mask
+            ).sum(-1) / joint_mask.sum(-1).clamp_min(1.0)
             img_cos_per_token = F.cosine_similarity(
                 student_out['feat_img'], teacher_out['feat_img'], dim=-1
             )
@@ -233,7 +359,7 @@ def main(args):
             teacher_joint_rel = F.normalize(teacher_out['feat'], dim=-1) @ F.normalize(teacher_out['feat'], dim=-1).transpose(-1, -2)
             relation_error = (student_joint_rel - teacher_joint_rel).pow(2).flatten(1).mean(1)
 
-            confidence = pose2d[:, :, 2].mean(dim=1)
+            confidence = joints_mask.squeeze(-1).mean(dim=1)
             attention_error = torch.zeros_like(confidence)
             for student_layer, teacher_layer in zip(
                     student_out.get('feat_layers', []), teacher_out.get('feat_layers', [])):
@@ -244,7 +370,9 @@ def main(args):
                     )
 
             confidence_values.append(confidence.cpu().numpy())
-            joint_cosine_values.append(joint_cosine.cpu().numpy())
+            pose_error_values.append(pose_error.cpu().numpy())
+            joint_cosine_values.append(joint_cos_per_token.cpu().numpy())
+            joint_cosine_mean_values.append(joint_cosine_mean.cpu().numpy())
             image_cosine_values.append(image_cosine.cpu().numpy())
             relation_error_values.append(relation_error.cpu().numpy())
             attention_error_values.append(attention_error.cpu().numpy())
@@ -252,27 +380,38 @@ def main(args):
             teacher_joint_values.append(teacher_joint_pooled.cpu().numpy())
 
     confidence = np.concatenate(confidence_values)
+    pose_error = np.concatenate(pose_error_values)
     joint_cosine = np.concatenate(joint_cosine_values)
+    joint_cosine_mean = np.concatenate(joint_cosine_mean_values)
     image_cosine = np.concatenate(image_cosine_values)
     relation_error = np.concatenate(relation_error_values)
     attention_error = np.concatenate(attention_error_values)
     student_joint = np.concatenate(student_joint_values)
     teacher_joint = np.concatenate(teacher_joint_values)
+    joint_pose_correlation = pearson_correlation(pose_error, joint_cosine_mean)
+    image_pose_correlation = pearson_correlation(pose_error, image_cosine)
 
     save_csv(
         os.path.join(args.output_dir, 'feature_similarity.csv'),
-        confidence, joint_cosine.mean(axis=1), image_cosine, relation_error, attention_error,
+        confidence, pose_error, joint_cosine_mean, image_cosine,
+        relation_error, attention_error,
     )
     save_visualizations(
         args.output_dir, confidence, joint_cosine, image_cosine,
         relation_error, attention_error, student_joint, teacher_joint,
     )
 
-    print(f'Processed {len(confidence)} samples.')
-    print(f'Mean joint cosine: {joint_cosine.mean():.4f}')
+    print(f'Processed {len(confidence)} samples from {args.split} split.')
+    print(f'Mean lifter pose error: {pose_error.mean():.4f} m')
+    print(f'Mean joint cosine: {joint_cosine_mean.mean():.4f}')
     print(f'Mean image cosine: {image_cosine.mean():.4f}')
     print(f'Mean relation error: {relation_error.mean():.4f}')
     print(f'Mean attention error: {attention_error.mean():.4f}')
+    print(f'Pearson pose error vs joint cosine: {joint_pose_correlation:.4f}')
+    print(f'Pearson pose error vs image cosine: {image_pose_correlation:.4f}')
+    if pose_vis_count > 0:
+        print(f'Saved {pose_vis_count} pose3D comparison images to '
+              f'{os.path.join(args.output_dir, "pose3d_compare")}')
     print(f'Outputs saved to: {args.output_dir}')
 
 
@@ -280,8 +419,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--student_checkpoint', required=True)
     parser.add_argument('--teacher_checkpoint', required=True)
+    parser.add_argument('--lifter_checkpoint', default='')
     parser.add_argument('--config', default='config/train_student.yml')
     parser.add_argument('--output_dir', default='output/feature_visualization')
     parser.add_argument('--max_batches', type=int, default=-1)
+    parser.add_argument('--split', choices=('train', 'test'), default='train')
     parser.add_argument('--resume_training', action='store_true')
+    parser.add_argument('--num_pose_vis', type=int, default=8,
+                         help='Number of GT-vs-lifter 3D pose comparison images to save (0 to disable).')
     main(parser.parse_args())

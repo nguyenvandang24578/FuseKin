@@ -97,17 +97,21 @@ class ARTS(nn.Module):
         global_feature = global_feature.reshape(image.shape[0], 1, -1)
         return feature_map, global_feature
 
-    def lift_2d_to_3d(self, pose_2d):
+    def lift_2d_to_3d(self, pose_2d, joints_mask=None):
         if pose_2d.dim() == 3:
             pose_2d = pose_2d.unsqueeze(1)
 
         first_frame = pose_2d[:, 0]
         xy = first_frame[..., :2]
-        
+
         # CRITICAL FIX: MotionBERT was finetuned with root-relative 2D keypoints!
         xy = xy - xy[:, 0:1, :]
-        
-        if first_frame.shape[-1] >= 3:
+
+        # MotionBERT's 3rd input channel was finetuned on the real per-joint
+        # validity mask (see main/finetune_motionbert.py), not a constant.
+        if joints_mask is not None:
+            confidence = joints_mask.to(dtype=xy.dtype, device=xy.device)
+        elif first_frame.shape[-1] >= 3:
             confidence = first_frame[..., 2:3]
         else:
             confidence = torch.ones_like(xy[..., :1])
@@ -161,10 +165,10 @@ class ARTS(nn.Module):
         result['feat_layers'] = feature['layers']
         return result
 
-    def forward_student(self, image, pose_2d, is_train, gt_pose_3d=None, alpha=1.0):
+    def forward_student(self, image, pose_2d, is_train, gt_pose_3d=None, alpha=1.0, joints_mask=None):
         with torch.no_grad():
             feature_map, _ = self.get_image_features(image)
-            lifter_pose_3d = self.lift_2d_to_3d(pose_2d) / 1000      # mm -> m
+            lifter_pose_3d = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask) / 1000      # mm -> m
             lifter_pose_3d = lifter_pose_3d - lifter_pose_3d[:, 0:1, :]            # root-relative như đầu vào teacher
         pose_3d  = lifter_pose_3d
         spin_out, pred_pose_6d, pred_shape, pred_cam, feats = self.smpl_model(
@@ -184,12 +188,12 @@ class ARTS(nn.Module):
 
     def forward_arts(self, image, pose_input, is_train, use_gt_3d=False,
                      gt_pose_6d=None, kp2d=None, kp_conf=None,
-                     pose_valid_mask=None, gt_joints_3d=None):
+                     pose_valid_mask=None, gt_joints_3d=None, joints_mask=None):
         with torch.no_grad():
             ft_map, global_feature = self.get_image_features(image)
-            
+
             if not use_gt_3d:
-                pose_3d = self.lift_2d_to_3d(pose_input)
+                pose_3d = self.lift_2d_to_3d(pose_input, joints_mask=joints_mask)
                 pose_3d = pose_3d / 1000                      # mm -> m
                 pose_3d = pose_3d - pose_3d[:, 0:1, :]        # root-relative
             else:
@@ -213,15 +217,16 @@ class ARTS(nn.Module):
 
     def forward(self, image, joints, is_train=True, use_gt_3d=False,
                 gt_pose_6d=None, kp2d=None, kp_conf=None,
-                pose_valid_mask=None, gt_joints_3d=None, alpha=1.0):
+                pose_valid_mask=None, gt_joints_3d=None, alpha=1.0, joints_mask=None):
         if self.mode == "teacher":
             return self.forward_teacher(image, joints, is_train)
         if self.mode == "student":
-            return self.forward_student(image, joints, is_train, gt_pose_3d=gt_joints_3d, alpha=alpha)
+            return self.forward_student(image, joints, is_train, gt_pose_3d=gt_joints_3d, alpha=alpha, joints_mask=joints_mask)
         return self.forward_arts(
             image, joints, is_train, use_gt_3d,
             gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,
             pose_valid_mask=pose_valid_mask, gt_joints_3d=gt_joints_3d,
+            joints_mask=joints_mask,
         )
 
 

@@ -682,7 +682,8 @@ class Student_Trainer:
             # convert to cuda
             input_image = inputs['img'].cuda().float()
             input_pose2d = inputs['joints'].cuda().float()
-            gt_orig_joint_cam = targets['orig_joint_cam'].cuda() 
+            joints_mask = inputs['joints_mask'].cuda().float()
+            gt_orig_joint_cam = targets['orig_joint_cam'].cuda()
             gt_fit_joint_cam = targets['fit_joint_cam'].cuda() 
             orig_joint_valid = meta['orig_joint_valid'].cuda() 
             fit_joint_trunc = meta['fit_joint_trunc'].cuda() 
@@ -712,7 +713,7 @@ class Student_Trainer:
             # Feed 2D pose to model (which routes to MotionBERT in Student mode)
             model_output = self.model(
                 input_image, input_pose2d, is_train=True,
-                gt_joints_3d=gt_pose_input, alpha=alpha
+                gt_joints_3d=gt_pose_input, alpha=alpha, joints_mask=joints_mask
             )
 
             pred_mesh = model_output['smpl_mesh_cam']
@@ -792,6 +793,7 @@ class Student_Trainer:
             pose_gap = (pred_pose_rootrel - gt_pose_input).abs().mean(-1)
             pose_gap = (pose_gap * valid_joint).sum(-1) / valid_joint.sum(-1).clamp_min(1.0)
             adaptive_beta = self.kd_weight * min(1.0, float(epoch) / 10.0)
+
             adaptive_weight = torch.clamp(
                 1.0 + adaptive_beta * pose_gap / pose_gap.detach().mean().clamp_min(1e-6),
                 min=0.5, max=2.0
@@ -804,6 +806,7 @@ class Student_Trainer:
                 + 0.10 * relation_per_sample
                 + 0.05 * attention_per_sample
             )
+            
             kd_loss = (adaptive_weight * kd_per_sample).mean()
             privileged_loss = privileged_per_sample.mean()
 
