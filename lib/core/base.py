@@ -623,6 +623,19 @@ class Student_Trainer:
         smpl30_joints = self.main_dataset.mesh_model.joints_name
         self.h36m_from_smpl30 = [smpl30_joints.index(name) for name in h36m_joints]
 
+        # Unfreeze the 2D->3D lifter so KD + hard losses can correct its pose
+        # output end-to-end, instead of smpl_model alone trying to compensate
+        # for a fixed, noisy lifted pose it has no way to influence. Use a
+        # much smaller LR than the main model so the pretrained lifter adapts
+        # instead of collapsing.
+        for p in self.model.pose_lifter.parameters():
+            p.requires_grad = True
+        lifter_lr_mult = cfg.TRAIN.get('lifter_lr_mult', 0.1)
+        self.optimizer.add_param_group({
+            'params': self.model.pose_lifter.parameters(),
+            'lr': cfg.TRAIN.lr * lifter_lr_mult,
+        })
+
         self.model = torch.nn.DataParallel(self.model).cuda()
 
         self.jotr_coord_loss = JOTRCoordLoss()

@@ -168,8 +168,12 @@ class ARTS(nn.Module):
     def forward_student(self, image, pose_2d, is_train, gt_pose_3d=None, alpha=1.0, joints_mask=None):
         with torch.no_grad():
             feature_map, _ = self.get_image_features(image)
-            lifter_pose_3d = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask) / 1000      # mm -> m
-            lifter_pose_3d = lifter_pose_3d - lifter_pose_3d[:, 0:1, :]            # root-relative như đầu vào teacher
+        # NOTE: pose_lifter is intentionally left OUTSIDE no_grad so that, when
+        # unfrozen (see Student_Trainer.__init__), KD + hard losses can backprop
+        # through it and correct the lifted pose instead of treating it as a
+        # fixed, noisy input the rest of the network must blindly compensate for.
+        lifter_pose_3d = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask) / 1000      # mm -> m
+        lifter_pose_3d = lifter_pose_3d - lifter_pose_3d[:, 0:1, :]            # root-relative như đầu vào teacher
         pose_3d  = lifter_pose_3d
         spin_out, pred_pose_6d, pred_shape, pred_cam, feats = self.smpl_model(
             joints=pose_3d,
