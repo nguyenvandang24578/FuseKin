@@ -613,8 +613,17 @@ class Student_Trainer:
             mb_params = [p for p in self.model.module.pose_lifter.parameters() if p.requires_grad]
             if mb_params:
                 mb_lr = cfg.TRAIN.lr * 0.1 if hasattr(cfg.TRAIN, 'lr') else 1e-5
+                
+                # CỰC KỲ QUAN TRỌNG: Các params này đã được add vào optimizer chung ở hàm prepare_network.
+                # Do đó, phải XÓA chúng khỏi group 0 trước khi tạo group mới, nếu không sẽ bị lỗi ValueError.
+                mb_param_set = set(mb_params)
+                self.optimizer.param_groups[0]['params'] = [
+                    p for p in self.optimizer.param_groups[0]['params'] if p not in mb_param_set
+                ]
+                
+                # Giờ mới add group mới với LR nhỏ
                 self.optimizer.add_param_group({'params': mb_params, 'lr': mb_lr, 'weight_decay': 1e-4})
-                print(f"===> Added {len(mb_params)} unfrozen MotionBERT parameter tensors to optimizer with LR={mb_lr}")
+                print(f"===> Extracted {len(mb_params)} unfrozen MotionBERT parameter tensors to a new optimizer group with LR={mb_lr}")
         
         # Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
