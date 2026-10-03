@@ -38,7 +38,23 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
     for i, (inputs_b, targets_b, meta_b) in tqdm(enumerate(train_loader), total=len(train_loader)):
         joints_2d = inputs_b['joints'].to(device)       # (B, 17, 2)
         joints_mask = inputs_b['joints_mask'].to(device) # (B, 17, 1)
-        target_3d = targets_b['orig_joint_cam'].to(device) # (B, 17, 3)
+
+        # FIX: Use orig_joint_img (2.5D projected coords in heatmap space)
+        # instead of orig_joint_cam (3D camera, meters).
+        # MotionBERT was pretrained with normalized 2.5D image coordinates
+        # (joint3d_image), NOT real 3D camera coordinates.
+        # See: MotionBERT/lib/data/datareader_h36m.py :: read_3d()
+        target_3d = targets_b['orig_joint_img'].to(device) # (B, 17, 3) — heatmap space
+
+        # Normalize target to [-1, 1] (same convention as MotionBERT datareader):
+        #   x, y: / res * 2 - 1 → [-1, 1]
+        #   z (depth): / res * 2  (scale only, no shift)
+        # Here res = cfg.output_hm_shape (64) since JOTR uses heatmap coords.
+        with torch.no_grad():
+            target_3d = target_3d.clone()
+            target_3d[..., 0] = target_3d[..., 0] / cfg.output_hm_shape[2] * 2 - 1
+            target_3d[..., 1] = target_3d[..., 1] / cfg.output_hm_shape[1] * 2 - 1
+            target_3d[..., 2] = target_3d[..., 2] / cfg.output_hm_shape[0] * 2
 
         # Prepare MotionBERT input (append mask as confidence)
         pose2d_3ch = torch.cat([joints_2d, joints_mask], dim=-1) # (B, 17, 3)
@@ -51,12 +67,6 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
             # Root relative (same as MotionBERT train.py line 168)
             mb_input[..., :2] = mb_input[..., :2] - mb_input[:, :, 0:1, :2]
             target_3d_seq = target_3d_seq - target_3d_seq[:, :, 0:1, :]
-            
-            # FIX: MotionBERT pretrained weights expect MILLIMETERS.
-            # But PW3D/JOTR dataset returns targets in METERS.
-            # We must multiply by 1000, otherwise the loss is too small
-            # and weight decay collapses the model weights to 0.
-            target_3d_seq = target_3d_seq * 1000.0
 
         # Forward pass
         predicted_3d = model(mb_input) # (B, 243, 17, 3)

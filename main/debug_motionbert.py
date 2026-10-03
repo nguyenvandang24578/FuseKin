@@ -265,13 +265,18 @@ for batch_idx, (inputs_b, targets_b, meta_b) in enumerate(loader):
 
         pred_3d = pred_3d_batch[b]                             # (J, 3)
         gt_3d = None
-        if 'orig_joint_cam' in targets_b:
-            gt_3d = targets_b['orig_joint_cam'][b].numpy()    # (J, 3)
+        if 'orig_joint_img' in targets_b:
+            # GT in heatmap space (0-64), normalize to [-1,1] same as training
+            gt_3d_raw = targets_b['orig_joint_img'][b].numpy()    # (J, 3)
+            gt_3d = gt_3d_raw.copy()
+            gt_3d[..., 0] = gt_3d[..., 0] / cfg.output_hm_shape[2] * 2 - 1
+            gt_3d[..., 1] = gt_3d[..., 1] / cfg.output_hm_shape[1] * 2 - 1
+            gt_3d[..., 2] = gt_3d[..., 2] / cfg.output_hm_shape[0] * 2
             
             # --- TÍNH TOÁN VÀ IN THÔNG SỐ SO SÁNH ---
-            print(f"\n[Sample {img_count:03d}] So sánh tọa độ:")
-            print(f" - Mẫu GT khớp 0 (pelvis): {gt_3d[0]}")
-            print(f" - Mẫu Pred khớp 0 (pelvis): {pred_3d[0]}")
+            print(f"\n[Sample {img_count:03d}] So sánh tọa độ (normalized 2.5D space):")
+            print(f" - GT  khớp 0 (pelvis): {gt_3d[0]}")
+            print(f" - Pred khớp 0 (pelvis): {pred_3d[0]}")
             
             gt_root = gt_3d[0:1, :]
             pred_root = pred_3d[0:1, :]
@@ -283,16 +288,9 @@ for batch_idx, (inputs_b, targets_b, meta_b) in enumerate(loader):
             gt_bone_len = np.linalg.norm(gt_rel[1] - gt_rel[0])
             pred_bone_len = np.linalg.norm(pred_rel[1] - pred_rel[0])
             print(f" - Chiều dài xương đùi (khớp 1-0): GT = {gt_bone_len:.4f}, Pred = {pred_bone_len:.4f}")
-            
-            # Nếu chênh lệch scale quá lớn (vd: mm vs m), quy đổi về cùng hệ m
-            scale_factor = 1.0
-            if pred_bone_len > 10 * gt_bone_len: # Pred là mm, GT là m
-                print(" -> Phát hiện Pred dùng đơn vị Millimet, GT dùng đơn vị Mét! Tự động chia Pred cho 1000...")
-                pred_rel = pred_rel / 1000.0
-                scale_factor = 1000.0
                 
             mpjpe = np.sqrt(np.sum((pred_rel - gt_rel) ** 2, axis=1)).mean()
-            print(f" -> MPJPE (đã Root-Relative & đồng bộ Scale): {mpjpe:.4f} mét ({mpjpe*1000:.2f} mm)")
+            print(f" -> MPJPE (normalized 2.5D space): {mpjpe:.4f}")
 
         # Panel 2: GT 3D skeleton (green / blue)
         ax2 = fig.add_subplot(142, projection='3d')
