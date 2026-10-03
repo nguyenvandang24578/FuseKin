@@ -67,12 +67,12 @@ def pca_2d(features):
     return projected.astype(np.float32)
 
 
-def save_csv(path, confidence, joint_cosine, img_cosine, global_cosine):
+def save_csv(path, confidence, joint_cosine, img_cosine, relation_error, attention_error):
     with open(path, 'w', newline='', encoding='utf-8') as handle:
         writer = csv.writer(handle)
         writer.writerow([
             'sample', 'mean_confidence', 'joint_cosine',
-            'image_cosine', 'global_cosine',
+            'image_cosine', 'relation_error', 'attention_error',
         ])
         for index in range(len(confidence)):
             writer.writerow([
@@ -80,12 +80,13 @@ def save_csv(path, confidence, joint_cosine, img_cosine, global_cosine):
                 float(confidence[index]),
                 float(joint_cosine[index]),
                 float(img_cosine[index]),
-                float(global_cosine[index]),
+                float(relation_error[index]),
+                float(attention_error[index]),
             ])
 
 
 def save_visualizations(output_dir, confidence, joint_cosine, img_cosine,
-                        global_cosine, student_joint, teacher_joint):
+                        relation_error, attention_error, student_joint, teacher_joint):
     try:
         import matplotlib.pyplot as plt
     except ModuleNotFoundError as error:
@@ -119,7 +120,7 @@ def save_visualizations(output_dir, confidence, joint_cosine, img_cosine,
     bins = [0.0, 0.4, 0.8, 1.01]
     labels = ['low', 'medium', 'high']
     grouped = [
-        global_cosine[(confidence >= bins[i]) & (confidence < bins[i + 1])]
+        relation_error[(confidence >= bins[i]) & (confidence < bins[i + 1])]
         for i in range(3)
     ]
     fig, axis = plt.subplots(figsize=(8, 5))
@@ -128,12 +129,28 @@ def save_visualizations(output_dir, confidence, joint_cosine, img_cosine,
         labels=[f'{label}\n(n={len(values)})' for label, values in zip(labels, grouped)],
         showfliers=False,
     )
-    axis.set_ylim(0.0, 1.0)
     axis.set_xlabel('Mean 2D confidence group')
-    axis.set_ylabel('Global feature cosine similarity')
-    axis.set_title('Feature similarity by confidence')
+    axis.set_ylabel('Relational Distillation Error (MSE)')
+    axis.set_title('Relation Error by confidence')
     fig.tight_layout()
-    fig.savefig(os.path.join(output_dir, 'cosine_by_confidence.png'), dpi=180)
+    fig.savefig(os.path.join(output_dir, 'relation_error_by_confidence.png'), dpi=180)
+    plt.close(fig)
+
+    grouped_attn = [
+        attention_error[(confidence >= bins[i]) & (confidence < bins[i + 1])]
+        for i in range(3)
+    ]
+    fig, axis = plt.subplots(figsize=(8, 5))
+    axis.boxplot(
+        grouped_attn,
+        labels=[f'{label}\n(n={len(values)})' for label, values in zip(labels, grouped_attn)],
+        showfliers=False,
+    )
+    axis.set_xlabel('Mean 2D confidence group')
+    axis.set_ylabel('Attention Distillation Error (KL Div)')
+    axis.set_title('Attention Error by confidence')
+    fig.tight_layout()
+    fig.savefig(os.path.join(output_dir, 'attention_error_by_confidence.png'), dpi=180)
     plt.close(fig)
 
     teacher_projection = pca_2d(teacher_joint)
@@ -178,7 +195,8 @@ def main(args):
     confidence_values = []
     joint_cosine_values = []
     image_cosine_values = []
-    global_cosine_values = []
+    relation_error_values = []
+    attention_error_values = []
     student_joint_values = []
     teacher_joint_values = []
 
@@ -203,45 +221,58 @@ def main(args):
             student_joint_pooled = student_out['feat'].mean(dim=1)
             teacher_joint_pooled = teacher_out['feat'].mean(dim=1)
 
-            student_img = student_out['feat_img'].mean(dim=1)
-            teacher_img = teacher_out['feat_img'].mean(dim=1)
-
             joint_cosine = F.cosine_similarity(
                 student_out['feat'], teacher_out['feat'], dim=-1
             )
-            image_cosine = F.cosine_similarity(student_img, teacher_img, dim=-1)
-            global_cosine = F.cosine_similarity(
-                student_out['feat_global'], teacher_out['feat_global'], dim=-1
+            img_cos_per_token = F.cosine_similarity(
+                student_out['feat_img'], teacher_out['feat_img'], dim=-1
             )
+            image_cosine = img_cos_per_token.mean(dim=-1)
+
+            student_joint_rel = F.normalize(student_out['feat'], dim=-1) @ F.normalize(student_out['feat'], dim=-1).transpose(-1, -2)
+            teacher_joint_rel = F.normalize(teacher_out['feat'], dim=-1) @ F.normalize(teacher_out['feat'], dim=-1).transpose(-1, -2)
+            relation_error = (student_joint_rel - teacher_joint_rel).pow(2).flatten(1).mean(1)
 
             confidence = pose2d[:, :, 2].mean(dim=1)
+            attention_error = torch.zeros_like(confidence)
+            for student_layer, teacher_layer in zip(
+                    student_out.get('feat_layers', []), teacher_out.get('feat_layers', [])):
+                if 'attn_joint_to_img' in student_layer and 'attn_img_to_joint' in student_layer:
+                    attention_error += (
+                        F.kl_div((student_layer['attn_joint_to_img'] + 1e-8).log(), teacher_layer['attn_joint_to_img'], reduction='none').sum(-1).mean((-1, -2))
+                        + F.kl_div((student_layer['attn_img_to_joint'] + 1e-8).log(), teacher_layer['attn_img_to_joint'], reduction='none').sum(-1).mean((-1, -2))
+                    )
+
             confidence_values.append(confidence.cpu().numpy())
             joint_cosine_values.append(joint_cosine.cpu().numpy())
             image_cosine_values.append(image_cosine.cpu().numpy())
-            global_cosine_values.append(global_cosine.cpu().numpy())
+            relation_error_values.append(relation_error.cpu().numpy())
+            attention_error_values.append(attention_error.cpu().numpy())
             student_joint_values.append(student_joint_pooled.cpu().numpy())
             teacher_joint_values.append(teacher_joint_pooled.cpu().numpy())
 
     confidence = np.concatenate(confidence_values)
     joint_cosine = np.concatenate(joint_cosine_values)
     image_cosine = np.concatenate(image_cosine_values)
-    global_cosine = np.concatenate(global_cosine_values)
+    relation_error = np.concatenate(relation_error_values)
+    attention_error = np.concatenate(attention_error_values)
     student_joint = np.concatenate(student_joint_values)
     teacher_joint = np.concatenate(teacher_joint_values)
 
     save_csv(
         os.path.join(args.output_dir, 'feature_similarity.csv'),
-        confidence, joint_cosine.mean(axis=1), image_cosine, global_cosine,
+        confidence, joint_cosine.mean(axis=1), image_cosine, relation_error, attention_error,
     )
     save_visualizations(
         args.output_dir, confidence, joint_cosine, image_cosine,
-        global_cosine, student_joint, teacher_joint,
+        relation_error, attention_error, student_joint, teacher_joint,
     )
 
     print(f'Processed {len(confidence)} samples.')
     print(f'Mean joint cosine: {joint_cosine.mean():.4f}')
     print(f'Mean image cosine: {image_cosine.mean():.4f}')
-    print(f'Mean global cosine: {global_cosine.mean():.4f}')
+    print(f'Mean relation error: {relation_error.mean():.4f}')
+    print(f'Mean attention error: {attention_error.mean():.4f}')
     print(f'Outputs saved to: {args.output_dir}')
 
 
