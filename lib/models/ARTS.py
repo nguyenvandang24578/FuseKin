@@ -172,7 +172,8 @@ class ARTS(nn.Module):
         # unfrozen (see Student_Trainer.__init__), KD + hard losses can backprop
         # through it and correct the lifted pose instead of treating it as a
         # fixed, noisy input the rest of the network must blindly compensate for.
-        lifter_pose_3d = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask) / 1000      # mm -> m
+        lifter_pose_3d_raw = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask)
+        lifter_pose_3d = lifter_pose_3d_raw / 1000      # mm -> m
         lifter_pose_3d = lifter_pose_3d - lifter_pose_3d[:, 0:1, :]            # root-relative như đầu vào teacher
         pose_3d  = lifter_pose_3d
         spin_out, pred_pose_6d, pred_shape, pred_cam, feats = self.smpl_model(
@@ -188,6 +189,7 @@ class ARTS(nn.Module):
         result['feat_global'] = feats['concat_feat']
         result['feat_layers'] = feats['layers']
         result['privileged_3d'] = self.privileged_joint_head(feats['joint_out'])
+        result['pose_3d'] = lifter_pose_3d_raw # Output nguyên bản của MB để tính loss auxiliary
         return result
 
     def forward_arts(self, image, pose_input, is_train, use_gt_3d=False,
