@@ -54,12 +54,17 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda'):
 
             # --- Forward ---
             if cfg.MODEL.name == 'teacher':
-                # Giống hệt Teacher_Trainer (base.py): orig_joint_img chuẩn hóa
-                # [-1, 1] (2.5D) rồi root-relative.
-                teacher_gt_joints = targets['orig_joint_img'].to(device).float().clone()
-                teacher_gt_joints[..., 0] = teacher_gt_joints[..., 0] / cfg.output_hm_shape[2] * 2 - 1
-                teacher_gt_joints[..., 1] = teacher_gt_joints[..., 1] / cfg.output_hm_shape[1] * 2 - 1
-                teacher_gt_joints[..., 2] = teacher_gt_joints[..., 2] / cfg.output_hm_shape[0] * 2
+                # Giống Teacher_Trainer (base.py): GT 3D gốc, mét, root-relative
+                # (H36M-17 regress từ GT mesh, cùng nguồn với orig_joint_cam lúc train).
+                h36m_regressor = torch.as_tensor(
+                    dataset.h36m_joint_regressor,
+                    device=device,
+                    dtype=target_mesh_tensor.dtype,
+                )
+                teacher_gt_joints = torch.matmul(
+                    h36m_regressor.unsqueeze(0).expand(target_mesh_tensor.shape[0], -1, -1),
+                    target_mesh_tensor,
+                )
                 teacher_gt_joints = teacher_gt_joints - teacher_gt_joints[:, 0:1, :]
                 outputs = model(model_inputs['img'], teacher_gt_joints, is_train=False)
             elif cfg.MODEL.name == 'ARTS' and hasattr(dataset, 'h36m_joint_regressor'):
