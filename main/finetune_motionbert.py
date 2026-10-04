@@ -60,15 +60,14 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
         # Prepare MotionBERT input (append mask as confidence)
         pose2d_3ch = torch.cat([joints_2d, joints_mask], dim=-1) # (B, 17, 3)
         
-        # Simulate temporal sequence of length 243
-        mb_input = pose2d_3ch.unsqueeze(1).repeat(1, mb_cfg.maxlen, 1, 1) # (B, 243, 17, 3)
-        target_3d_seq = target_3d.unsqueeze(1).repeat(1, mb_cfg.maxlen, 1, 1) # (B, 243, 17, 3)
+        # Static single frame (F=1), matches ARTS.lift_2d_to_3d at inference
+        mb_input = pose2d_3ch.unsqueeze(1).clone() # (B, 1, 17, 3)
+        target_3d_seq = target_3d.unsqueeze(1).clone() # (B, 1, 17, 3)
         
         with torch.no_grad():
             # Root relative (same as MotionBERT train.py line 168)
             mb_input[..., :2] = mb_input[..., :2] - mb_input[:, :, 0:1, :2]
             target_3d_seq = target_3d_seq - target_3d_seq[:, :, 0:1, :]
-        print(mb_input.shape)
         # Forward pass
         predicted_3d = model(mb_input) # (B, 243, 17, 3)
 
@@ -134,8 +133,8 @@ def evaluate_epoch(args, mb_cfg, model, test_loader, device):
 
             pose2d_3ch = torch.cat([joints_2d, joints_mask], dim=-1)
             
-            mb_input = pose2d_3ch.unsqueeze(1).repeat(1, mb_cfg.maxlen, 1, 1)
-            target_3d_seq = target_3d.unsqueeze(1).repeat(1, mb_cfg.maxlen, 1, 1)
+            mb_input = pose2d_3ch.unsqueeze(1).clone()  # (B, 1, 17, 3)
+            target_3d_seq = target_3d.unsqueeze(1).clone()  # (B, 1, 17, 3)
             
             mb_input[..., :2] = mb_input[..., :2] - mb_input[:, :, 0:1, :2]
             target_3d_seq = target_3d_seq - target_3d_seq[:, :, 0:1, :]
