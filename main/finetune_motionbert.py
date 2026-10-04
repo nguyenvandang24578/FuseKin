@@ -123,8 +123,14 @@ def evaluate_epoch(args, mb_cfg, model, test_loader, device):
     with torch.no_grad():
         for i, (inputs_b, targets_b, meta_b) in tqdm(enumerate(test_loader), total=len(test_loader), desc='Evaluate'):
             joints_2d = inputs_b['joints'].to(device)       # (B, 17, 2)
+            joints_2d = joints_2d[:, :, :2]
             joints_mask = inputs_b['joints_mask'].to(device) # (B, 17, 1)
-            target_3d = targets_b['orig_joint_cam'].to(device) # (B, 17, 3)
+
+            # Same target as training: orig_joint_img normalized 2.5D [-1, 1]
+            target_3d = targets_b['orig_joint_img'].to(device).clone() # (B, 17, 3)
+            target_3d[..., 0] = target_3d[..., 0] / cfg.output_hm_shape[2] * 2 - 1
+            target_3d[..., 1] = target_3d[..., 1] / cfg.output_hm_shape[1] * 2 - 1
+            target_3d[..., 2] = target_3d[..., 2] / cfg.output_hm_shape[0] * 2
 
             pose2d_3ch = torch.cat([joints_2d, joints_mask], dim=-1)
             
@@ -133,7 +139,6 @@ def evaluate_epoch(args, mb_cfg, model, test_loader, device):
             
             mb_input[..., :2] = mb_input[..., :2] - mb_input[:, :, 0:1, :2]
             target_3d_seq = target_3d_seq - target_3d_seq[:, :, 0:1, :]
-            target_3d_seq = target_3d_seq * 1000.0
 
             predicted_3d = model(mb_input)
 

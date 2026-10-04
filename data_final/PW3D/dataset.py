@@ -207,6 +207,29 @@ class PW3D(torch.utils.data.Dataset):
 
         return smpl_mesh_coord, smpl_joint_coord
 
+    def get_h36m_joint_img(self, h36m_joint_cam, cam_param, img2bb_trans):
+        """Project GT H36M-17 joints (camera, meters) into output_hm_shape space.
+
+        Shared by train and test so the Teacher receives exactly the same
+        GT 2.5D representation in both phases.
+        Returns (joint_img (17,3), joint_trunc (17,1)).
+        """
+        h36m_coord_img = cam2pixel(h36m_joint_cam, cam_param['focal'], cam_param['princpt'])  # (17, 3)
+        h36m_img_xy1 = np.concatenate((h36m_coord_img[:, :2], np.ones_like(h36m_coord_img[:, 0:1])), 1)
+        h36m_coord_img[:, :2] = np.dot(img2bb_trans, h36m_img_xy1.transpose(1, 0)).transpose(1, 0)[:, :2]
+        h36m_coord_img[:, 0] = h36m_coord_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+        h36m_coord_img[:, 1] = h36m_coord_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+        # Depth: root-relative (meters, 3DPW) -> [0, output_hm_shape[0]) giống
+        # quy ước Human36M (bbox_3d_size tính bằng mét). Sau bước chuẩn hóa
+        # z / D * 2 rồi trừ root trong trainer, z trở thành root-relative mét.
+        h36m_coord_img[:, 2] = h36m_coord_img[:, 2] - h36m_coord_img[self.h36m_root_joint_idx, 2]
+        h36m_coord_img[:, 2] = (h36m_coord_img[:, 2] / (cfg.bbox_3d_size / 2) + 1) / 2. * cfg.output_hm_shape[0]
+        joint_trunc = (
+            (h36m_coord_img[:, 0] >= 0) * (h36m_coord_img[:, 0] < cfg.output_hm_shape[2]) *
+            (h36m_coord_img[:, 1] >= 0) * (h36m_coord_img[:, 1] < cfg.output_hm_shape[1])
+        ).reshape(-1, 1).astype(np.float32)
+        return h36m_coord_img.astype(np.float32), joint_trunc
+
     def __len__(self):
         return len(self.datalist)
 
@@ -353,16 +376,7 @@ class PW3D(torch.utils.data.Dataset):
                 # GT 2D projection target (H36M-17), in the network's
                 # output_hm_shape space, with its own truncation mask derived
                 # from the GT joints (NOT the OpenPose input mask).
-                h36m_coord_img = cam2pixel(h36m_joint_cam, cam_param['focal'], cam_param['princpt'])  # (17, 3)
-                h36m_img_xy1 = np.concatenate((h36m_coord_img[:, :2], np.ones_like(h36m_coord_img[:, 0:1])), 1)
-                h36m_coord_img[:, :2] = np.dot(img2bb_trans, h36m_img_xy1.transpose(1, 0)).transpose(1, 0)[:, :2]
-                h36m_coord_img[:, 0] = h36m_coord_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
-                h36m_coord_img[:, 1] = h36m_coord_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
-                orig_joint_trunc = (
-                    (h36m_coord_img[:, 0] >= 0) * (h36m_coord_img[:, 0] < cfg.output_hm_shape[2]) *
-                    (h36m_coord_img[:, 1] >= 0) * (h36m_coord_img[:, 1] < cfg.output_hm_shape[1])
-                ).reshape(-1, 1).astype(np.float32)
-                orig_joint_img = h36m_coord_img.astype(np.float32)
+                orig_joint_img, orig_joint_trunc = self.get_h36m_joint_img(h36m_joint_cam, cam_param, img2bb_trans)
 
                 # 3D joints: root-relative first, then rotation aug (meters), then add root back to get absolute coordinates.
                 root_cam = h36m_joint_cam[self.h36m_root_joint_idx, None]
@@ -427,8 +441,12 @@ class PW3D(torch.utils.data.Dataset):
             return inputs, targets, meta_info
         else:
             inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc}
-            targets = {'smpl_mesh_cam': smpl_mesh_cam}
-            meta_info = {'bb2img_trans': bb2img_trans, 'img2bb_trans': img2bb_trans, 'bbox': bbox, 'tight_bbox': data['tight_bbox'], 'aid': aid, 'idx': idx, 'img_path':img_path}
+            # GT H36M-17 joints (same regressor/projection as train) so the
+            # Teacher can be evaluated with the identical normalized input.
+            h36m_joint_cam = np.dot(self.h36m_joint_regressor, smpl_mesh_cam).astype(np.float32)
+            orig_joint_img, orig_joint_trunc = self.get_h36m_joint_img(h36m_joint_cam, cam_param, img2bb_trans)
+            targets = {'smpl_mesh_cam': smpl_mesh_cam, 'orig_joint_img': orig_joint_img}
+            meta_info = {'orig_joint_trunc': orig_joint_trunc, 'bb2img_trans': bb2img_trans, 'img2bb_trans': img2bb_trans, 'bbox': bbox, 'tight_bbox': data['tight_bbox'], 'aid': aid, 'idx': idx, 'img_path':img_path}
             return inputs, targets, meta_info
 
     def random_idx_eval(self, outs, index):
