@@ -227,6 +227,11 @@ class Trainer:
                 gt_orig_joint_img[..., 2] = gt_orig_joint_img[..., 2] / cfg.output_hm_shape[0] * 2
                 gt_pose_input_25d = gt_orig_joint_img - gt_orig_joint_img[:, 0:1, :]
             
+            if i == 0:
+                print(f"\n[DEBUG Trainer] input_pose range: min={input_pose.min().item():.3f}, max={input_pose.max().item():.3f}")
+                if self.use_kd:
+                    print(f"[DEBUG Trainer] gt_pose_input_25d range: min={gt_pose_input_25d.min().item():.3f}, max={gt_pose_input_25d.max().item():.3f}\n")
+
             # ---- Forward ----
             model_output = self.model(
                 input_image, input_pose, is_train=True, use_gt_3d=False,
@@ -791,6 +796,10 @@ class Student_Trainer:
             gt_orig_joint_img[..., 2] = gt_orig_joint_img[..., 2] / cfg.output_hm_shape[0] * 2
             gt_pose_input = gt_orig_joint_img - gt_orig_joint_img[:, 0:1, :]
             
+            if i == 0:  # Chỉ in ở batch đầu tiên cho đỡ rác console
+                print(f"\n[DEBUG] input_pose2d range: min={input_pose2d.min().item():.3f}, max={input_pose2d.max().item():.3f}")
+                print(f"[DEBUG] gt_pose_input (Teacher KD) range: min={gt_pose_input.min().item():.3f}, max={gt_pose_input.max().item():.3f}\n")
+
             # Feed 2D pose to model (which routes to MotionBERT in Student mode)
             model_output = self.model(
                 input_image, input_pose2d, is_train=True,

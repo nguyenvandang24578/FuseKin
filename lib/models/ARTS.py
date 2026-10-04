@@ -222,7 +222,9 @@ class ARTS(nn.Module):
 
             if not use_gt_3d:
                 # MotionBERT đã finetune với normalized 2.5D [-1, 1], không cần chia 1000
+                print(f"[ARTS] pose_input range: min={pose_input.min().item():.3f}, max={pose_input.max().item():.3f}")
                 pose_3d = self.lift_2d_to_3d(pose_input, joints_mask=joints_mask)
+                print(f"[ARTS] pose_3d (MotionBERT output) range: min={pose_3d.min().item():.3f}, max={pose_3d.max().item():.3f}")
                 pose_3d = pose_3d - pose_3d[:, 0:1, :]        # root-relative
             else:
                 # Dùng trực tiếp GT 3D (đã là đơn vị Mét và root-relative từ Trainer)
