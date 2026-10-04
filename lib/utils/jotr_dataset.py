@@ -83,6 +83,9 @@ class Human36M17Dataset(Dataset):
         )
         inputs['joints'][..., 0] = inputs['joints'][..., 0] / cfg.output_hm_shape[2] * 2 - 1
         inputs['joints'][..., 1] = inputs['joints'][..., 1] / cfg.output_hm_shape[1] * 2 - 1
+        # Khớp không hợp lệ (mask=0) có toạ độ rác (đến ~-3.6 sau chuẩn hóa) -> đặt về 0.
+        # Mask vẫn được truyền riêng làm confidence cho MotionBERT.
+        inputs['joints'] = inputs['joints'] * (inputs['joints_mask'] > 0)
         for key in self.JOINT_KEYS:
             if key in targets:
                 targets[key] = self._convert_joint(targets[key])

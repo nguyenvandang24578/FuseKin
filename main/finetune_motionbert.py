@@ -43,9 +43,9 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
         # Prepare MotionBERT input (append mask as confidence)
         pose2d_3ch = torch.cat([joints_2d, joints_mask], dim=-1) # (B, 17, 3)
         
-        # Simulate temporal sequence of length 243
-        mb_input = pose2d_3ch.unsqueeze(1).repeat(1, mb_cfg.maxlen, 1, 1) # (B, 243, 17, 3)
-        target_3d_seq = target_3d.unsqueeze(1).repeat(1, mb_cfg.maxlen, 1, 1) # (B, 243, 17, 3)
+        # Static single frame (F=1), matches ARTS.lift_2d_to_3d at inference
+        mb_input = pose2d_3ch.unsqueeze(1).clone() # (B, 1, 17, 3)
+        target_3d_seq = target_3d.unsqueeze(1).clone() # (B, 1, 17, 3)
         
         with torch.no_grad():
             # Root relative (same as MotionBERT train.py line 168)
@@ -59,7 +59,7 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
             target_3d_seq = target_3d_seq * 1000.0
 
         # Forward pass
-        predicted_3d = model(mb_input) # (B, 243, 17, 3)
+        predicted_3d = model(mb_input) # (B, 1, 17, 3)
 
         optimizer.zero_grad()
 
@@ -101,25 +101,29 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
         losses[k] /= n_batches
     return losses
 
-def evaluate_epoch(args, mb_cfg, model, test_loader, device):
+def evaluate_epoch(args, mb_cfg, model, test_loader, device, h36m_regressor):
     model.eval()
     losses = {
         '3d_pos': 0.0, '3d_scale': 0.0, '3d_velocity': 0.0,
         'lv': 0.0, 'lg': 0.0, 'angle': 0.0, 'angle_velocity': 0.0, 'total': 0.0
     }
     n_batches = 0
+    h36m_regressor = torch.as_tensor(h36m_regressor, dtype=torch.float32, device=device)  # (17, 6890)
 
     with torch.no_grad():
         for i, (inputs_b, targets_b, meta_b) in tqdm(enumerate(test_loader), total=len(test_loader), desc='Evaluate'):
             joints_2d = inputs_b['joints'].to(device)       # (B, 17, 2)
             joints_mask = inputs_b['joints_mask'].to(device) # (B, 17, 1)
-            target_3d = targets_b['orig_joint_cam'].to(device) # (B, 17, 3)
+            # 3DPW test split only returns smpl_mesh_cam -> regress H36M-17 (meters),
+            # same source as orig_joint_cam used at training time.
+            mesh_gt = targets_b['smpl_mesh_cam'].to(device).float()  # (B, 6890, 3)
+            target_3d = torch.matmul(h36m_regressor[None], mesh_gt)  # (B, 17, 3)
 
             pose2d_3ch = torch.cat([joints_2d, joints_mask], dim=-1)
-            
-            mb_input = pose2d_3ch.unsqueeze(1).repeat(1, mb_cfg.maxlen, 1, 1)
-            target_3d_seq = target_3d.unsqueeze(1).repeat(1, mb_cfg.maxlen, 1, 1)
-            
+
+            mb_input = pose2d_3ch.unsqueeze(1).clone()  # (B, 1, 17, 3)
+            target_3d_seq = target_3d.unsqueeze(1).clone()  # (B, 1, 17, 3)
+
             mb_input[..., :2] = mb_input[..., :2] - mb_input[:, :, 0:1, :2]
             target_3d_seq = target_3d_seq - target_3d_seq[:, :, 0:1, :]
             target_3d_seq = target_3d_seq * 1000.0
@@ -245,7 +249,7 @@ def main():
         start_time = time.time()
         
         losses = train_epoch(opts, mb_cfg, model, train_loader, optimizer, device)
-        val_losses = evaluate_epoch(opts, mb_cfg, model, test_loader, device)
+        val_losses = evaluate_epoch(opts, mb_cfg, model, test_loader, device, test_dataset.dataset.h36m_joint_regressor)
         
         elapsed = (time.time() - start_time) / 60
         print(f"[Epoch {epoch+1}/{mb_cfg.epochs}] Time: {elapsed:.2f}m | LR: {lr:.6f}")

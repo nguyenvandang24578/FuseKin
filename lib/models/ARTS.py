@@ -120,6 +120,9 @@ class ARTS(nn.Module):
         # Truyền trực tiếp 1 frame tĩnh (F=1) vào thay vì lặp lại NUM_FRAMES lần
         single_frame = pose_xyc.unsqueeze(1)  # (B, 1, 17, 3)
         pose_3d = self.pose_lifter(single_frame)
+        # MotionBERT được finetune với target milimet (finetune_motionbert.py: target * 1000)
+        # -> đổi về MÉT để cùng không gian với input của Teacher (orig_joint_cam, mét).
+        pose_3d = pose_3d / 1000.0
         return pose_3d[:, 0]  # Lấy kết quả của frame duy nhất đó
 
     def format_smpl_output(self, smpl_output):
@@ -168,8 +171,7 @@ class ARTS(nn.Module):
     def forward_student(self, image, pose_2d, is_train, gt_pose_3d=None, alpha=1.0, joints_mask=None):
         with torch.no_grad():
             feature_map, _ = self.get_image_features(image)
-            # MotionBERT đã được finetune với orig_joint_img normalized [-1, 1]
-            # Output nằm sẵn trong khoảng [-1, 1] (2.5D normalized), không cần chia 1000
+            # MotionBERT finetune ra milimet, lift_2d_to_3d đã đổi về mét (root-relative bên dưới)
             pose_3d = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask)
             pose_3d = pose_3d - pose_3d[:, 0:1, :]            # root-relative
 
@@ -195,7 +197,7 @@ class ARTS(nn.Module):
             ft_map, global_feature = self.get_image_features(image)
 
             if not use_gt_3d:
-                # MotionBERT đã finetune với normalized 2.5D [-1, 1], không cần chia 1000
+                # Output MotionBERT đã được đổi về mét trong lift_2d_to_3d
                 pose_3d = self.lift_2d_to_3d(pose_input, joints_mask=joints_mask)
                 pose_3d = pose_3d - pose_3d[:, 0:1, :]        # root-relative
             else:
