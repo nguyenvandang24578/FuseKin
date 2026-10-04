@@ -441,10 +441,36 @@ class Teacher_Trainer:
             # Dùng orig_joint_img normalized [-1, 1] (2.5D) thay vì gt_fit_joint_cam (mét)
             # để Teacher học cùng representation với MotionBERT → KD nhất quán hơn
             gt_orig_joint_img = targets['orig_joint_img'].cuda().clone()
+            
+            # Debug: in range giá trị (chỉ batch đầu tiên)
+            if i == 0:
+                print(f"\n[DEBUG] orig_joint_img RAW  -> "
+                      f"x:[{targets['orig_joint_img'][..., 0].min():.2f}, {targets['orig_joint_img'][..., 0].max():.2f}] "
+                      f"y:[{targets['orig_joint_img'][..., 1].min():.2f}, {targets['orig_joint_img'][..., 1].max():.2f}] "
+                      f"z:[{targets['orig_joint_img'][..., 2].min():.2f}, {targets['orig_joint_img'][..., 2].max():.2f}]")
+            
             gt_orig_joint_img[..., 0] = gt_orig_joint_img[..., 0] / cfg.output_hm_shape[2] * 2 - 1
             gt_orig_joint_img[..., 1] = gt_orig_joint_img[..., 1] / cfg.output_hm_shape[1] * 2 - 1
             gt_orig_joint_img[..., 2] = gt_orig_joint_img[..., 2] / cfg.output_hm_shape[0] * 2
+            
+            if i == 0:
+                print(f"[DEBUG] orig_joint_img NORM -> "
+                      f"x:[{gt_orig_joint_img[..., 0].min():.4f}, {gt_orig_joint_img[..., 0].max():.4f}] "
+                      f"y:[{gt_orig_joint_img[..., 1].min():.4f}, {gt_orig_joint_img[..., 1].max():.4f}] "
+                      f"z:[{gt_orig_joint_img[..., 2].min():.4f}, {gt_orig_joint_img[..., 2].max():.4f}]")
+            
             teacher_gt_pose3d = gt_orig_joint_img - gt_orig_joint_img[:, 0:1, :]  # root-relative
+            
+            if i == 0:
+                print(f"[DEBUG] root-relative      -> "
+                      f"x:[{teacher_gt_pose3d[..., 0].min():.4f}, {teacher_gt_pose3d[..., 0].max():.4f}] "
+                      f"y:[{teacher_gt_pose3d[..., 1].min():.4f}, {teacher_gt_pose3d[..., 1].max():.4f}] "
+                      f"z:[{teacher_gt_pose3d[..., 2].min():.4f}, {teacher_gt_pose3d[..., 2].max():.4f}]")
+                print(f"[DEBUG] gt_fit_joint_cam   -> "
+                      f"x:[{gt_fit_joint_cam[..., 0].min():.4f}, {gt_fit_joint_cam[..., 0].max():.4f}] "
+                      f"y:[{gt_fit_joint_cam[..., 1].min():.4f}, {gt_fit_joint_cam[..., 1].max():.4f}] "
+                      f"z:[{gt_fit_joint_cam[..., 2].min():.4f}, {gt_fit_joint_cam[..., 2].max():.4f}]\n")
+            
             model_output = self.model(input_image, teacher_gt_pose3d, is_train=True)
 
             pred_mesh = model_output['smpl_mesh_cam']
