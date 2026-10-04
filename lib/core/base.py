@@ -492,6 +492,12 @@ class Teacher_Trainer:
             # Regress H36M joints from the predicted SMPL mesh.
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
             pred_pose = pred_pose - pred_pose[:, 0:1, :]
+            
+            if i == 0:
+                print(f"[DEBUG] pred_pose          -> "
+                      f"x:[{pred_pose[..., 0].min():.4f}, {pred_pose[..., 0].max():.4f}] "
+                      f"y:[{pred_pose[..., 1].min():.4f}, {pred_pose[..., 1].max():.4f}] "
+                      f"z:[{pred_pose[..., 2].min():.4f}, {pred_pose[..., 2].max():.4f}]")
 
             loss_smpl_joint_cam = self.jotr_coord_loss(
                 pred_pose,
