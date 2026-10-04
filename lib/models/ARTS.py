@@ -194,18 +194,10 @@ class ARTS(nn.Module):
     def forward_student(self, image, pose_2d, is_train, gt_pose_3d=None, alpha=1.0, joints_mask=None):
         with torch.no_grad():
             feature_map, _ = self.get_image_features(image)
-<<<<<<< HEAD
-            
-        # Tính pose_3d ở NGOÀI no_grad để MotionBERT có thể nhận gradient
-        pose_3d_raw = self.lift_2d_to_3d(pose_2d)
-        pose_3d = pose_3d_raw / 1000      # mm -> m
-        pose_3d = pose_3d - pose_3d[:, 0:1, :]            # root-relative như đầu vào teacher
-=======
             # MotionBERT đã được finetune với orig_joint_img normalized [-1, 1]
             # Output nằm sẵn trong khoảng [-1, 1] (2.5D normalized), không cần chia 1000
             pose_3d = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask)
             pose_3d = pose_3d - pose_3d[:, 0:1, :]            # root-relative
->>>>>>> student
 
         spin_out, pred_pose_6d, pred_shape, pred_cam, feats = self.smpl_model(
             joints=pose_3d,
@@ -218,12 +210,8 @@ class ARTS(nn.Module):
         result['feat'] = feats['joint_out']
         result['feat_img'] = feats['img_out']
         result['feat_global'] = feats['concat_feat']
-<<<<<<< HEAD
-        result['pose_3d'] = pose_3d_raw # Output nguyên bản của MB để tính loss auxiliary
-=======
         result['feat_layers'] = feats['layers']
         result['privileged_3d'] = self.privileged_joint_head(feats['joint_out'])
->>>>>>> student
         return result
 
     def forward_arts(self, image, pose_input, is_train, use_gt_3d=False,

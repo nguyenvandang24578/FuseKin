@@ -131,8 +131,9 @@ class Trainer:
         self.jotr_param_loss = JOTRParamLoss()
         self.coordLoss = CoordLoss(has_valid=True)
 
-        # KD loss: Cosine + MSE
-        self.kd_weight = getattr(cfg.MODEL, 'kd_weight', 0.5)
+        # KD flag & weight
+        self.use_kd = getattr(cfg.MODEL, 'kd', False)
+        self.kd_weight = getattr(cfg.MODEL, 'kd_weight', 0.5) if self.use_kd else 0.0
 
         # 5 losses now (including mesh_loss)
         self.awl = AutomaticWeightedLoss(5).cuda()
@@ -217,14 +218,21 @@ class Trainer:
                 fit_pv = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
                 pose_valid_mask = fit_pv.reshape(B, 24, 3)[:, :, 0]
 
-            # ---- Forward (pass GT 3D joints for teacher KD) ----
-            gt_pose_input = gt_fit_joint_cam - gt_fit_joint_cam[:, 0:1, :]
+            # ---- Prepare GT 3D for Teacher KD (Normalized 2.5D [-1, 1]) ----
+            gt_pose_input_25d = None
+            if self.use_kd:
+                gt_orig_joint_img = targets['orig_joint_img'].cuda().clone()
+                gt_orig_joint_img[..., 0] = gt_orig_joint_img[..., 0] / cfg.output_hm_shape[2] * 2 - 1
+                gt_orig_joint_img[..., 1] = gt_orig_joint_img[..., 1] / cfg.output_hm_shape[1] * 2 - 1
+                gt_orig_joint_img[..., 2] = gt_orig_joint_img[..., 2] / cfg.output_hm_shape[0] * 2
+                gt_pose_input_25d = gt_orig_joint_img - gt_orig_joint_img[:, 0:1, :]
             
+            # ---- Forward ----
             model_output = self.model(
-                input_image, gt_pose_input, is_train=True, use_gt_3d=False,
+                input_image, input_pose, is_train=True, use_gt_3d=False,
                 gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,
                 pose_valid_mask=pose_valid_mask,
-                gt_joints_3d=gt_pose_input,  # GT joints for teacher KD
+                gt_joints_3d=gt_pose_input_25d,  # None nếu kd=False, 2.5D nếu kd=True
             )
 
             pred_mesh = model_output['smpl_mesh_cam']
@@ -288,7 +296,7 @@ class Trainer:
 
             # ---- KD Loss: L_NKR = L_Cosine + L_MSE ----
             kd_loss = torch.zeros(1, device=input_image.device).squeeze()
-            if 's_feat_joint' in model_output and 't_feat_joint' in model_output:
+            if self.use_kd and 's_feat_joint' in model_output and 't_feat_joint' in model_output:
                 s_feat_joint = model_output['s_feat_joint']
                 t_feat_joint = model_output['t_feat_joint'].detach()
                 s_feat_img = model_output['s_feat_img']
@@ -298,9 +306,9 @@ class Trainer:
                 mse_joint = F.mse_loss(s_feat_joint, t_feat_joint)
                 mse_img = F.mse_loss(s_feat_img, t_feat_img)
 
-                # Cosine component
-                cos_joint = F.cosine_similarity(s_feat_joint.flatten(1), t_feat_joint.flatten(1), dim=-1)
-                cos_img = F.cosine_similarity(s_feat_img.flatten(1), t_feat_img.flatten(1), dim=-1)
+                # Cosine component (per joint / token)
+                cos_joint = F.cosine_similarity(s_feat_joint, t_feat_joint, dim=-1)
+                cos_img = F.cosine_similarity(s_feat_img, t_feat_img, dim=-1)
                 
                 cosine_loss_joint = (1.0 - cos_joint).mean()
                 cosine_loss_img = (1.0 - cos_img).mean()

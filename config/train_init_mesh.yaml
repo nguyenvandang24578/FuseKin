@@ -22,6 +22,9 @@ MODEL:
     pose_loss_weight: 0.06
     posenet_pretrained: False
     STUDENT: "./experiment/student/best.pth.tar"
+    TEACHER: "./experiment/teacher/checkpoint"
+    kd: False
+    kd_weight: 0.5
 
 TRAIN:
     print_freq: 20
