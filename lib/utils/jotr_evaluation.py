@@ -53,16 +53,13 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda'):
                             else torch.ones(det.shape[0], det.shape[1], device=device)
 
             # --- Forward ---
-            if cfg.MODEL.name in ('teacher', 'ARTS') and hasattr(dataset, 'h36m_joint_regressor'):
-                h36m_regressor = torch.as_tensor(
-                    dataset.h36m_joint_regressor,
-                    device=device,
-                    dtype=target_mesh_tensor.dtype,
-                )
-                teacher_gt_joints = torch.matmul(
-                    h36m_regressor.unsqueeze(0).expand(target_mesh_tensor.shape[0], -1, -1),
-                    target_mesh_tensor,
-                )
+            if cfg.MODEL.name in ('teacher', 'ARTS'):
+                # Phải dùng orig_joint_img đã chuẩn hóa [-1, 1] (2.5D) 
+                # giống hệt lúc train ở Teacher_Trainer!
+                teacher_gt_joints = targets['orig_joint_img'].to(device).clone()
+                teacher_gt_joints[..., 0] = teacher_gt_joints[..., 0] / cfg.output_hm_shape[2] * 2 - 1
+                teacher_gt_joints[..., 1] = teacher_gt_joints[..., 1] / cfg.output_hm_shape[1] * 2 - 1
+                teacher_gt_joints[..., 2] = teacher_gt_joints[..., 2] / cfg.output_hm_shape[0] * 2
                 teacher_gt_joints = teacher_gt_joints - teacher_gt_joints[:, 0:1, :]
                 outputs = model(
                     model_inputs['img'], teacher_gt_joints,
