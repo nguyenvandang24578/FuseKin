@@ -55,6 +55,8 @@ class ARTS(nn.Module):
 
         if self.mode in ("teacher", "student"):
             self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim, depth = 3)
+            if self.mode == "student":
+                self.privileged_joint_head = nn.Linear(embed_dim, 3)
         elif self.mode == "ARTS":
             self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim)
         else:
@@ -121,17 +123,21 @@ class ARTS(nn.Module):
         global_feature = global_feature.reshape(image.shape[0], 1, -1)
         return feature_map, global_feature
 
-    def lift_2d_to_3d(self, pose_2d):
+    def lift_2d_to_3d(self, pose_2d, joints_mask=None):
         if pose_2d.dim() == 3:
             pose_2d = pose_2d.unsqueeze(1)
 
         first_frame = pose_2d[:, 0]
         xy = first_frame[..., :2]
-        
+
         # CRITICAL FIX: MotionBERT was finetuned with root-relative 2D keypoints!
         xy = xy - xy[:, 0:1, :]
-        
-        if first_frame.shape[-1] >= 3:
+
+        # MotionBERT's 3rd input channel was finetuned on the real per-joint
+        # validity mask (see main/finetune_motionbert.py), not a constant.
+        if joints_mask is not None:
+            confidence = joints_mask.to(dtype=xy.dtype, device=xy.device)
+        elif first_frame.shape[-1] >= 3:
             confidence = first_frame[..., 2:3]
         else:
             confidence = torch.ones_like(xy[..., :1])
@@ -182,16 +188,24 @@ class ARTS(nn.Module):
         result['feat'] = feature['joint_out']
         result['feat_img'] = feature['img_out']
         result['feat_global'] = feature['concat_feat']
+        result['feat_layers'] = feature['layers']
         return result
 
-    def forward_student(self, image, pose_2d, is_train):
+    def forward_student(self, image, pose_2d, is_train, gt_pose_3d=None, alpha=1.0, joints_mask=None):
         with torch.no_grad():
             feature_map, _ = self.get_image_features(image)
+<<<<<<< HEAD
             
         # Tính pose_3d ở NGOÀI no_grad để MotionBERT có thể nhận gradient
         pose_3d_raw = self.lift_2d_to_3d(pose_2d)
         pose_3d = pose_3d_raw / 1000      # mm -> m
         pose_3d = pose_3d - pose_3d[:, 0:1, :]            # root-relative như đầu vào teacher
+=======
+            # MotionBERT đã được finetune với orig_joint_img normalized [-1, 1]
+            # Output nằm sẵn trong khoảng [-1, 1] (2.5D normalized), không cần chia 1000
+            pose_3d = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask)
+            pose_3d = pose_3d - pose_3d[:, 0:1, :]            # root-relative
+>>>>>>> student
 
         spin_out, pred_pose_6d, pred_shape, pred_cam, feats = self.smpl_model(
             joints=pose_3d,
@@ -204,28 +218,28 @@ class ARTS(nn.Module):
         result['feat'] = feats['joint_out']
         result['feat_img'] = feats['img_out']
         result['feat_global'] = feats['concat_feat']
+<<<<<<< HEAD
         result['pose_3d'] = pose_3d_raw # Output nguyên bản của MB để tính loss auxiliary
+=======
+        result['feat_layers'] = feats['layers']
+        result['privileged_3d'] = self.privileged_joint_head(feats['joint_out'])
+>>>>>>> student
         return result
 
     def forward_arts(self, image, pose_input, is_train, use_gt_3d=False,
                      gt_pose_6d=None, kp2d=None, kp_conf=None,
-                     pose_valid_mask=None):
+                     pose_valid_mask=None, gt_joints_3d=None, joints_mask=None):
         with torch.no_grad():
             ft_map, global_feature = self.get_image_features(image)
-            
+
             if not use_gt_3d:
-                pose_3d = self.lift_2d_to_3d(pose_input)
-                pose_3d = pose_3d / 1000                      # mm -> m
+                # MotionBERT đã finetune với normalized 2.5D [-1, 1], không cần chia 1000
+                pose_3d = self.lift_2d_to_3d(pose_input, joints_mask=joints_mask)
                 pose_3d = pose_3d - pose_3d[:, 0:1, :]        # root-relative
             else:
                 # Dùng trực tiếp GT 3D (đã là đơn vị Mét và root-relative từ Trainer)
                 pose_3d = pose_input
-        # print(f"pose_3d.shape: {pose_3d.shape}")
-        # print(f"ft_map.shape: {ft_map.shape}")
-        # print(f"gt_pose_6d: {gt_pose_6d.shape}")
-        # print(f"kp2d: {kp2d.shape}")
-        # print(f"kp_conf: {kp_conf.shape}")
-        # print(f"pose_valid_mask: {pose_valid_mask.shape}")
+
         output = self.pose_mesh_coevo(
             pose_3d,
             ft_map,
@@ -234,6 +248,7 @@ class ARTS(nn.Module):
             kp2d=kp2d,
             kp_conf=kp_conf,
             pose_valid_mask=pose_valid_mask,
+            gt_joints_3d=gt_joints_3d,
         )
         # MotionBERT outputs 3D joints in millimeters; convert to meters so
         # joint_img shares the unit of the GT joints used in the training loss.
@@ -242,15 +257,16 @@ class ARTS(nn.Module):
 
     def forward(self, image, joints, is_train=True, use_gt_3d=False,
                 gt_pose_6d=None, kp2d=None, kp_conf=None,
-                pose_valid_mask=None):
+                pose_valid_mask=None, gt_joints_3d=None, alpha=1.0, joints_mask=None):
         if self.mode == "teacher":
             return self.forward_teacher(image, joints, is_train)
         if self.mode == "student":
-            return self.forward_student(image, joints, is_train)
+            return self.forward_student(image, joints, is_train, gt_pose_3d=gt_joints_3d, alpha=alpha, joints_mask=joints_mask)
         return self.forward_arts(
             image, joints, is_train, use_gt_3d,
             gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,
-            pose_valid_mask=pose_valid_mask,
+            pose_valid_mask=pose_valid_mask, gt_joints_3d=gt_joints_3d,
+            joints_mask=joints_mask,
         )
 
 

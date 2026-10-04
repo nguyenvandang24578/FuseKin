@@ -225,3 +225,59 @@ class Vposer(nn.Module):
         body_pose = torch.cat((body_pose, zero_pose, zero_pose),1)
         body_pose = body_pose.view(batch_size,-1)
         return body_pose
+
+
+class SimCLR(nn.Module):
+    """NT-Xent contrastive loss for knowledge distillation.
+
+    Given anchor batch z_i (student features) and positive batch z_j
+    (teacher features), the loss maximises cosine similarity for
+    matched (same-sample) pairs while minimising it for all other
+    2*(N-1) negative pairs in the batch.
+
+    Reference: equation (7)-(8) in the paper —
+        L_NKR = L_SimCLR + L_MSE
+    """
+
+    def __init__(self, temperature=1.0):
+        super(SimCLR, self).__init__()
+        self.temperature = temperature
+
+    def forward(self, z_i, z_j):
+        """Compute NT-Xent loss.
+
+        Args:
+            z_i (torch.Tensor): anchor (student) features, shape (B, ...).
+            z_j (torch.Tensor): positive (teacher) features, shape (B, ...).
+
+        Returns:
+            torch.Tensor: scalar loss.
+        """
+        batch_size = z_i.size(0)
+        # Flatten to (B, D) if needed
+        if len(z_i.shape) > 3:
+            z_i = z_i.flatten(1, -1)
+            z_j = z_j.flatten(1, -1)
+        elif len(z_i.shape) == 3:
+            z_i = z_i.flatten(1, -1)
+            z_j = z_j.flatten(1, -1)
+
+        # Concatenate anchors and positives: (2B, D)
+        z = torch.cat([z_i, z_j], dim=0)
+        # Pairwise cosine similarity: (2B, 2B)
+        similarity = F.cosine_similarity(z.unsqueeze(1), z.unsqueeze(0), dim=2)
+
+        # Extract positive pairs (diagonal offsets ±B)
+        sim_ij = torch.diag(similarity, batch_size).to(z_i)
+        sim_ji = torch.diag(similarity, -batch_size).to(z_i)
+        positives = torch.cat([sim_ij, sim_ji], dim=0)
+
+        # Mask out self-similarity on the diagonal
+        mask = (~torch.eye(batch_size * 2, batch_size * 2, dtype=torch.bool)).float().to(z_i)
+        numerator = torch.exp(positives / self.temperature)
+        denominator = mask * torch.exp(similarity / self.temperature)
+
+        all_losses = -torch.log(numerator / torch.sum(denominator, dim=1))
+        loss = torch.sum(all_losses) / (2 * batch_size)
+
+        return loss

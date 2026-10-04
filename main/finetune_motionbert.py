@@ -13,7 +13,7 @@ import time
 
 # FuseKin imports
 from lib.core.config import update_config, cfg
-from lib.utils.jotr_dataset import get_train_dataset
+from lib.utils.jotr_dataset import get_train_dataset, get_test_dataset
 from models.DSTformer import DSTformer
 from MotionBERT.lib.model.loss import loss_mpjpe, n_mpjpe, loss_velocity, \
     loss_limb_var, loss_limb_gt, loss_angle, loss_angle_velocity
@@ -112,6 +112,62 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
         losses[k] /= n_batches
     return losses
 
+def evaluate_epoch(args, mb_cfg, model, test_loader, device):
+    model.eval()
+    losses = {
+        '3d_pos': 0.0, '3d_scale': 0.0, '3d_velocity': 0.0,
+        'lv': 0.0, 'lg': 0.0, 'angle': 0.0, 'angle_velocity': 0.0, 'total': 0.0
+    }
+    n_batches = 0
+
+    with torch.no_grad():
+        for i, (inputs_b, targets_b, meta_b) in tqdm(enumerate(test_loader), total=len(test_loader), desc='Evaluate'):
+            joints_2d = inputs_b['joints'].to(device)       # (B, 17, 2)
+            joints_mask = inputs_b['joints_mask'].to(device) # (B, 17, 1)
+            target_3d = targets_b['orig_joint_cam'].to(device) # (B, 17, 3)
+
+            pose2d_3ch = torch.cat([joints_2d, joints_mask], dim=-1)
+            
+            mb_input = pose2d_3ch.unsqueeze(1).repeat(1, mb_cfg.maxlen, 1, 1)
+            target_3d_seq = target_3d.unsqueeze(1).repeat(1, mb_cfg.maxlen, 1, 1)
+            
+            mb_input[..., :2] = mb_input[..., :2] - mb_input[:, :, 0:1, :2]
+            target_3d_seq = target_3d_seq - target_3d_seq[:, :, 0:1, :]
+            target_3d_seq = target_3d_seq * 1000.0
+
+            predicted_3d = model(mb_input)
+
+            loss_3d_pos   = loss_mpjpe(predicted_3d, target_3d_seq)
+            loss_3d_scale = n_mpjpe(predicted_3d, target_3d_seq)
+            loss_3d_vel   = loss_velocity(predicted_3d, target_3d_seq)
+            loss_lv       = loss_limb_var(predicted_3d)
+            loss_lg       = loss_limb_gt(predicted_3d, target_3d_seq)
+            loss_a        = loss_angle(predicted_3d, target_3d_seq)
+            loss_av       = loss_angle_velocity(predicted_3d, target_3d_seq)
+
+            loss_total = loss_3d_pos + \
+                         mb_cfg.lambda_scale       * loss_3d_scale + \
+                         mb_cfg.lambda_3d_velocity * loss_3d_vel + \
+                         mb_cfg.lambda_lv          * loss_lv + \
+                         mb_cfg.lambda_lg          * loss_lg + \
+                         mb_cfg.lambda_a           * loss_a  + \
+                         mb_cfg.lambda_av          * loss_av
+
+            losses['3d_pos']          += loss_3d_pos.item()
+            losses['3d_scale']        += loss_3d_scale.item()
+            losses['3d_velocity']     += loss_3d_vel.item()
+            losses['lv']              += loss_lv.item()
+            losses['lg']              += loss_lg.item()
+            losses['angle']           += loss_a.item()
+            losses['angle_velocity']  += loss_av.item()
+            losses['total']           += loss_total.item()
+            n_batches += 1
+
+    for k in losses:
+        losses[k] /= n_batches
+    return losses
+
+
 def main():
     opts = parse_args()
     
@@ -139,6 +195,16 @@ def main():
         dataset=train_dataset,
         batch_size=mb_cfg.batch_size,
         shuffle=True,
+        num_workers=cfg.DATASET.workers,
+        pin_memory=True
+    )
+    
+    print("Loading 3DPW test dataset...")
+    test_dataset = get_test_dataset('3dpw', opts)
+    test_loader = DataLoader(
+        dataset=test_dataset,
+        batch_size=mb_cfg.batch_size,
+        shuffle=False,
         num_workers=cfg.DATASET.workers,
         pin_memory=True
     )
@@ -190,11 +256,12 @@ def main():
         start_time = time.time()
         
         losses = train_epoch(opts, mb_cfg, model, train_loader, optimizer, device)
+        val_losses = evaluate_epoch(opts, mb_cfg, model, test_loader, device)
         
         elapsed = (time.time() - start_time) / 60
-        print(f"[Epoch {epoch+1}/{mb_cfg.epochs}] Time: {elapsed:.2f}m | LR: {lr:.6f} | "
-              f"3d_pos: {losses['3d_pos']:.6f} | scale: {losses['3d_scale']:.6f} | "
-              f"velocity: {losses['3d_velocity']:.6f} | total: {losses['total']:.6f}")
+        print(f"[Epoch {epoch+1}/{mb_cfg.epochs}] Time: {elapsed:.2f}m | LR: {lr:.6f}")
+        print(f"  Train -> 3d_pos (MPJPE): {losses['3d_pos']:.6f} | total: {losses['total']:.6f}")
+        print(f"  Test  -> 3d_pos (MPJPE): {val_losses['3d_pos']:.6f} | total: {val_losses['total']:.6f}")
         
         # Decay learning rate exponentially (same as train.py L360-362)
         lr *= lr_decay
@@ -221,8 +288,8 @@ def main():
                 'min_loss': min_loss
             }, chk_path)
             
-        if losses['3d_pos'] < min_loss:
-            min_loss = losses['3d_pos']
+        if val_losses['3d_pos'] < min_loss:
+            min_loss = val_losses['3d_pos']
             best_path = "experiment/finetune_motionbert/best_epoch.bin"
             torch.save({
                 'epoch': epoch + 1,

@@ -99,6 +99,7 @@ cfg.TRAIN.batch_size = 32
 cfg.TRAIN.shuffle = True
 cfg.TRAIN.begin_epoch = 1
 cfg.TRAIN.end_epoch = 20
+cfg.TRAIN.curriculum_epochs = 15.0
 cfg.TRAIN.edge_loss_start = 2
 cfg.TRAIN.scheduler = 'cosine'
 cfg.TRAIN.lr = 1e-4
