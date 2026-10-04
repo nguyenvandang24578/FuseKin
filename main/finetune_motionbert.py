@@ -36,7 +36,8 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
     n_batches = 0
 
     for i, (inputs_b, targets_b, meta_b) in tqdm(enumerate(train_loader), total=len(train_loader)):
-        joints_2d = inputs_b['joints'].to(device)       # (B, 17, 2)
+        joints_2d = inputs_b['joints'].to(device)       # (B, 17, 2 or 3)
+        joints_2d = joints_2d[:, :, :2]                 # chỉ lấy x, y -> (B, 17, 2)
         joints_mask = inputs_b['joints_mask'].to(device) # (B, 17, 1)
         target_3d = targets_b['orig_joint_cam'].to(device) # (B, 17, 3)
 
@@ -112,7 +113,8 @@ def evaluate_epoch(args, mb_cfg, model, test_loader, device, h36m_regressor):
 
     with torch.no_grad():
         for i, (inputs_b, targets_b, meta_b) in tqdm(enumerate(test_loader), total=len(test_loader), desc='Evaluate'):
-            joints_2d = inputs_b['joints'].to(device)       # (B, 17, 2)
+            joints_2d = inputs_b['joints'].to(device)       # (B, 17, 2 or 3)
+            joints_2d = joints_2d[:, :, :2]                 # chỉ lấy x, y -> (B, 17, 2)
             joints_mask = inputs_b['joints_mask'].to(device) # (B, 17, 1)
             # 3DPW test split only returns smpl_mesh_cam -> regress H36M-17 (meters),
             # same source as orig_joint_cam used at training time.
