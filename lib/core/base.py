@@ -220,6 +220,7 @@ class Trainer:
 
             # ---- Forward (pass GT 3D joints for teacher KD) ----
             gt_pose_input = gt_fit_joint_cam - gt_fit_joint_cam[:, 0:1, :]
+            
             model_output = self.model(
                 input_image, gt_pose_input, is_train=True, use_gt_3d=True,
                 gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,
@@ -395,7 +396,7 @@ class Teacher_Trainer:
         self.jotr_coord_loss = JOTRCoordLoss()
         self.jotr_param_loss = JOTRParamLoss()
         self.coordLoss = CoordLoss(has_valid=True)
-        self.awl = AutomaticWeightedLoss(4).cuda()  # 4 losses: joint_cam, pose, shape, mesh
+        self.awl = AutomaticWeightedLoss(5).cuda()  # 5 losses: joint_cam, pose, shape, mesh, body_joint_proj
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
         # Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
@@ -437,7 +438,13 @@ class Teacher_Trainer:
             is_3d = meta['is_3D'].cuda()
             is_valid_fit = meta['is_valid_fit'].cuda()
             
-            teacher_gt_pose3d = gt_fit_joint_cam  # (B, 17, 3), meters, absolute
+            # Dùng orig_joint_img normalized [-1, 1] (2.5D) thay vì gt_fit_joint_cam (mét)
+            # để Teacher học cùng representation với MotionBERT → KD nhất quán hơn
+            gt_orig_joint_img = targets['orig_joint_img'].cuda().clone()
+            gt_orig_joint_img[..., 0] = gt_orig_joint_img[..., 0] / cfg.output_hm_shape[2] * 2 - 1
+            gt_orig_joint_img[..., 1] = gt_orig_joint_img[..., 1] / cfg.output_hm_shape[1] * 2 - 1
+            gt_orig_joint_img[..., 2] = gt_orig_joint_img[..., 2] / cfg.output_hm_shape[0] * 2
+            teacher_gt_pose3d = gt_orig_joint_img - gt_orig_joint_img[:, 0:1, :]  # root-relative
             model_output = self.model(input_image, teacher_gt_pose3d, is_train=True)
 
             pred_mesh = model_output['smpl_mesh_cam']
@@ -458,11 +465,29 @@ class Teacher_Trainer:
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
             mesh_loss = self.coordLoss(pred_mesh, gt_mesh_cam, is_valid_fit[:, None, None])
+
+            # 2D projection loss (Weak Perspective Projection)
+            gt_orig_joint_img = targets['orig_joint_img'].cuda()
+            orig_joint_trunc = meta['orig_joint_trunc'].cuda()
+            cam = model_output['cam_param']  # (B, 3)
+            scale = cam[:, 0:1, None]
+            trans = cam[:, 1:3, None].transpose(1, 2)  # (B, 1, 2)
+            pred_pose_17 = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
+            proj_2d = scale * pred_pose_17[:, :, :2] + trans
+            proj_pixel = (proj_2d + 1.0) * 0.5 * cfg.input_img_shape[0]
+            pred_joint_proj = proj_pixel * (cfg.output_hm_shape[1] / cfg.input_img_shape[0])
+            loss_body_joint_proj = self.jotr_coord_loss(
+                pred_joint_proj,
+                gt_orig_joint_img[:, :, :2],
+                orig_joint_trunc
+            ).mean()
+
             loss_dict = {
                 'smpl_joint_cam': loss_smpl_joint_cam,
                 'smpl_pose': smpl_pose_loss,
                 'smpl_shape': smpl_shape_loss,
                 'mesh_loss': mesh_loss,
+                'body_joint_proj': loss_body_joint_proj,
             }
             loss_dict = self.awl(loss_dict)
             loss = sum(loss_dict.values())
@@ -480,6 +505,7 @@ class Teacher_Trainer:
                         'train_loss/smpl_pose': smpl_pose_loss.detach(),
                         'train_loss/smpl_shape': smpl_shape_loss.detach(),
                         'train_loss/mesh': mesh_loss.detach(),
+                        'train_loss/body_joint_proj': loss_body_joint_proj.detach(),
                     }
                 )
 
@@ -490,6 +516,7 @@ class Teacher_Trainer:
                     f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
                     f'smpl: {(smpl_pose_loss + smpl_shape_loss).item():.3f} '
                     f'mesh: {mesh_loss.item():.3f} '
+                    f'proj: {loss_body_joint_proj.item():.3f} '
                     f'tl: {total_loss.item():.3f}'
                 )
 
@@ -623,36 +650,6 @@ class Student_Trainer:
         smpl30_joints = self.main_dataset.mesh_model.joints_name
         self.h36m_from_smpl30 = [smpl30_joints.index(name) for name in h36m_joints]
 
-        # Unfreeze the 2D->3D lifter so KD + hard losses can correct its pose
-        # output end-to-end. We only unfreeze the LAST 2 BLOCKS and HEAD to 
-        # prevent catastrophic forgetting of the pretrained representation.
-        mb_params = []
-        n_unfreeze = 2
-        depth = len(self.model.pose_lifter.blocks_st)
-        
-        for i in range(depth - n_unfreeze, depth):
-            for p in self.model.pose_lifter.blocks_st[i].parameters():
-                p.requires_grad = True
-                mb_params.append(p)
-            if hasattr(self.model.pose_lifter, 'blocks_ts'):
-                for p in self.model.pose_lifter.blocks_ts[i].parameters():
-                    p.requires_grad = True
-                    mb_params.append(p)
-                    
-        for module in [self.model.pose_lifter.norm, self.model.pose_lifter.pre_logits, self.model.pose_lifter.head]:
-            if module is not None:
-                for p in module.parameters():
-                    p.requires_grad = True
-                    mb_params.append(p)
-
-        lifter_lr_mult = cfg.TRAIN.get('lifter_lr_mult', 0.1)
-        if mb_params:
-            self.optimizer.add_param_group({
-                'params': mb_params,
-                'lr': cfg.TRAIN.lr * lifter_lr_mult,
-            })
-            print(f"===> Unfrozen {len(mb_params)} MotionBERT parameters (last {n_unfreeze} blocks) with LR mult {lifter_lr_mult}")
-
         self.model = torch.nn.DataParallel(self.model).cuda()
 
         self.jotr_coord_loss = JOTRCoordLoss()
@@ -668,7 +665,7 @@ class Student_Trainer:
             torch.nn.Linear(hpe_dim * 2, hpe_dim)
         ).cuda()
         
-        self.awl = AutomaticWeightedLoss(6).cuda()
+        self.awl = AutomaticWeightedLoss(5).cuda()
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
         self.optimizer.add_param_group({'params': self.feat_projector.parameters(), 'weight_decay': 0})
         
@@ -738,7 +735,12 @@ class Student_Trainer:
             warmup_epochs = getattr(cfg.TRAIN, 'curriculum_epochs', 15.0)
             alpha = min(1.0, float(epoch) / float(warmup_epochs))
             
-            gt_pose_input = gt_fit_joint_cam - gt_fit_joint_cam[:, 0:1, :]
+            # Dùng orig_joint_img normalized [-1, 1] (2.5D) cho Teacher KD
+            gt_orig_joint_img = targets['orig_joint_img'].cuda().clone()
+            gt_orig_joint_img[..., 0] = gt_orig_joint_img[..., 0] / cfg.output_hm_shape[2] * 2 - 1
+            gt_orig_joint_img[..., 1] = gt_orig_joint_img[..., 1] / cfg.output_hm_shape[1] * 2 - 1
+            gt_orig_joint_img[..., 2] = gt_orig_joint_img[..., 2] / cfg.output_hm_shape[0] * 2
+            gt_pose_input = gt_orig_joint_img - gt_orig_joint_img[:, 0:1, :]
             
             # Feed 2D pose to model (which routes to MotionBERT in Student mode)
             model_output = self.model(
@@ -759,7 +761,7 @@ class Student_Trainer:
 
             # ---------- teacher forward (GT 3D làm đầu vào, không grad) ----------
             with torch.no_grad():
-                t_out = self.teacher(input_image, gt_fit_joint_cam, is_train=False)
+                t_out = self.teacher(input_image, gt_pose_input, is_train=False)
 
             # ---------- privileged reconstruction + multi-level distillation ----------
             s_feat_joint = model_output['feat']
@@ -820,7 +822,9 @@ class Student_Trainer:
             ).sum(-1) / valid_joint.sum(-1).clamp_min(1.0)
 
             # Hard samples receive more KD, but the weight is bounded and detached.
-            pose_gap = (pred_pose_rootrel - gt_pose_input).abs().mean(-1)
+            # So sánh cùng domain (mét) để pose_gap có ý nghĩa
+            gt_fit_rootrel = gt_fit_joint_cam - gt_fit_joint_cam[:, 0:1, :]
+            pose_gap = (pred_pose_rootrel - gt_fit_rootrel).abs().mean(-1)
             pose_gap = (pose_gap * valid_joint).sum(-1) / valid_joint.sum(-1).clamp_min(1.0)
             adaptive_beta = self.kd_weight * min(1.0, float(epoch) / 10.0)
 
@@ -889,32 +893,12 @@ class Student_Trainer:
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
             mesh_loss = self.coordLoss(pred_mesh, gt_mesh_cam, is_valid_fit[:, None, None])
-            # --- TÍNH LOSS AUXILIARY CHO MOTIONBERT ---
-            if 'pose_3d' in model_output:
-                mb_pred_3d = model_output['pose_3d'] 
-
-                # Chuẩn hóa GT giống cách huấn luyện MotionBERT
-                gt_normalized = gt_orig_joint_img.clone()
-                gt_normalized[..., 0] = gt_normalized[..., 0] / cfg.output_hm_shape[2] * 2 - 1
-                gt_normalized[..., 1] = gt_normalized[..., 1] / cfg.output_hm_shape[1] * 2 - 1
-                gt_normalized[..., 2] = gt_normalized[..., 2] / cfg.output_hm_shape[0] * 2
-
-                # Đưa về root-relative
-                mb_pred_3d = mb_pred_3d - mb_pred_3d[:, 0:1, :]
-                gt_normalized = gt_normalized - gt_normalized[:, 0:1, :]
-
-                # Tính Loss dùng CoordLoss có sẵn (orig_joint_valid_30 là mask [B, 30, 1], ta lấy 17 khớp H36M đầu tiên)
-                loss_mb_3d = self.coordLoss(mb_pred_3d, gt_normalized, orig_joint_valid_30[:, :17, :])
-            else:
-                loss_mb_3d = torch.tensor(0.0).cuda()
-
             loss_dict = {
                 'smpl_joint_cam': loss_smpl_joint_cam,
                 'smpl_pose': smpl_pose_loss,
                 'smpl_shape': smpl_shape_loss,
                 'body_joint_proj': loss_body_joint_proj,
                 'mesh_loss': mesh_loss,
-                'mb_3d': loss_mb_3d,
             }
             loss_dict = self.awl(loss_dict)
             hard_loss = sum(loss_dict.values())
@@ -941,7 +925,6 @@ class Student_Trainer:
                         'train_loss/smpl_pose': smpl_pose_loss.item(),
                         'train_loss/smpl_shape': smpl_shape_loss.item(),
                         'train_loss/mesh': mesh_loss.item(),
-                        'train_loss/mb_3d': loss_mb_3d.item(),
                         'train_loss/kd_feat': kd_loss.item(),
                         'train_loss/kd_attention': attention_per_sample.mean().item(),
                         'train_loss/kd_relation': relation_per_sample.mean().item(),
@@ -961,7 +944,6 @@ class Student_Trainer:
                     f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
                     f'smpl: {(smpl_pose_loss + smpl_shape_loss).item():.3f} '
                     f'mesh: {mesh_loss.item():.3f} '
-                    f'mb3d: {loss_mb_3d.item():.3f} '
                     f'kd: {kd_loss.item():.3f} '
                     f'cJ: {cos_joint:.3f} '
                     f'cI: {cos_img:.3f} '
