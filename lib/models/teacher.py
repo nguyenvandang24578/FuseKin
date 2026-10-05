@@ -282,6 +282,7 @@ class Teacher(nn.Module):
                 'img_out': img_out,          # (B, H*W, C) - unpooled image tokens
                 'joint_proj': joints_tok,  # (B, 1024) - global pooled feature
                 'layers': layer_features,
+                "concat_feat": concat_feat
             }
         return pose_6d, shape, cam
 # ============================================================
