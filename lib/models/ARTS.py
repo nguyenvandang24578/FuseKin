@@ -185,7 +185,7 @@ class ARTS(nn.Module):
         result = self.format_smpl_output(smpl_output)
         result['feat'] = feats['joint_out']
         result['feat_img'] = feats['img_out']
-        result['feat_global'] = feats['concat_feat']
+        result['feat_proj'] = feats['joint_proj']
         result['feat_layers'] = feats['layers']
         result['privileged_3d'] = self.privileged_joint_head(feats['joint_out'])
         return result
