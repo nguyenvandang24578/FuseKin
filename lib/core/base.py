@@ -878,6 +878,14 @@ class Student_Trainer:
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
             mesh_loss = self.coordLoss(pred_mesh, gt_mesh_cam, is_valid_fit[:, None, None])
+            
+            loss_dict = {
+                'smpl_joint_cam': loss_smpl_joint_cam,
+                'smpl_pose': smpl_pose_loss,
+                'smpl_shape': smpl_shape_loss,
+                'body_joint_proj': loss_body_joint_proj,
+                'mesh_loss': mesh_loss,
+            }
             loss_dict = self.awl(loss_dict)
             hard_loss = sum(loss_dict.values())
             # loss = 0.5 * hard_loss + 0.5 * kd_loss + privileged_loss
