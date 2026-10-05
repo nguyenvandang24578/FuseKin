@@ -292,6 +292,7 @@ class Trainer:
             # ---- KD Loss: L_NKR = L_Cosine + L_MSE ----
             kd_loss = torch.zeros(1, device=input_image.device).squeeze()
             if self.use_kd and 's_feat_joint' in model_output and 't_feat_joint' in model_output:
+                print("tinh kd loss")
                 s_feat_joint = model_output['s_feat_joint']
                 t_feat_joint = model_output['t_feat_joint'].detach()
                 s_feat_img = model_output['s_feat_img']

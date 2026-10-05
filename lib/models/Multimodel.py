@@ -61,6 +61,7 @@ class Pose2Mesh(nn.Module):
         self.use_kd = getattr(cfg.MODEL, 'kd', False)
 
         if self.use_kd:
+            print('[Pose2Mesh] 🚀 Building Teacher model for KD...')
             # --- Frozen teacher for KD (same architecture, loaded from checkpoint) ---
             self.teacher = Teacher(num_joint, embed_dim, vert_anchors=16, horz_anchors=16, depth=3)
             teacher_ckpt_path = getattr(cfg.MODEL, 'TEACHER', '')
@@ -291,6 +292,7 @@ class Pose2Mesh(nn.Module):
 
         # KD features — only when KD is enabled
         if self.use_kd:
+            print("đang sử dụng kd")
             if isinstance(feature, dict):
                 result['s_feat_joint'] = feature['joint_out']
                 result['s_feat_img'] = feature['img_out']
