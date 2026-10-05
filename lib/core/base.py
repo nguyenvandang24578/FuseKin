@@ -730,7 +730,7 @@ class Student_Trainer:
             warmup_epochs = getattr(cfg.TRAIN, 'curriculum_epochs', 15.0)
             alpha = min(1.0, float(epoch) / float(warmup_epochs))
             gt_pose_input = gt_orig_joint_cam - gt_orig_joint_cam[:, 0:1, :]
-            print(f"gt_pose_input range : min={gt_pose_input.min().item():.2f}, max={gt_pose_input.max().item():.2f}")
+            # print(f"gt_pose_input range : min={gt_pose_input.min().item():.2f}, max={gt_pose_input.max().item():.2f}")
 
             # Feed 2D pose to model (which routes to MotionBERT in Student mode)
             model_output = self.model(
