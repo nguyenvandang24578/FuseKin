@@ -163,7 +163,7 @@ class RGBJointCrossTransformer(nn.Module):
 
 
 class Teacher(nn.Module):
-    def __init__(self, num_joint, embed_dim=512, vert_anchors=16, horz_anchors=16, in_channels=2048, depth=1, norm_layer = None, name = None):
+    def __init__(self, num_joint, embed_dim=512, vert_anchors=16, horz_anchors=16, in_channels=2048, depth=1, norm_layer = None, name = "student"):
         super(Teacher, self).__init__()
 
         self.mesh = Mesh()
@@ -235,11 +235,9 @@ class Teacher(nn.Module):
         img_tok = img_tok + pos_emb
         
         # --- DEBUG SCALE (Kiểm tra bias giữa 2 loại đặc trưng) ---
-        if not hasattr(self, '_printed_scale'):
-            print(f"\n[{self.name.upper() if getattr(self, 'name', None) else 'TEACHER'} - DEBUG SCALE] Feature before CFCER:")
-            print(f"  -> img_tok    : Mean = {img_tok.mean().item():.4f}, Std = {img_tok.std().item():.4f}, Norm = {torch.norm(img_tok, dim=-1).mean().item():.4f}")
-            print(f"  -> joints_tok : Mean = {joints_tok.mean().item():.4f}, Std = {joints_tok.std().item():.4f}, Norm = {torch.norm(joints_tok, dim=-1).mean().item():.4f}\n")
-            self._printed_scale = True
+        print(f"\n[{self.name.upper() if getattr(self, 'name', None) else 'TEACHER'} - DEBUG SCALE] Feature before CFCER:")
+        print(f"  -> img_tok    : Mean = {img_tok.mean().item():.4f}, Std = {img_tok.std().item():.4f}, Norm = {torch.norm(img_tok, dim=-1).mean().item():.4f}")
+        print(f"  -> joints_tok : Mean = {joints_tok.mean().item():.4f}, Std = {joints_tok.std().item():.4f}, Norm = {torch.norm(joints_tok, dim=-1).mean().item():.4f}\n")
             
         # 3. Cross Attention fusion
         cfcer_output = self.cfcer(
