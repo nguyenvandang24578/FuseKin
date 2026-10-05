@@ -239,7 +239,7 @@ class Trainer:
 
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
             pred_pose = pred_pose - pred_pose[:, 0:1, :]
-            print(f"  -> pred_pose : Min = {pred_pose.min().item():.4f}, Max = {pred_pose.max().item():.4f}, Mean = {pred_pose.mean().item():.4f}, Std = {pred_pose.std().item():.4f}, Norm = {torch.norm(pred_pose, dim=-1).mean().item():.4f}\n")
+            # print(f"  -> pred_pose : Min = {pred_pose.min().item():.4f}, Max = {pred_pose.max().item():.4f}, Mean = {pred_pose.mean().item():.4f}, Std = {pred_pose.std().item():.4f}, Norm = {torch.norm(pred_pose, dim=-1).mean().item():.4f}\n")
 
             # ---- Compute individual losses ----
             loss_smpl_joint_cam = self.jotr_coord_loss(
