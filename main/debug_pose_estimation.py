@@ -111,7 +111,8 @@ def run_pose_estimation(model, backbone, img_tensor, joints_2d_batch, device):
     T = cfg.DATASET.seqlen  # usually 16
 
     # 1. Chạy backbone để sinh img_feat
-    _, global_feature = backbone(img_tensor) # (B, 2048)
+    _, global_feature = backbone(img_tensor)
+    global_feature = global_feature.view(global_feature.size(0), -1) # Flatten to (B, 2048)
     
     # 2. Nhân bản feature ra T frames
     img_feat = global_feature.unsqueeze(1).repeat(1, T, 1) # (B, T, 2048)
@@ -120,7 +121,8 @@ def run_pose_estimation(model, backbone, img_tensor, joints_2d_batch, device):
     xy = joints_2d_batch[..., :2]
     xy = xy - xy[:, 0:1, :]
     x = xy.unsqueeze(1).repeat(1, T, 1, 1) # (B, T, J, 2)
-    
+    print(f"pose 2D có shape là {x.shape}")
+    print(f"img feat có shape là {img_feat.shape}")
     with torch.no_grad():
         pose3d = model(x, img_feat) # (B, J, 3)
         
