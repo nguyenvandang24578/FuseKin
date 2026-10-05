@@ -66,6 +66,7 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda'):
                     target_mesh_tensor,
                 )
                 teacher_gt_joints = teacher_gt_joints - teacher_gt_joints[:, 0:1, :]
+                print(f"  -> teacher_gt_joints : Min = {teacher_gt_joints.min().item():.4f}, Max = {teacher_gt_joints.max().item():.4f}, Mean = {teacher_gt_joints.mean().item():.4f}, Std = {teacher_gt_joints.std().item():.4f}, Norm = {torch.norm(teacher_gt_joints, dim=-1).mean().item():.4f}\n")
                 outputs = model(model_inputs['img'], teacher_gt_joints, is_train=False)
             elif cfg.MODEL.name == 'ARTS' and hasattr(dataset, 'h36m_joint_regressor'):
                 outputs = model(
