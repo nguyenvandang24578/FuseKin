@@ -108,7 +108,7 @@ def run_pose_estimation(model, backbone, img_tensor, joints_2d_batch, device):
     
     Returns: (B, J, 3) numpy array -- predicted 3D joints
     """
-    T = cfg.DATASET.seqlen  # usually 16
+    T = 16  # usually 16
 
     # 1. Chạy backbone để sinh img_feat
     _, global_feature = backbone(img_tensor)
