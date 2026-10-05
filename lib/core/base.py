@@ -221,8 +221,7 @@ class Trainer:
             # ---- Prepare GT 3D for Teacher KD (Normalized 2.5D [-1, 1]) ----
             gt_pose_input_25d = None
             if self.use_kd:
-                gt_orig_joint_img = targets['gt_orig_joint_cam'].cuda().clone()
-                gt_pose_input_25d = gt_orig_joint_img - gt_orig_joint_img[:, 0:1, :]
+                gt_pose_input_25d = gt_orig_joint_cam - gt_orig_joint_cam[:, 0:1, :]
             # ---- Forward ----
             model_output = self.model(
                 input_image, input_pose, is_train=True, use_gt_3d=False,
