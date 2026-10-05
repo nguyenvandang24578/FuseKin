@@ -222,16 +222,7 @@ class Trainer:
             gt_pose_input_25d = None
             if self.use_kd:
                 gt_orig_joint_img = targets['orig_joint_img'].cuda().clone()
-                gt_orig_joint_img[..., 0] = gt_orig_joint_img[..., 0] / cfg.output_hm_shape[2] * 2 - 1
-                gt_orig_joint_img[..., 1] = gt_orig_joint_img[..., 1] / cfg.output_hm_shape[1] * 2 - 1
-                gt_orig_joint_img[..., 2] = gt_orig_joint_img[..., 2] / cfg.output_hm_shape[0] * 2
                 gt_pose_input_25d = gt_orig_joint_img - gt_orig_joint_img[:, 0:1, :]
-            
-            if i == 0:
-                print(f"\n[DEBUG Trainer] input_pose range: min={input_pose.min().item():.3f}, max={input_pose.max().item():.3f}")
-                if self.use_kd:
-                    print(f"[DEBUG Trainer] gt_pose_input_25d range: min={gt_pose_input_25d.min().item():.3f}, max={gt_pose_input_25d.max().item():.3f}\n")
-
             # ---- Forward ----
             model_output = self.model(
                 input_image, input_pose, is_train=True, use_gt_3d=False,

@@ -85,31 +85,11 @@ class ARTS(nn.Module):
                 param.requires_grad = False
             self.backbone.eval()
             
-        # 2. Freeze phần đầu, Unfreeze vài layer cuối của MotionBERT (pose_lifter)
+        # 2. Freeze 100% của MotionBERT (pose_lifter)
         if self.pose_lifter is not None:
-            # Khóa toàn bộ trước
             for param in self.pose_lifter.parameters():
                 param.requires_grad = False
-                
-            # Mở khóa 2 khối Transformer cuối cùng
-            n_unfreeze = 2
-            depth = len(self.pose_lifter.blocks_st)
-            
-            for i in range(depth - n_unfreeze, depth):
-                for param in self.pose_lifter.blocks_st[i].parameters():
-                    param.requires_grad = True
-                if hasattr(self.pose_lifter, 'blocks_ts'):
-                    for param in self.pose_lifter.blocks_ts[i].parameters():
-                        param.requires_grad = True
-                        
-            # Mở khóa các layer dự đoán cuối (Norm, Pre-logits, Head)
-            for module in [self.pose_lifter.norm, self.pose_lifter.pre_logits, self.pose_lifter.head]:
-                if module is not None:
-                    for param in module.parameters():
-                        param.requires_grad = True
-                        
-            # Chú ý: pose_lifter có thể vẫn set .eval() bên ngoài (như trong hàm train()), 
-            # nhưng các param unfrozen vẫn sẽ được cập nhật gradient bình thường.
+            self.pose_lifter.eval()
 
     def train(self, mode=True):
         super().train(mode)
@@ -229,6 +209,7 @@ class ARTS(nn.Module):
             else:
                 # Dùng trực tiếp GT 3D (đã là đơn vị Mét và root-relative từ Trainer)
                 pose_3d = pose_input
+        print(f"[ARTS] gt_joints_3d (GT 3D) range: min={gt_joints_3d.min().item():.3f}, max={gt_joints_3d.max().item():.3f}")
 
         output = self.pose_mesh_coevo(
             pose_3d,
