@@ -440,7 +440,7 @@ class Teacher_Trainer:
             
             # Teacher dùng GT 3D gốc (mét, root-relative) từ orig_joint_cam, không chuẩn hóa
             teacher_gt_pose3d = gt_orig_joint_cam - gt_orig_joint_cam[:, 0:1, :]
-            print(f"  -> teacher_gt_pose3d : Min = {teacher_gt_pose3d.min().item():.4f}, Max = {teacher_gt_pose3d.max().item():.4f}, Mean = {teacher_gt_pose3d.mean().item():.4f}, Std = {teacher_gt_pose3d.std().item():.4f}, Norm = {torch.norm(teacher_gt_pose3d, dim=-1).mean().item():.4f}\n")
+            # print(f"  -> teacher_gt_pose3d : Min = {teacher_gt_pose3d.min().item():.4f}, Max = {teacher_gt_pose3d.max().item():.4f}, Mean = {teacher_gt_pose3d.mean().item():.4f}, Std = {teacher_gt_pose3d.std().item():.4f}, Norm = {torch.norm(teacher_gt_pose3d, dim=-1).mean().item():.4f}\n")
             model_output = self.model(input_image, teacher_gt_pose3d, is_train=True)
 
             pred_mesh = model_output['smpl_mesh_cam']
@@ -450,7 +450,7 @@ class Teacher_Trainer:
             # Regress H36M joints from the predicted SMPL mesh.
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
             pred_pose = pred_pose - pred_pose[:, 0:1, :]
-            print(f"  -> pred_pose : Min = {pred_pose.min().item():.4f}, Max = {pred_pose.max().item():.4f}, Mean = {pred_pose.mean().item():.4f}, Std = {pred_pose.std().item():.4f}, Norm = {torch.norm(pred_pose, dim=-1).mean().item():.4f}\n")
+            # print(f"  -> pred_pose : Min = {pred_pose.min().item():.4f}, Max = {pred_pose.max().item():.4f}, Mean = {pred_pose.mean().item():.4f}, Std = {pred_pose.std().item():.4f}, Norm = {torch.norm(pred_pose, dim=-1).mean().item():.4f}\n")
             loss_smpl_joint_cam = self.jotr_coord_loss(
                 pred_pose,
                 gt_fit_joint_cam,
