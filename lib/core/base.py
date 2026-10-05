@@ -132,8 +132,8 @@ class Trainer:
         self.coordLoss = CoordLoss(has_valid=True)
 
         # KD flag & weight
-        self.use_kd = getattr(cfg.MODEL, 'kd', False)
-        self.kd_weight = getattr(cfg.MODEL, 'kd_weight', 0.5) if self.use_kd else 0.0
+        self.use_kd = cfg.MODEL.kd
+        self.kd_weight = cfg.MODEL.kd_weight if self.use_kd else 0.0
 
         # 5 losses now (including mesh_loss)
         self.awl = AutomaticWeightedLoss(5).cuda()
@@ -221,7 +221,7 @@ class Trainer:
             # ---- Prepare GT 3D for Teacher KD (Normalized 2.5D [-1, 1]) ----
             gt_pose_input_25d = None
             if self.use_kd:
-                gt_orig_joint_img = targets['orig_joint_img'].cuda().clone()
+                gt_orig_joint_img = targets['gt_orig_joint_cam'].cuda().clone()
                 gt_pose_input_25d = gt_orig_joint_img - gt_orig_joint_img[:, 0:1, :]
             # ---- Forward ----
             model_output = self.model(
