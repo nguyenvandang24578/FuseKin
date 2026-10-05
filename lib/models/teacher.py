@@ -163,14 +163,14 @@ class RGBJointCrossTransformer(nn.Module):
 
 
 class Teacher(nn.Module):
-    def __init__(self, num_joint, embed_dim=512, vert_anchors=16, horz_anchors=16, in_channels=2048, depth=1, norm_layer = None):
+    def __init__(self, num_joint, embed_dim=512, vert_anchors=16, horz_anchors=16, in_channels=2048, depth=1, norm_layer = None, name = None):
         super(Teacher, self).__init__()
 
         self.mesh = Mesh()
         self.regressorspin = RegressorSpin()
         pretrained_dict = torch.load(osp.join(BASE_DATA_DIR, 'spin_model_checkpoint.pth.tar'), weights_only=False)['model']
         self.regressorspin.load_state_dict(pretrained_dict, strict=False)
-
+        self.name = name
         mean_params = np.load(SMPL_MEAN_PARAMS)
         init_pose = torch.from_numpy(mean_params['pose'][:]).unsqueeze(0)
         init_shape = torch.from_numpy(mean_params['shape'][:].astype('float32')).unsqueeze(0)
@@ -183,7 +183,7 @@ class Teacher(nn.Module):
         # Project image features từ ResNet (2048) -> embed_dim (512)
         self.img_proj = nn.Conv2d(in_channels, embed_dim, 1)
         # Project joints (B, 17, 3) -> (B, 17, 512)
-        if cfg.MODEL.NAME == "student":
+        if self.name == "student":
             self.projector_student = StudentJointExtractor(in_dim=3, out_dim=512)
         else:
             self.joint_proj = nn.Linear(3, embed_dim)
@@ -216,7 +216,7 @@ class Teacher(nn.Module):
         )          # (bs, 144)
         mean_shape  = self.init_shape.expand(bs, 10)  # (bs, 10)
         # 1. Project joints (B, 17, 3) -> (B, 17, 512)
-        if cfg.MODEL.NAME == "student":
+        if self.name == "student":
             joints_tok = self.projector_student(joints, self.pos_emb_joint)
         else:
             joints_tok = self.norm_joint_proj(self.joint_proj(joints) + self.pos_emb_joint)
