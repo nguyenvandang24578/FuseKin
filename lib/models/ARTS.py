@@ -174,6 +174,7 @@ class ARTS(nn.Module):
             pose_3d = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask)
             pose_3d = pose_3d - pose_3d[:, 0:1, :]            # root-relative
 
+        print(f"pose_3d range : min={pose_3d.min().item():.2f}, max={pose_3d.max().item():.2f}")
         spin_out, pred_pose_6d, pred_shape, pred_cam, feats = self.smpl_model(
             joints=pose_3d,
             img_feats=feature_map,

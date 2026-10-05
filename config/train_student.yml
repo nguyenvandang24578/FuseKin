@@ -13,8 +13,8 @@ MODEL:
   resnet_type: 50
   hpe_dim: 512
   hpe_dep: 5
-  motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
-  TEACHER: './experiment/teacher/checkpoint/best.pth.tar'
+  motionbert_pretrained: './experiment/finetune_motionbert/anh_nhan/best_epoch.bin'
+  TEACHER: './experiment/exp_10-04_20_38/checkpoint/best.pth.tar'
   kd_weight: 1.0
 
 TRAIN:

@@ -729,14 +729,9 @@ class Student_Trainer:
             # Calculate curriculum alpha
             warmup_epochs = getattr(cfg.TRAIN, 'curriculum_epochs', 15.0)
             alpha = min(1.0, float(epoch) / float(warmup_epochs))
-            
-            # Dùng orig_joint_img normalized [-1, 1] (2.5D) cho Teacher KD
-            gt_orig_joint_img = targets['orig_joint_img'].cuda().clone()
-            gt_orig_joint_img[..., 0] = gt_orig_joint_img[..., 0] / cfg.output_hm_shape[2] * 2 - 1
-            gt_orig_joint_img[..., 1] = gt_orig_joint_img[..., 1] / cfg.output_hm_shape[1] * 2 - 1
-            gt_orig_joint_img[..., 2] = gt_orig_joint_img[..., 2] / cfg.output_hm_shape[0] * 2
-            gt_pose_input = gt_orig_joint_img - gt_orig_joint_img[:, 0:1, :]
-            
+            gt_pose_input = gt_orig_joint_cam - gt_orig_joint_cam[:, 0:1, :]
+            print(f"gt_pose_input range : min={gt_pose_input.min().item():.2f}, max={gt_pose_input.max().item():.2f}")
+
             # Feed 2D pose to model (which routes to MotionBERT in Student mode)
             model_output = self.model(
                 input_image, input_pose2d, is_train=True,
@@ -764,8 +759,6 @@ class Student_Trainer:
             s_feat_img = model_output['feat_img']
             t_feat_img = t_out['feat_img'].detach()
 
-            # Student and Teacher share the same cfcer representation size.
-            # Distill the actual outputs so the optimized loss matches the logged cosine.
             s_feat_joint_norm = F.normalize(s_feat_joint, p=2, dim=-1)
             t_feat_joint_norm = F.normalize(t_feat_joint, p=2, dim=-1)
             s_feat_img_norm = F.normalize(s_feat_img, p=2, dim=-1)
