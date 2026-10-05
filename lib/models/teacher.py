@@ -238,10 +238,10 @@ class Teacher(nn.Module):
         img_tok = img_tok + pos_emb
         img_tok = self.norm_img_in(img_tok)
         
-        # --- DEBUG SCALE (Kiểm tra bias giữa 2 loại đặc trưng) ---
-        print(f"\n[{self.name.upper() if getattr(self, 'name', None) else 'TEACHER'} - DEBUG SCALE] Feature before CFCER:")
-        print(f"  -> img_tok    : Mean = {img_tok.mean().item():.4f}, Std = {img_tok.std().item():.4f}, Norm = {torch.norm(img_tok, dim=-1).mean().item():.4f}")
-        print(f"  -> joints_tok : Mean = {joints_tok.mean().item():.4f}, Std = {joints_tok.std().item():.4f}, Norm = {torch.norm(joints_tok, dim=-1).mean().item():.4f}\n")
+        # # --- DEBUG SCALE (Kiểm tra bias giữa 2 loại đặc trưng) ---
+        # print(f"\n[{self.name.upper() if getattr(self, 'name', None) else 'TEACHER'} - DEBUG SCALE] Feature before CFCER:")
+        # print(f"  -> img_tok    : Mean = {img_tok.mean().item():.4f}, Std = {img_tok.std().item():.4f}, Norm = {torch.norm(img_tok, dim=-1).mean().item():.4f}")
+        # print(f"  -> joints_tok : Mean = {joints_tok.mean().item():.4f}, Std = {joints_tok.std().item():.4f}, Norm = {torch.norm(joints_tok, dim=-1).mean().item():.4f}\n")
             
         # 3. Cross Attention fusion
         cfcer_output = self.cfcer(

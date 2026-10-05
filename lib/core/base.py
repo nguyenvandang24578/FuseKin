@@ -840,8 +840,8 @@ class Student_Trainer:
 #             privileged_loss = privileged_per_sample.mean()
 
             # ---------------------------------------------------------
-            print(f"pred_pose_rootrel range : min={pred_pose_rootrel.min().item():.2f}, max={pred_pose_rootrel.max().item():.2f}")
-            print(f"gt_fit_joint_cam range : min={gt_fit_joint_cam.min().item():.2f}, max={gt_fit_joint_cam.max().item():.2f}")
+            # print(f"pred_pose_rootrel range : min={pred_pose_rootrel.min().item():.2f}, max={pred_pose_rootrel.max().item():.2f}")
+            # print(f"gt_fit_joint_cam range : min={gt_fit_joint_cam.min().item():.2f}, max={gt_fit_joint_cam.max().item():.2f}")
 
             loss_smpl_joint_cam = self.jotr_coord_loss(
                 pred_pose_rootrel,
@@ -878,7 +878,7 @@ class Student_Trainer:
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
             mesh_loss = self.coordLoss(pred_mesh, gt_mesh_cam, is_valid_fit[:, None, None])
-            
+
             loss_dict = {
                 'smpl_joint_cam': loss_smpl_joint_cam,
                 'smpl_pose': smpl_pose_loss,
