@@ -222,6 +222,8 @@ class Trainer:
             gt_pose_input_25d = None
             if self.use_kd:
                 gt_pose_input_25d = gt_orig_joint_cam - gt_orig_joint_cam[:, 0:1, :]
+                print(f"  -> gt_pose_input_25d : Min = {gt_pose_input_25d.min().item():.4f}, Max = {gt_pose_input_25d.max().item():.4f}, Mean = {gt_pose_input_25d.mean().item():.4f}, Std = {gt_pose_input_25d.std().item():.4f}, Norm = {torch.norm(gt_pose_input_25d, dim=-1).mean().item():.4f}\n")
+
             # ---- Forward ----
             model_output = self.model(
                 input_image, input_pose, is_train=True, use_gt_3d=False,
@@ -237,6 +239,7 @@ class Trainer:
 
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
             pred_pose = pred_pose - pred_pose[:, 0:1, :]
+            print(f"  -> pred_pose : Min = {pred_pose.min().item():.4f}, Max = {pred_pose.max().item():.4f}, Mean = {pred_pose.mean().item():.4f}, Std = {pred_pose.std().item():.4f}, Norm = {torch.norm(pred_pose, dim=-1).mean().item():.4f}\n")
 
             # ---- Compute individual losses ----
             loss_smpl_joint_cam = self.jotr_coord_loss(
