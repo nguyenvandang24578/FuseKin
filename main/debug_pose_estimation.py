@@ -117,10 +117,19 @@ def run_pose_estimation(model, backbone, img_tensor, joints_2d_batch, device):
     # 2. Nhân bản feature ra T frames
     img_feat = global_feature.unsqueeze(1).repeat(1, T, 1) # (B, T, 2048)
     
-    # 3. Chuẩn bị x (joints 2D) - Chuyển sang root-relative
-    xy = joints_2d_batch[..., :2]
-    xy = xy - xy[:, 0:1, :]
-    x = xy.unsqueeze(1).repeat(1, T, 1, 1) # (B, T, J, 2)
+    # 3. Chuẩn bị x (joints 2D) theo yêu cầu:
+    # B1: Đưa từ [-1, 1] về không gian Pixel của ảnh crop (thường là 256x256)
+    img_w, img_h = img_tensor.shape[3], img_tensor.shape[2]  # Lấy w, h thực tế từ img_tensor (thường 256)
+    xy_px = (joints_2d_batch[..., :2] + 1.0) / 2.0 * img_w
+    
+    # B2: Chuẩn hóa lại bằng hàm normalize_screen_coordinates (sử dụng toán tử của PyTorch)
+    # X / w * 2 - np.array([1, h / w])
+    offset = torch.tensor([1.0, img_h / img_w], device=device, dtype=xy_px.dtype)
+    xy_norm = (xy_px / img_w) * 2.0 - offset
+    
+    # B3: Đưa về root-relative (trừ đi gốc tọa độ pelvis)
+    xy_norm = xy_norm - xy_norm[:, 0:1, :]
+    x = xy_norm.unsqueeze(1).repeat(1, T, 1, 1) # (B, T, J, 2)
     print(f"pose 2D có shape là {x.shape}")
     print(f"img feat có shape là {img_feat.shape}")
     with torch.no_grad():
