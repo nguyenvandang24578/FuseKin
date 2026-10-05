@@ -8,11 +8,30 @@ from core.config import cfg
 from models.backbones.mesh import Mesh
 from models.spin import RegressorSpin
 import numpy as np
+from timm.models.layers import DropPath
+from timm.models.vision_transformer import Mlp, Attention
+from functools import partial
+
 
 BASE_DATA_DIR = cfg.DATASET.BASE_DATA_DIR
 SMPL_MODEL_DIR = 'data_final/base_data'
 SMPL_MEAN_PARAMS = 'data_final/base_data/smpl_mean_params.npz'
 BASE_DATA_DIR = 'data_final/base_data'
+class StudentJointExtractor(nn.Module):
+    def __init__(self, in_dim=3, out_dim=512):
+        super().__init__()
+        self.proj = nn.Linear(in_dim, out_dim)
+        # Thêm 1 layer Transformer hoặc GCN để các khớp trao đổi thông tin & tự sửa nhiễu
+        self.denoise_layer = nn.TransformerEncoderLayer(
+            d_model=out_dim, nhead=8, dim_feedforward=1024, batch_first=True
+        )
+        self.norm = nn.LayerNorm(out_dim)
+        
+    def forward(self, noisy_joints, pos_emb):
+        # noisy_joints: (B, 17, 3)
+        x = self.proj(noisy_joints) + pos_emb
+        x = self.denoise_layer(x)  # Tự căn chỉnh và khử nhiễu giữa 17 khớp
+        return self.norm(x)
 class LearnableCoefficient(nn.Module):
     def __init__(self):
         super(LearnableCoefficient, self).__init__()
@@ -144,7 +163,7 @@ class RGBJointCrossTransformer(nn.Module):
 
 
 class Teacher(nn.Module):
-    def __init__(self, num_joint, embed_dim=512, vert_anchors=16, horz_anchors=16, in_channels=2048, depth=1):
+    def __init__(self, num_joint, embed_dim=512, vert_anchors=16, horz_anchors=16, in_channels=2048, depth=1, norm_layer = None):
         super(Teacher, self).__init__()
 
         self.mesh = Mesh()
@@ -163,10 +182,12 @@ class Teacher(nn.Module):
         
         # Project image features từ ResNet (2048) -> embed_dim (512)
         self.img_proj = nn.Conv2d(in_channels, embed_dim, 1)
-
         # Project joints (B, 17, 3) -> (B, 17, 512)
-        self.joint_proj = nn.Linear(3, embed_dim)
-
+        if cfg.MODEL.NAME == "student":
+            self.projector_student = StudentJointExtractor(in_dim=3, out_dim=512)
+        else:
+            self.joint_proj = nn.Linear(3, embed_dim)
+            self.norm_joint_proj = nn.LayerNorm(embed_dim)
         # Positional Embeddings
         self.pos_emb_img = nn.Parameter(torch.zeros(1, vert_anchors * horz_anchors, embed_dim))
         self.pos_emb_joint = nn.Parameter(torch.zeros(1, 17, embed_dim))
@@ -179,6 +200,10 @@ class Teacher(nn.Module):
             resid_pdrop=0.1,
             depth=depth
         )
+
+        # Final LayerNorm sau cross-transformer (dùng cho cả teacher và student)
+        self.norm_img = nn.LayerNorm(embed_dim)
+        self.norm_joint = nn.LayerNorm(embed_dim)
         
         # Output projection cho regressorspin (nhận concat 2 vector 512 -> 1024)
         self.out_proj = nn.Linear(embed_dim * 2, 2048)
@@ -191,8 +216,11 @@ class Teacher(nn.Module):
         )          # (bs, 144)
         mean_shape  = self.init_shape.expand(bs, 10)  # (bs, 10)
         # 1. Project joints (B, 17, 3) -> (B, 17, 512)
-        joints_tok = self.joint_proj(joints) + self.pos_emb_joint
-        
+        if cfg.MODEL.NAME == "student":
+            joints_tok = self.projector_student(joints, self.pos_emb_joint)
+        else:
+            joints_tok = self.norm_joint_proj(self.joint_proj(joints) + self.pos_emb_joint)
+
         # 2. Image tokens (B, C, H, W) -> (B, H*W, 512)
         img_tok = img_feats.view(bs, c, -1).permute(0, 2, 1)
         
@@ -215,6 +243,10 @@ class Teacher(nn.Module):
         else:
             img_out, joint_out = cfcer_output
             layer_features = []
+
+        # Final LayerNorm trước khi pooling
+        img_out = self.norm_img(img_out)
+        joint_out = self.norm_joint(joint_out)
         
         # 4. Global Pooling & Fusion
         # Lấy trung bình dọc theo chiều token
@@ -239,7 +271,7 @@ class Teacher(nn.Module):
             return spin_out, pose_6d, shape, cam, {
                 'joint_out': joint_out,      # (B, 17, C) - per-joint tokens
                 'img_out': img_out,          # (B, H*W, C) - unpooled image tokens
-                'concat_feat': concat_feat,  # (B, 1024) - global pooled feature
+                'joint_proj': joints_tok,  # (B, 1024) - global pooled feature
                 'layers': layer_features,
             }
         return pose_6d, shape, cam

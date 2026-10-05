@@ -163,7 +163,7 @@ class ARTS(nn.Module):
         result = self.format_smpl_output(smpl_output)
         result['feat'] = feature['joint_out']
         result['feat_img'] = feature['img_out']
-        result['feat_global'] = feature['concat_feat']
+        result['joint_proj'] = feature['joint_proj']
         result['feat_layers'] = feature['layers']
         return result
 
