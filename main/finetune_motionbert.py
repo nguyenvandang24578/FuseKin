@@ -52,15 +52,22 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
             # Root relative (same as MotionBERT train.py line 168)
             mb_input[..., :2] = mb_input[..., :2] - mb_input[:, :, 0:1, :2]
             target_3d_seq = target_3d_seq - target_3d_seq[:, :, 0:1, :]
-            
-            # FIX: MotionBERT pretrained weights expect MILLIMETERS.
-            # But PW3D/JOTR dataset returns targets in METERS.
-            # We must multiply by 1000, otherwise the loss is too small
-            # and weight decay collapses the model weights to 0.
-            target_3d_seq = target_3d_seq * 1000.0
+            # MotionBERT pretrain output ở đơn vị MÉT!
+            # Teacher cũng dùng MÉT.
+            # Bỏ nhân 1000 để loss không bị khổng lồ.
+            # target_3d_seq = target_3d_seq * 1000.0 (XÓA)
 
         # Forward pass
         predicted_3d = model(mb_input) # (B, 1, 17, 3)
+        
+        if i == 0:
+            print(f"\n--- Batch {i} ---")
+            print(f"target_3d_seq (khớp gối phải - joint 2) [x,y,z]: {target_3d_seq[0, 0, 2, :].detach().cpu().numpy()}")
+            print(f"predicted_3d  (khớp gối phải - joint 2) [x,y,z]: {predicted_3d[0, 0, 2, :].detach().cpu().numpy()}")
+            print(f"target_3d_seq range: min={target_3d_seq.min().item():.2f}, max={target_3d_seq.max().item():.2f}")
+            print(f"predicted_3d range : min={predicted_3d.min().item():.2f}, max={predicted_3d.max().item():.2f}")
+            print(f"mb_input range     : min={mb_input.min().item():.2f}, max={mb_input.max().item():.2f}")
+            print("--------------------\n")
 
         optimizer.zero_grad()
 
@@ -228,10 +235,13 @@ def main():
 
     # Load Pretrained (same as train.py L260-272)
     if opts.pretrained:
-        print(f"Loading pretrained weights from {opts.pretrained}")
+        print(f"Loading pretrained weights from {opts.pretrained}...")
         checkpoint = torch.load(opts.pretrained, map_location=lambda storage, loc: storage)
         model.load_state_dict(checkpoint['model_pos'], strict=True)
-    
+        print("Pretrained weights loaded SUCCESSFULLY!")
+    else:
+        print("WARNING: opts.pretrained is empty! Model is initializing with random weights!")
+        
     # Optimizer (same as train.py L288-289)
     lr = mb_cfg.learning_rate
     optimizer = optim.AdamW(

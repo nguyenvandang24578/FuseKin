@@ -120,10 +120,9 @@ class ARTS(nn.Module):
         # Truyền trực tiếp 1 frame tĩnh (F=1) vào thay vì lặp lại NUM_FRAMES lần
         single_frame = pose_xyc.unsqueeze(1)  # (B, 1, 17, 3)
         pose_3d = self.pose_lifter(single_frame)
-        # MotionBERT được finetune với target milimet (finetune_motionbert.py: target * 1000)
-        # -> đổi về MÉT để cùng không gian với input của Teacher (orig_joint_cam, mét).
-        pose_3d = pose_3d / 1000.0
-        return pose_3d[:, 0]  # Lấy kết quả của frame duy nhất đó
+        # MotionBERT pretrained weights natively output METERS.
+        # Teacher expects METERS.
+        return pose_3d[:, 0]  # (B, 17, 3) mét
 
     def format_smpl_output(self, smpl_output):
         theta = smpl_output["theta"]

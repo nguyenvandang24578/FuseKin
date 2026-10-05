@@ -27,6 +27,8 @@ parser.add_argument('--num_samples', type=int, default=10,
                     help='Number of samples to visualize')
 parser.add_argument('--out_dir',     type=str, default='debug_motionbert_vis',
                     help='Output directory for images')
+parser.add_argument('--split',       type=str, default='train', choices=['train', 'test'],
+                    help='Dataset split to visualize (train or test)')
 args = parser.parse_args()
 
 from core.config import cfg, update_config
@@ -44,7 +46,7 @@ from functools import partial
 import torch.nn as nn
 import __init_path
 
-from utils.jotr_dataset import get_train_dataset
+from utils.jotr_dataset import get_train_dataset, get_test_dataset
 from torch.utils.data import DataLoader
 
 # -----------------------------------------------------------------
@@ -217,9 +219,15 @@ n_params = sum(p.numel() for p in model_mb.parameters())
 print(f"  DSTformer parameters: {n_params/1e6:.1f}M")
 
 # 2. Dataset & Dataloader
-dataset_name = cfg.DATASET.train_list[0]
-print(f"\n  Dataset : {dataset_name}")
-dataset = get_train_dataset(dataset_name, args)
+if args.split == 'train':
+    dataset_name = cfg.DATASET.train_list[0]
+    print(f"\n  Dataset (Train) : {dataset_name}")
+    dataset = get_train_dataset(dataset_name, args)
+else:
+    dataset_name = cfg.DATASET.test_list[0]
+    print(f"\n  Dataset (Test) : {dataset_name}")
+    dataset = get_test_dataset(dataset_name, args)
+
 loader  = DataLoader(dataset, batch_size=4, shuffle=False, num_workers=0)
 print(f"  Samples : {len(dataset)}")
 
@@ -267,8 +275,14 @@ for batch_idx, (inputs_b, targets_b, meta_b) in enumerate(loader):
         gt_3d = None
         if 'orig_joint_cam' in targets_b:
             gt_3d = targets_b['orig_joint_cam'][b].numpy()    # (J, 3)
+        elif 'smpl_mesh_cam' in targets_b:
+            # Tập test 3DPW chỉ trả về mesh, ta dùng regressor để lấy khớp H36M
+            mesh = targets_b['smpl_mesh_cam'][b].numpy()
+            gt_3d = np.dot(dataset.dataset.h36m_joint_regressor, mesh)
             
+        if gt_3d is not None:
             # --- TÍNH TOÁN VÀ IN THÔNG SỐ SO SÁNH ---
+
             print(f"\n[Sample {img_count:03d}] So sánh tọa độ:")
             print(f" - Mẫu GT khớp 0 (pelvis): {gt_3d[0]}")
             print(f" - Mẫu Pred khớp 0 (pelvis): {pred_3d[0]}")
