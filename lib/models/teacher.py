@@ -205,6 +205,9 @@ class Teacher(nn.Module):
         self.norm_img = nn.LayerNorm(embed_dim)
         self.norm_joint = nn.LayerNorm(embed_dim)
         
+        # LayerNorm đầu vào cho img_tok để cân bằng scale với joints_tok
+        self.norm_img_in = nn.LayerNorm(embed_dim)
+        
         # Output projection cho regressorspin (nhận concat 2 vector 512 -> 1024)
         self.out_proj = nn.Linear(embed_dim * 2, 2048)
     def forward(self, joints, img_feats, is_train=True, J_regressor=None, return_features=False):
@@ -233,6 +236,7 @@ class Teacher(nn.Module):
             pos_emb = self.pos_emb_img
             
         img_tok = img_tok + pos_emb
+        img_tok = self.norm_img_in(img_tok)
         
         # --- DEBUG SCALE (Kiểm tra bias giữa 2 loại đặc trưng) ---
         print(f"\n[{self.name.upper() if getattr(self, 'name', None) else 'TEACHER'} - DEBUG SCALE] Feature before CFCER:")
