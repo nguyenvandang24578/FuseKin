@@ -116,5 +116,5 @@ class  GraphormerNet(nn.Module):
 
 
 def get_model(num_joint=17, embed_dim=256, depth=3, pretrained=False): 
-    model = GraphormerNet(num_frames=cfg.DATASET.seqlen, num_joints=num_joint, embed_dim=embed_dim, depth=depth, pretrained=pretrained)
+    model = GraphormerNet(num_frames=16, num_joints=num_joint, embed_dim=embed_dim, depth=depth, pretrained=pretrained)
     return model
