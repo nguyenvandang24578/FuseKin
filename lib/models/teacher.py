@@ -219,12 +219,8 @@ class Teacher(nn.Module):
         )          # (bs, 144)
         mean_shape  = self.init_shape.expand(bs, 10)  # (bs, 10)
         # 1. Project joints (B, 17, 3) -> (B, 17, 512)
-        if self.name == "student":
-            joints_tok = self.projector_student(joints, self.pos_emb_joint)
-        else:
-            # joints_tok = self.norm_joint_proj(self.joint_proj(joints) + self.pos_emb_joint)
-            joints_tok = self.joint_proj(joints) + self.pos_emb_joint
-
+        joints_tok = self.joint_proj(joints) + self.pos_emb_joint
+        
         # 2. Image tokens (B, C, H, W) -> (B, H*W, 512)
         img_tok = img_feats.view(bs, c, -1).permute(0, 2, 1)
         
@@ -237,26 +233,9 @@ class Teacher(nn.Module):
             pos_emb = self.pos_emb_img
             
         img_tok = img_tok + pos_emb
-        # img_tok = self.norm_img_in(img_tok)
         
-        # # --- DEBUG SCALE (Kiểm tra bias giữa 2 loại đặc trưng) ---
-        # print(f"\n[{self.name.upper() if getattr(self, 'name', None) else 'TEACHER'} - DEBUG SCALE] Feature before CFCER:")
-        # print(f"  -> img_tok    : Mean = {img_tok.mean().item():.4f}, Std = {img_tok.std().item():.4f}, Norm = {torch.norm(img_tok, dim=-1).mean().item():.4f}")
-        # print(f"  -> joints_tok : Mean = {joints_tok.mean().item():.4f}, Std = {joints_tok.std().item():.4f}, Norm = {torch.norm(joints_tok, dim=-1).mean().item():.4f}\n")
-            
         # 3. Cross Attention fusion
-        cfcer_output = self.cfcer(
-            img_tok, joints_tok, return_intermediate=return_features
-        )
-        if return_features:
-            img_out, joint_out, layer_features = cfcer_output
-        else:
-            img_out, joint_out = cfcer_output
-            layer_features = []
-
-        # Final LayerNorm trước khi pooling
-        img_out = self.norm_img(img_out)
-        joint_out = self.norm_joint(joint_out)
+        img_out, joint_out = self.cfcer(img_tok, joints_tok)
         
         # 4. Global Pooling & Fusion
         # Lấy trung bình dọc theo chiều token
@@ -281,8 +260,7 @@ class Teacher(nn.Module):
             return spin_out, pose_6d, shape, cam, {
                 'joint_out': joint_out,      # (B, 17, C) - per-joint tokens
                 'img_out': img_out,          # (B, H*W, C) - unpooled image tokens
-                'joint_proj': joints_tok,  # (B, 1024) - global pooled feature
-                'layers': layer_features,
+                'concat_feat': concat_feat,  # (B, 1024) - global pooled feature
             }
         return pose_6d, shape, cam
 # ============================================================
