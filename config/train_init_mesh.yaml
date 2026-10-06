@@ -13,7 +13,7 @@ MODEL:
     name: 'ARTS'
     resnet_type: 50
     pretrained_backbone: False
-    hpe_dim: 256
+    hpe_dim: 512
     hpe_dep: 3
     joint_dim: 64
     vertx_dim: 64

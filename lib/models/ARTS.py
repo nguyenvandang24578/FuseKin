@@ -9,6 +9,7 @@ from models import Multimodel
 from models.backbones.resnet import ResNetBackbone
 from models.DSTformer import DSTformer
 from models.teacher import Teacher
+from models.student import Student
 
 os.environ.setdefault("WANDB_MODE", "offline")
 
@@ -53,12 +54,13 @@ class ARTS(nn.Module):
         else:
             self.pose_lifter = None
 
-        if self.mode in ("teacher", "student"):
+        if self.mode == "teacher":
             self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim, depth = 3)
-            if self.mode == "student":
-                self.privileged_joint_head = nn.Linear(embed_dim, 3)
+        elif self.mode == "student":
+            self.smpl_model = Student(num_joint=num_joint, embed_dim=embed_dim, depth = 3)
+            self.privileged_joint_head = nn.Linear(embed_dim, 3)
         elif self.mode == "ARTS":
-            self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim * 2)
+            self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim)
         else:
             raise ValueError(f"Mode không hợp lệ: {self.mode}. Chọn teacher, student hoặc ARTS.")
 
@@ -211,9 +213,8 @@ class ARTS(nn.Module):
             gt_pose_6d=gt_pose_6d,
             kp2d=kp2d,
             kp_conf=kp_conf,
-            pose_valid_mask=pose_valid_mask,
-            gt_joints_3d=gt_joints_3d,
-        )
+            pose_valid_mask=pose_valid_mask
+            )
         # MotionBERT outputs 3D joints in millimeters; convert to meters so
         # joint_img shares the unit of the GT joints used in the training loss.
         output["joint_img"] = pose_3d

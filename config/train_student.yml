@@ -14,7 +14,7 @@ MODEL:
   hpe_dim: 512
   hpe_dep: 5
   motionbert_pretrained: './experiment/finetune_motionbert/anh_Nhan/best_epoch.bin'
-  TEACHER: './experiment/exp_10-04_20_38/checkpoint/best.pth.tar'
+  TEACHER: './experiment/exp_10-06_12_16/checkpoint/best.pth.tar'
   kd_weight: 1.0
 
 TRAIN:

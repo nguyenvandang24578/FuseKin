@@ -218,14 +218,14 @@ class Trainer:
                 fit_pv = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
                 pose_valid_mask = fit_pv.reshape(B, 24, 3)[:, :, 0]
 
-            # ---- Forward (pass GT 3D joints for teacher KD) ----
-            gt_pose_input = gt_fit_joint_cam - gt_fit_joint_cam[:, 0:1, :]
+            # # ---- Forward (pass GT 3D joints for teacher KD) ----
+            # gt_pose_input = gt_fit_joint_cam - gt_fit_joint_cam[:, 0:1, :]
             
             model_output = self.model(
-                input_image, gt_pose_input, is_train=True, use_gt_3d=True,
+                input_image, input_pose, is_train=True, use_gt_3d=False,
                 gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,
                 pose_valid_mask=pose_valid_mask,
-                gt_joints_3d=gt_pose_input,  # GT joints for teacher KD
+                # gt_joints_3d=gt_pose_input,  # GT joints for teacher KD
             )
 
             pred_mesh = model_output['smpl_mesh_cam']
@@ -259,6 +259,8 @@ class Trainer:
 
             fit_pose_valid = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
             fit_shape_valid = is_valid_fit[:, None]
+
+            
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
             mesh_loss = self.coordLoss(pred_mesh, gt_mesh_cam, is_valid_fit[:, None, None])
@@ -287,28 +289,28 @@ class Trainer:
                 loss = sum(loss_dict.values())
                 diff_loss = torch.zeros(1, device=input_image.device)
 
-            # ---- KD Loss: L_NKR = L_Cosine + L_MSE ----
-            kd_loss = torch.zeros(1, device=input_image.device).squeeze()
-            if 's_feat_joint' in model_output and 't_feat_joint' in model_output:
-                s_feat_joint = model_output['s_feat_joint']
-                t_feat_joint = model_output['t_feat_joint'].detach()
-                s_feat_img = model_output['s_feat_img']
-                t_feat_img = model_output['t_feat_img'].detach()
+            # # ---- KD Loss: L_NKR = L_Cosine + L_MSE ----
+            # kd_loss = torch.zeros(1, device=input_image.device).squeeze()
+            # if 's_feat_joint' in model_output and 't_feat_joint' in model_output:
+            #     s_feat_joint = model_output['s_feat_joint']
+            #     t_feat_joint = model_output['t_feat_joint'].detach()
+            #     s_feat_img = model_output['s_feat_img']
+            #     t_feat_img = model_output['t_feat_img'].detach()
 
-                # MSE component
-                mse_joint = F.mse_loss(s_feat_joint, t_feat_joint)
-                mse_img = F.mse_loss(s_feat_img, t_feat_img)
+            #     # MSE component
+            #     mse_joint = F.mse_loss(s_feat_joint, t_feat_joint)
+            #     mse_img = F.mse_loss(s_feat_img, t_feat_img)
 
-                # Cosine component
-                cos_joint = F.cosine_similarity(s_feat_joint.flatten(1), t_feat_joint.flatten(1), dim=-1)
-                cos_img = F.cosine_similarity(s_feat_img.flatten(1), t_feat_img.flatten(1), dim=-1)
+            #     # Cosine component
+            #     cos_joint = F.cosine_similarity(s_feat_joint.flatten(1), t_feat_joint.flatten(1), dim=-1)
+            #     cos_img = F.cosine_similarity(s_feat_img.flatten(1), t_feat_img.flatten(1), dim=-1)
                 
-                cosine_loss_joint = (1.0 - cos_joint).mean()
-                cosine_loss_img = (1.0 - cos_img).mean()
+            #     cosine_loss_joint = (1.0 - cos_joint).mean()
+            #     cosine_loss_img = (1.0 - cos_img).mean()
 
-                kd_loss = (mse_joint + mse_img) + 0.1 * (cosine_loss_joint + cosine_loss_img)
+            #     kd_loss = (mse_joint + mse_img) + 0.1 * (cosine_loss_joint + cosine_loss_img)
 
-            loss = loss + self.kd_weight * kd_loss
+            # loss = loss + self.kd_weight * kd_loss
 
             # update weights
             self.optimizer.zero_grad()
@@ -324,7 +326,7 @@ class Trainer:
                     'train_loss/smpl_shape': smpl_shape_loss.detach(),
                     'train_loss/body_joint_proj': loss_body_joint_proj.detach(),
                     'train_loss/mesh': mesh_loss.detach(),
-                    'train_loss/kd': kd_loss.detach(),
+                    # 'train_loss/kd': kd_loss.detach(),
                 }
                 if use_diffusion:
                     log_dict['train_loss/diff'] = diff_loss.detach()
@@ -336,8 +338,8 @@ class Trainer:
                         f'proj2d: {loss_body_joint_proj.item():.3f} '
                         f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
                         f'shape: {smpl_shape_loss.item():.3f} '
-                        f'mesh: {mesh_loss.item():.3f} '
-                        f'kd: {kd_loss.item():.4f} ')
+                        f'mesh: {mesh_loss.item():.3f} ')
+                        # f'kd: {kd_loss.item():.4f} ')
                 if use_diffusion:
                     desc += f'diff: {diff_loss.item():.4f} '
                 desc += f'tl: {total_loss.item():.3f}'
@@ -621,28 +623,24 @@ class Student_Trainer:
 
         self.J_regressor = eval(f'torch.Tensor(self.main_dataset.joint_regressor_{cfg.DATASET.target_joint_set}).cuda()')
 #---------------------------------------------------------------------------------
-        # teacher_ckpt = cfg.MODEL.get('TEACHER', '')
-        # assert teacher_ckpt, 'Cần đặt cfg.MODEL.TEACHER (checkpoint của Teacher_Trainer)'
-        # self.kd_weight = cfg.MODEL.get('kd_weight', 1.0)
+        teacher_ckpt = cfg.MODEL.get('TEACHER', '')
+        assert teacher_ckpt, 'Cần đặt cfg.MODEL.TEACHER (checkpoint của Teacher_Trainer)'
+        self.kd_weight = cfg.MODEL.get('kd_weight', 1.0)
 
-        # self.teacher = copy.deepcopy(self.model)   # cùng kiến trúc với student
-        # self.teacher.mode = 'teacher'              # forward() sẽ chạy forward_teacher
-        # load_model_weights(self.teacher, teacher_ckpt)
+        self.teacher = copy.deepcopy(self.model)   # cùng kiến trúc với student
+        self.teacher.mode = 'teacher'              # forward() sẽ chạy forward_teacher
+        load_model_weights(self.teacher, teacher_ckpt)
 
-        # resume = hasattr(args, 'resume_training') and args.resume_training
-        # if not resume:
-        #     self.model.smpl_model.load_state_dict(self.teacher.smpl_model.state_dict())
-        #     self.model.backbone.load_state_dict(self.teacher.backbone.state_dict())
-        #     print('===> Student smpl_model + backbone initialized from Teacher')
+        resume = hasattr(args, 'resume_training') and args.resume_training
+        if not resume:
+            self.model.smpl_model.load_state_dict(self.teacher.smpl_model.state_dict())
+            self.model.backbone.load_state_dict(self.teacher.backbone.state_dict())
+            print('===> Student smpl_model + backbone initialized from Teacher')
 
-        # self.teacher = torch.nn.DataParallel(self.teacher).cuda()
-        # self.teacher.eval()
-        # for p in self.teacher.parameters():
-        #     p.requires_grad = False
-        # The dataset wrapper already emits H36M-17 GT and 2D inputs. The model's
-        # auxiliary outputs (joint_proj / joint_cam) come from get_coord in
-        # SMPL-30 joint order, so build a reduction index from the underlying
-        # SMPL joint set to map those outputs to H36M-17.
+        self.teacher = torch.nn.DataParallel(self.teacher).cuda()
+        self.teacher.eval()
+        for p in self.teacher.parameters():
+            p.requires_grad = False
         h36m_joints = ('Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck', 'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist')
         smpl30_joints = self.main_dataset.mesh_model.joints_name
         self.h36m_from_smpl30 = [smpl30_joints.index(name) for name in h36m_joints]
@@ -654,19 +652,10 @@ class Student_Trainer:
         self.coordLoss = CoordLoss(has_valid=True)
 
         hpe_dim = cfg.MODEL.get('hpe_dim', 512)
-        # Kept for optimizer/checkpoint compatibility; direct feature KD below
-        # intentionally does not use this projector.
-        # self.feat_projector = torch.nn.Sequential(
-        #     torch.nn.Linear(hpe_dim, hpe_dim * 2),
-        #     torch.nn.GELU(),
-        #     torch.nn.Linear(hpe_dim * 2, hpe_dim)
-        # ).cuda()
-        
         self.awl = AutomaticWeightedLoss(5).cuda()
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
-        # self.optimizer.add_param_group({'params': self.feat_projector.parameters(), 'weight_decay': 0})
         
-        # Restore AWL weights if resuming
+# Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
             import os
             from funcs_utils import load_checkpoint as _load_ckpt
@@ -691,13 +680,12 @@ class Student_Trainer:
 
     def train(self, epoch):
         self.model.train()
-        # self.teacher.eval()   # teacher luôn ở eval (tắt dropout) để target không bị nhiễu
-        # self.feat_projector.train()
+        self.teacher.eval() 
 
         lr_check(self.optimizer, epoch)
-        # beta của smooth L1 cho privileged loss (giả định đơn vị mét; nếu GT là mm thì tăng lên)
+# beta của smooth L1 cho privileged loss (giả định đơn vị mét; nếu GT là mm thì tăng lên)
         priv_beta = cfg.MODEL.get('priv_beta', 0.05)
-        # LayerNorm không affine: trừ mean theo kênh để cosine của feature trung gian có ý nghĩa
+# LayerNorm không affine: trừ mean theo kênh để cosine của feature trung gian có ý nghĩa
         _center = lambda x: F.layer_norm(x, x.shape[-1:])
 
         running_loss = 0.0
@@ -711,7 +699,7 @@ class Student_Trainer:
         running_adaptive_weight = 0.0
         batch_generator = tqdm(self.batch_generator)
         for i, (inputs, targets, meta) in enumerate(batch_generator):
-            # convert to cuda
+# convert to cuda
             input_image = inputs['img'].cuda().float()
             input_pose2d = inputs['joints'].cuda().float()
             joints_mask = inputs['joints_mask'].cuda().float()
@@ -726,122 +714,120 @@ class Student_Trainer:
             is_3d = meta['is_3D'].cuda()
             is_valid_fit = meta['is_valid_fit'].cuda()
             
-            # Calculate curriculum alpha
-            warmup_epochs = getattr(cfg.TRAIN, 'curriculum_epochs', 15.0)
-            alpha = min(1.0, float(epoch) / float(warmup_epochs))
+
             gt_pose_input = gt_orig_joint_cam - gt_orig_joint_cam[:, 0:1, :]
 
-            # Feed 2D pose to model (which routes to MotionBERT in Student mode)
+# Feed 2D pose to model (which routes to MotionBERT in Student mode)
             model_output = self.model(
                 input_image, input_pose2d, is_train=True,
-                gt_joints_3d=gt_pose_input, alpha=alpha, joints_mask=joints_mask
+                gt_joints_3d=gt_pose_input, joints_mask=joints_mask
             )
 
             pred_mesh = model_output['smpl_mesh_cam']
             pred_smplpose = model_output['smpl_pose']
             pred_smplshape = model_output['smpl_shape']
 
-            # Regress H36M joints from the predicted SMPL mesh.
+# Regress H36M joints from the predicted SMPL mesh.
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
             pred_pose_rootrel = pred_pose - pred_pose[:, 0:1, :]
 
-            # # ---------- teacher forward (GT 3D làm đầu vào, không grad) ----------
-            # with torch.no_grad():
-            #     t_out = self.teacher(input_image, gt_pose_input, is_train=False)
+            # ---------- teacher forward (GT 3D làm đầu vào, không grad) ----------
+            with torch.no_grad():
+                t_out = self.teacher(input_image, gt_pose_input, is_train=False)
 
             # ---------- privileged reconstruction + multi-level distillation ----------
-#             s_feat_joint = model_output['feat']
-#             # t_feat_joint = t_out['feat'].detach()
-#             s_feat_img = model_output['feat_img']
-#             # t_feat_img = t_out['feat_img'].detach()
-#             s_proj_feat = model_output['joint_proj']
-#             # t_proj_feat = t_out['joint_proj'].detach()
+            s_feat_joint = model_output['feat']
+            t_feat_joint = t_out['feat'].detach()
+            s_feat_img = model_output['feat_img']
+            t_feat_img = t_out['feat_img'].detach()
+            s_proj_feat = model_output['joint_proj']
+            t_proj_feat = t_out['joint_proj'].detach()
 
-#             valid_joint = fit_joint_trunc
-#             if valid_joint.dim() == 3:
-#                 valid_joint = valid_joint.squeeze(-1)
-#             valid_joint = valid_joint * is_valid_fit[:, None]
-#             n_valid = valid_joint.sum(-1)                # (B,)
-#             sample_ok = (n_valid > 0).float()            # mẫu không có khớp hợp lệ -> loss = 0 (thay vì hằng số 1.0)
-#             n_valid = n_valid.clamp_min(1.0)
+            valid_joint = fit_joint_trunc
+            if valid_joint.dim() == 3:
+                valid_joint = valid_joint.squeeze(-1)
+            valid_joint = valid_joint * is_valid_fit[:, None]
+            n_valid = valid_joint.sum(-1)                # (B,)
+            sample_ok = (n_valid > 0).float()            # mẫu không có khớp hợp lệ -> loss = 0 (thay vì hằng số 1.0)
+            n_valid = n_valid.clamp_min(1.0)
 
-#             joint_cos_per_token = F.cosine_similarity(
-#                 s_feat_joint, t_feat_joint, dim=-1
-#             )
-#             cosine_joint_per_sample = (
-#                 1.0 - (joint_cos_per_token * valid_joint).sum(-1) / n_valid
-#             ) * sample_ok
+            joint_cos_per_token = F.cosine_similarity(
+                s_feat_joint, t_feat_joint, dim=-1
+            )
+            cosine_joint_per_sample = (
+                1.0 - (joint_cos_per_token * valid_joint).sum(-1) / n_valid
+            ) * sample_ok
 
-#             img_cos_per_token = F.cosine_similarity(
-#                 s_feat_img, t_feat_img, dim=-1
-#             )
-#             cosine_img_per_sample = 1.0 - img_cos_per_token.mean(-1)
-# #--------------------------------------------------------
-#             joint_cos_proj_per_token = F.cosine_similarity(
-#                 s_proj_feat, t_proj_feat, dim=-1
-#             )
-#             cosine_proj_per_sample = (
-#                 1.0 - (joint_cos_proj_per_token * valid_joint).sum(-1) / n_valid
-#             ) * sample_ok
+            img_cos_per_token = F.cosine_similarity(
+                s_feat_img, t_feat_img, dim=-1
+            )
+            cosine_img_per_sample = 1.0 - img_cos_per_token.mean(-1)
+#--------------------------------------------------------
+            joint_cos_proj_per_token = F.cosine_similarity(
+                s_proj_feat, t_proj_feat, dim=-1
+            )
+            cosine_proj_per_sample = (
+                1.0 - (joint_cos_proj_per_token * valid_joint).sum(-1) / n_valid
+            ) * sample_ok
 
-#             # Relational distillation preserves the geometry between joint tokens.
-#             s_joint_n = F.normalize(s_feat_joint, dim=-1)
-#             t_joint_n = F.normalize(t_feat_joint, dim=-1)
-#             student_joint_rel = s_joint_n @ s_joint_n.transpose(-1, -2)
-#             teacher_joint_rel = t_joint_n @ t_joint_n.transpose(-1, -2)
-#             relation_per_sample = (student_joint_rel - teacher_joint_rel).pow(2).flatten(1).mean(1)
+            # Relational distillation preserves the geometry between joint tokens.
+            s_joint_n = F.normalize(s_feat_joint, dim=-1)
+            t_joint_n = F.normalize(t_feat_joint, dim=-1)
+            student_joint_rel = s_joint_n @ s_joint_n.transpose(-1, -2)
+            teacher_joint_rel = t_joint_n @ t_joint_n.transpose(-1, -2)
+            relation_per_sample = (student_joint_rel - teacher_joint_rel).pow(2).flatten(1).mean(1)
 
-#             layer_per_sample = torch.zeros_like(cosine_joint_per_sample)
-#             attention_per_sample = torch.zeros_like(cosine_joint_per_sample)
+            layer_per_sample = torch.zeros_like(cosine_joint_per_sample)
+            attention_per_sample = torch.zeros_like(cosine_joint_per_sample)
 
-#             for student_layer, teacher_layer in zip(
-#                     model_output.get('feat_layers', []), t_out.get('feat_layers', [])):
-#                 teacher_joint_layer = teacher_layer['joint'].detach()
-#                 teacher_img_layer = teacher_layer['img'].detach()
-#                 layer_per_sample = layer_per_sample + (
-#                     (1.0 - F.cosine_similarity(
-#                         _center(student_layer['joint']), _center(teacher_joint_layer), dim=-1).mean(-1))
-#                     + (1.0 - F.cosine_similarity(
-#                         _center(student_layer['img']), _center(teacher_img_layer), dim=-1).mean(-1))
-#                 )
-#                 teacher_attn_j = teacher_layer['attn_joint_to_img'].detach()
-#                 teacher_attn_r = teacher_layer['attn_img_to_joint'].detach()
-#                 attention_per_sample = attention_per_sample + (
-#                     F.kl_div((student_layer['attn_joint_to_img'] + 1e-8).log(), teacher_attn_j, reduction='none').sum(-1).mean((-1, -2))
-#                     + F.kl_div((student_layer['attn_img_to_joint'] + 1e-8).log(), teacher_attn_r, reduction='none').sum(-1).mean((-1, -2))
-#                 )
+            for student_layer, teacher_layer in zip(
+                    model_output.get('feat_layers', []), t_out.get('feat_layers', [])):
+                teacher_joint_layer = teacher_layer['joint'].detach()
+                teacher_img_layer = teacher_layer['img'].detach()
+                layer_per_sample = layer_per_sample + (
+                    (1.0 - F.cosine_similarity(
+                        _center(student_layer['joint']), _center(teacher_joint_layer), dim=-1).mean(-1))
+                    + (1.0 - F.cosine_similarity(
+                        _center(student_layer['img']), _center(teacher_img_layer), dim=-1).mean(-1))
+                )
+                teacher_attn_j = teacher_layer['attn_joint_to_img'].detach()
+                teacher_attn_r = teacher_layer['attn_img_to_joint'].detach()
+                attention_per_sample = attention_per_sample + (
+                    F.kl_div((student_layer['attn_joint_to_img'] + 1e-8).log(), teacher_attn_j, reduction='none').sum(-1).mean((-1, -2))
+                    + F.kl_div((student_layer['attn_img_to_joint'] + 1e-8).log(), teacher_attn_r, reduction='none').sum(-1).mean((-1, -2))
+                )
 
-#             privileged_pred = model_output['privileged_3d']
-#             privileged_error = F.smooth_l1_loss(
-#                 privileged_pred, gt_pose_input, reduction='none', beta=priv_beta).mean(-1)
-#             privileged_per_sample = (
-#                 privileged_error * valid_joint
-#             ).sum(-1) / n_valid
+            privileged_pred = model_output['privileged_3d']
+            privileged_error = F.smooth_l1_loss(
+                privileged_pred, gt_pose_input, reduction='none', beta=priv_beta).mean(-1)
+            privileged_per_sample = (
+                privileged_error * valid_joint
+            ).sum(-1) / n_valid
 
-#             # Hard samples receive more KD, but the weight is bounded and detached.
-#             # So sánh cùng domain (mét) để pose_gap có ý nghĩa
-#             gt_fit_rootrel = gt_fit_joint_cam - gt_fit_joint_cam[:, 0:1, :]
-#             pose_gap = (pred_pose_rootrel - gt_fit_rootrel).abs().mean(-1)
-#             pose_gap = (pose_gap * valid_joint).sum(-1) / n_valid
-#             adaptive_beta = self.kd_weight * min(1.0, float(epoch) / 10.0)
+            # Hard samples receive more KD, but the weight is bounded and detached.
+            # So sánh cùng domain (mét) để pose_gap có ý nghĩa
+            gt_fit_rootrel = gt_fit_joint_cam - gt_fit_joint_cam[:, 0:1, :]
+            pose_gap = (pred_pose_rootrel - gt_fit_rootrel).abs().mean(-1)
+            pose_gap = (pose_gap * valid_joint).sum(-1) / n_valid
+            adaptive_beta = self.kd_weight * min(1.0, float(epoch) / 10.0)
 
-#             # Giá trị trước clamp luôn >= 1 nên chỉ cần chặn trên
-#             adaptive_weight = torch.clamp(
-#                 1.0 + adaptive_beta * pose_gap / pose_gap.detach().mean().clamp_min(1e-6),
-#                 max=2.0
-#             ).detach()
+            # Giá trị trước clamp luôn >= 1 nên chỉ cần chặn trên
+            adaptive_weight = torch.clamp(
+                1.0 + adaptive_beta * pose_gap / pose_gap.detach().mean().clamp_min(1e-6),
+                max=2.0
+            ).detach()
 
-#             kd_per_sample = (
-#                 cosine_joint_per_sample + cosine_img_per_sample + cosine_proj_per_sample
-#                 + 0.25 * layer_per_sample
-#                 + 0.10 * relation_per_sample
-#                 + 0.05 * attention_per_sample
-#             )
+            kd_per_sample = (
+                cosine_joint_per_sample + cosine_img_per_sample + cosine_proj_per_sample
+                + 0.25 * layer_per_sample
+                + 0.10 * relation_per_sample
+                + 0.05 * attention_per_sample
+            )
             
-#             kd_loss = (adaptive_weight * kd_per_sample).mean()
-#             privileged_loss = privileged_per_sample.mean()
+            kd_loss = (adaptive_weight * kd_per_sample).mean()
+            privileged_loss = privileged_per_sample.mean()
 
-            # ---------------------------------------------------------
+# ---------------------------------------------------------
             # print(f"pred_pose_rootrel range : min={pred_pose_rootrel.min().item():.2f}, max={pred_pose_rootrel.max().item():.2f}")
             # print(f"gt_fit_joint_cam range : min={gt_fit_joint_cam.min().item():.2f}, max={gt_fit_joint_cam.max().item():.2f}")
 
@@ -854,19 +840,19 @@ class Student_Trainer:
             gt_orig_joint_img = targets['orig_joint_img'].cuda()
             orig_joint_trunc = meta['orig_joint_trunc'].cuda()
 
-            # Tính loss body_joint_proj (2D)
-            # Dùng Weak Perspective Projection của SPIN (từ cam_param: scale, tx, ty)
+# Tính loss body_joint_proj (2D)
+# Dùng Weak Perspective Projection của SPIN (từ cam_param: scale, tx, ty)
             cam = model_output['cam_param'] # (B, 3)
             scale = cam[:, 0:1, None]
             trans = cam[:, 1:3, None].transpose(1, 2) # (B, 1, 2)
             
-            # Chiếu 17 khớp 3D (pred_pose, chưa root-relative) xuống 2D (tọa độ normalize [-1, 1])
+# Chiếu 17 khớp 3D (pred_pose, chưa root-relative) xuống 2D (tọa độ normalize [-1, 1])
             proj_2d = scale * pred_pose[:, :, :2] + trans
             
-            # Đổi từ [-1, 1] sang tọa độ pixel của ảnh input (ví dụ: 256x256)
+# Đổi từ [-1, 1] sang tọa độ pixel của ảnh input (ví dụ: 256x256)
             proj_pixel = (proj_2d + 1.0) * 0.5 * cfg.input_img_shape[0]
             
-            # Chuẩn hóa về tọa độ heatmap (ví dụ: 64x64)
+# Chuẩn hóa về tọa độ heatmap (ví dụ: 64x64)
             pred_joint_proj = proj_pixel * (cfg.output_hm_shape[1] / cfg.input_img_shape[0])
             
             loss_body_joint_proj = self.jotr_coord_loss(
@@ -890,29 +876,29 @@ class Student_Trainer:
             }
             loss_dict = self.awl(loss_dict)
             hard_loss = sum(loss_dict.values())
-            # loss = 0.5 * hard_loss + 0.5 * kd_loss + privileged_loss
-            loss = hard_loss
+            loss = 0.5 * hard_loss + 0.5 * kd_loss + privileged_loss
+            # loss = hard_loss
             
-            # update weights
+# update weights
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
             # log
             running_loss += float(loss.detach().item())
-            # with torch.no_grad():
-            #     # cosine trung bình trên các token hợp lệ (không bị kéo xuống bởi mẫu invalid)
-            #     n_tok = valid_joint.sum().clamp_min(1.0)
-            #     cos_joint = ((joint_cos_per_token * valid_joint).sum() / n_tok).item()
-            #     cos_proj = ((joint_cos_proj_per_token * valid_joint).sum() / n_tok).item()
-            #     cos_img = img_cos_per_token.mean().item()
-            # running_cos_joint += cos_joint
-            # running_cos_img += cos_img
-            # running_cos_proj += cos_proj
-            # running_layer += layer_per_sample.mean().item()
-            # running_attention += attention_per_sample.mean().item()
-            # running_relation += relation_per_sample.mean().item()
-            # running_privileged += privileged_loss.item()
-            # running_adaptive_weight += adaptive_weight.mean().item()
+            with torch.no_grad():
+                # cosine trung bình trên các token hợp lệ (không bị kéo xuống bởi mẫu invalid)
+                n_tok = valid_joint.sum().clamp_min(1.0)
+                cos_joint = ((joint_cos_per_token * valid_joint).sum() / n_tok).item()
+                cos_proj = ((joint_cos_proj_per_token * valid_joint).sum() / n_tok).item()
+                cos_img = img_cos_per_token.mean().item()
+            running_cos_joint += cos_joint
+            running_cos_img += cos_img
+            running_cos_proj += cos_proj
+            running_layer += layer_per_sample.mean().item()
+            running_attention += attention_per_sample.mean().item()
+            running_relation += relation_per_sample.mean().item()
+            running_privileged += privileged_loss.item()
+            running_adaptive_weight += adaptive_weight.mean().item()
             if cfg.TRAIN.wandb:
                 wandb.log(
                     {
@@ -920,15 +906,15 @@ class Student_Trainer:
                         'train_loss/smpl_pose': smpl_pose_loss.item(),
                         'train_loss/smpl_shape': smpl_shape_loss.item(),
                         'train_loss/mesh': mesh_loss.item(),
-                        # 'train_loss/kd_feat': kd_loss.item(),
-                        # 'train_loss/kd_cos_joint': cosine_joint_per_sample.mean().item(),
-                        # 'train_loss/kd_cos_img': cosine_img_per_sample.mean().item(),
-                        # 'train_loss/kd_cos_proj': cosine_proj_per_sample.mean().item(),
-                        # 'train_loss/kd_layer': layer_per_sample.mean().item(),
-                        # 'train_loss/kd_attention': attention_per_sample.mean().item(),
-                        # 'train_loss/kd_relation': relation_per_sample.mean().item(),
-                        # 'train_loss/privileged_3d': privileged_loss.item(),
-                        # 'train_loss/adaptive_kd_weight': adaptive_weight.mean().item(),
+                        'train_loss/kd_feat': kd_loss.item(),
+                        'train_loss/kd_cos_joint': cosine_joint_per_sample.mean().item(),
+                        'train_loss/kd_cos_img': cosine_img_per_sample.mean().item(),
+                        'train_loss/kd_cos_proj': cosine_proj_per_sample.mean().item(),
+                        'train_loss/kd_layer': layer_per_sample.mean().item(),
+                        'train_loss/kd_attention': attention_per_sample.mean().item(),
+                        'train_loss/kd_relation': relation_per_sample.mean().item(),
+                        'train_loss/privileged_3d': privileged_loss.item(),
+                        'train_loss/adaptive_kd_weight': adaptive_weight.mean().item(),
                         'train_loss/hard_total': hard_loss.item(),
                         'train_loss/total': loss.item(),
                     }
@@ -941,48 +927,48 @@ class Student_Trainer:
                     f'smpl3d: {loss_smpl_joint_cam.item():.3f} '
                     f'smpl: {(smpl_pose_loss + smpl_shape_loss).item():.3f} '
                     f'mesh: {mesh_loss.item():.3f} '
-                    # f'kd: {kd_loss.item():.3f} '
-                    # f'cJ: {cos_joint:.3f} '
-                    # f'cI: {cos_img:.3f} '
-                    # f'cP: {cos_proj:.3f} '
-                    # f'layer: {layer_per_sample.mean().item():.3f} '
-                    # f'attn: {attention_per_sample.mean().item():.3f} '
-                    # f'rel: {relation_per_sample.mean().item():.3f} '
-                    # f'priv: {privileged_loss.item():.3f} '
-                    # f'w: {adaptive_weight.mean().item():.2f} '
+                    f'kd: {kd_loss.item():.3f} '
+                    f'cJ: {cos_joint:.3f} '
+                    f'cI: {cos_img:.3f} '
+                    f'cP: {cos_proj:.3f} '
+                    f'layer: {layer_per_sample.mean().item():.3f} '
+                    f'attn: {attention_per_sample.mean().item():.3f} '
+                    f'rel: {relation_per_sample.mean().item():.3f} '
+                    f'priv: {privileged_loss.item():.3f} '
+                    f'w: {adaptive_weight.mean().item():.2f} '
                     f'tl: {total_loss.item():.3f}'
                 )
 
         self.loss_history.append(running_loss / len(batch_generator))
-        # avg_cos_joint = running_cos_joint / len(batch_generator)
-        # avg_cos_img = running_cos_img / len(batch_generator)
-        # avg_cos_proj = running_cos_proj / len(batch_generator)
-        # avg_layer = running_layer / len(batch_generator)
-        # avg_attention = running_attention / len(batch_generator)
-        # avg_relation = running_relation / len(batch_generator)
-        # avg_privileged = running_privileged / len(batch_generator)
-        # avg_adaptive_weight = running_adaptive_weight / len(batch_generator)
+        avg_cos_joint = running_cos_joint / len(batch_generator)
+        avg_cos_img = running_cos_img / len(batch_generator)
+        avg_cos_proj = running_cos_proj / len(batch_generator)
+        avg_layer = running_layer / len(batch_generator)
+        avg_attention = running_attention / len(batch_generator)
+        avg_relation = running_relation / len(batch_generator)
+        avg_privileged = running_privileged / len(batch_generator)
+        avg_adaptive_weight = running_adaptive_weight / len(batch_generator)
         print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}')
-        # print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f} | '
-        #       f'CosSim Joint: {avg_cos_joint:.4f} | CosSim IMG: {avg_cos_img:.4f} | '
-        #       f'CosSim Proj: {avg_cos_proj:.4f}')
-        # print(f'  KD layer: {avg_layer:.4f} | '
-        #       f'KD attention: {avg_attention:.4f} | '
-        #       f'KD relation: {avg_relation:.4f} | '
-        #       f'Privileged 3D: {avg_privileged:.4f} | '
-        #       f'Adaptive weight: {avg_adaptive_weight:.4f}')
+        print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f} | '
+              f'CosSim Joint: {avg_cos_joint:.4f} | CosSim IMG: {avg_cos_img:.4f} | '
+              f'CosSim Proj: {avg_cos_proj:.4f}')
+        print(f'  KD layer: {avg_layer:.4f} | '
+              f'KD attention: {avg_attention:.4f} | '
+              f'KD relation: {avg_relation:.4f} | '
+              f'Privileged 3D: {avg_privileged:.4f} | '
+              f'Adaptive weight: {avg_adaptive_weight:.4f}')
         
-        # if cfg.TRAIN.wandb:
-        #     wandb.log({
-        #         'epoch_metric/cos_sim_joint': avg_cos_joint,
-        #         'epoch_metric/cos_sim_img': avg_cos_img,
-        #         'epoch_metric/cos_sim_proj': avg_cos_proj,
-        #         'epoch_metric/kd_layer': avg_layer,
-        #         'epoch_metric/kd_attention': avg_attention,
-        #         'epoch_metric/kd_relation': avg_relation,
-        #         'epoch_metric/privileged_3d': avg_privileged,
-        #         'epoch_metric/adaptive_kd_weight': avg_adaptive_weight,
-        #     })
+        if cfg.TRAIN.wandb:
+            wandb.log({
+                'epoch_metric/cos_sim_joint': avg_cos_joint,
+                'epoch_metric/cos_sim_img': avg_cos_img,
+                'epoch_metric/cos_sim_proj': avg_cos_proj,
+                'epoch_metric/kd_layer': avg_layer,
+                'epoch_metric/kd_attention': avg_attention,
+                'epoch_metric/kd_relation': avg_relation,
+                'epoch_metric/privileged_3d': avg_privileged,
+                'epoch_metric/adaptive_kd_weight': avg_adaptive_weight,
+            })
 class Student_Tester:
     def __init__(self, args, load_dir=''):
         self.val_loaders, self.val_datasets, self.model, _, _, _, _, _ = \

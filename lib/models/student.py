@@ -162,15 +162,14 @@ class RGBJointCrossTransformer(nn.Module):
         return rgb_tok, joint_tok
 
 
-class Teacher(nn.Module):
-    def __init__(self, num_joint, embed_dim=512, vert_anchors=16, horz_anchors=16, in_channels=2048, depth=1, norm_layer = None, name = "teacher"):
-        super(Teacher, self).__init__()
+class Student(nn.Module):
+    def __init__(self, num_joint, embed_dim=512, vert_anchors=16, horz_anchors=16, in_channels=2048, depth=1, norm_layer = None):
+        super(Student, self).__init__()
 
         self.mesh = Mesh()
         self.regressorspin = RegressorSpin()
         pretrained_dict = torch.load(osp.join(BASE_DATA_DIR, 'spin_model_checkpoint.pth.tar'), weights_only=False)['model']
         self.regressorspin.load_state_dict(pretrained_dict, strict=False)
-        self.name = name
         mean_params = np.load(SMPL_MEAN_PARAMS)
         init_pose = torch.from_numpy(mean_params['pose'][:]).unsqueeze(0)
         init_shape = torch.from_numpy(mean_params['shape'][:].astype('float32')).unsqueeze(0)
@@ -183,11 +182,8 @@ class Teacher(nn.Module):
         # Project image features từ ResNet (2048) -> embed_dim (512)
         self.img_proj = nn.Conv2d(in_channels, embed_dim, 1)
         # Project joints (B, 17, 3) -> (B, 17, 512)
-        if self.name == "student":
-            self.projector_student = StudentJointExtractor(in_dim=3, out_dim=512)
-        else:
-            self.joint_proj = nn.Linear(3, embed_dim)
-            self.norm_joint_proj = nn.LayerNorm(embed_dim)
+        self.projector_student = StudentJointExtractor(in_dim=3, out_dim=512)
+
         # Positional Embeddings
         self.pos_emb_img = nn.Parameter(torch.zeros(1, vert_anchors * horz_anchors, embed_dim))
         self.pos_emb_joint = nn.Parameter(torch.zeros(1, 17, embed_dim))
@@ -200,9 +196,10 @@ class Teacher(nn.Module):
             resid_pdrop=0.1,
             depth=depth
         )
-        self.norm_img_in = nn.LayerNorm(embed_dim)
-        
-        # Output projection cho regressorspin (nhận concat 2 vector 512 -> 1024)
+
+        # Final LayerNorm sau cross-transformer (dùng cho cả Student và student)
+        self.norm_img = nn.LayerNorm(embed_dim)
+    
         self.out_proj = nn.Linear(embed_dim * 2, 2048)
     def forward(self, joints, img_feats, is_train=True, J_regressor=None, return_features=False):
         # Chiếu img_feats từ 2048 kênh xuống 512 kênh
@@ -213,17 +210,14 @@ class Teacher(nn.Module):
         )          # (bs, 144)
         mean_shape  = self.init_shape.expand(bs, 10)  # (bs, 10)
         # 1. Project joints (B, 17, 3) -> (B, 17, 512)
-        if self.name == "student":
-            print("Warning: Student mode is not fully implemented yet. Using joint_proj instead of projector_student.")
-            joints_tok = self.projector_student(joints, self.pos_emb_joint)
-        else:
-            joints_tok = self.norm_joint_proj(self.joint_proj(joints) + self.pos_emb_joint)
-
+        joints_tok = self.projector_student(joints, self.pos_emb_joint)
+        
         # 2. Image tokens (B, C, H, W) -> (B, H*W, 512)
         img_tok = img_feats.view(bs, c, -1).permute(0, 2, 1)
         
         # Xử lý pos_emb_img nếu H*W không khớp với kích thước mặc định (vert_anchors * horz_anchors)
         if h * w != self.pos_emb_img.shape[1]:
+            print(f"Không khớp kích thước rồi")
             pos_emb = self.pos_emb_img.permute(0, 2, 1).view(1, c, self.vert_anchors, self.horz_anchors)
             pos_emb = F.interpolate(pos_emb, size=(h, w), mode='bilinear', align_corners=False)
             pos_emb = pos_emb.view(1, c, -1).permute(0, 2, 1)
@@ -231,19 +225,10 @@ class Teacher(nn.Module):
             pos_emb = self.pos_emb_img
             
         img_tok = img_tok + pos_emb
-        img_tok = self.norm_img_in(img_tok)
-            
+        img_norm = self.norm_img(img_tok)
         # 3. Cross Attention fusion
-        cfcer_output = self.cfcer(
-            img_tok, joints_tok, return_intermediate=return_features
-        )
-        if return_features:
-            img_out, joint_out, layer_features = cfcer_output
-        else:
-            img_out, joint_out = cfcer_output
-            layer_features = []
-        # 4. Global Pooling & Fusion
-        # Lấy trung bình dọc theo chiều token
+        img_out, joint_out, layer_features = self.cfcer(img_norm, joints_tok, return_intermediate=return_features)
+
         img_global = img_out.mean(dim=1) # (B, 512)
         joint_global = joint_out.mean(dim=1) # (B, 512)
         
@@ -265,6 +250,7 @@ class Teacher(nn.Module):
             return spin_out, pose_6d, shape, cam, {
                 'joint_out': joint_out,      # (B, 17, C) - per-joint tokens
                 'img_out': img_out,          # (B, H*W, C) - unpooled image tokens
+                'concat_feat': concat_feat,  # (B, 1024) - global pooled feature
                 'joint_proj': joints_tok,  # (B, 1024) - global pooled feature
                 'layers': layer_features,
             }
@@ -273,5 +259,5 @@ class Teacher(nn.Module):
 # Factory
 # ============================================================
 def get_model(num_joint, embed_dim, vert_anchors=16, horz_anchors=16, depth=1):
-    model = Teacher(num_joint, embed_dim, vert_anchors, horz_anchors, depth=depth)
+    model = Student(num_joint, embed_dim, vert_anchors, horz_anchors, depth=depth)
     return model
