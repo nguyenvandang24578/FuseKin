@@ -22,7 +22,7 @@ MODEL:
     pose_loss_weight: 0.06
     posenet_pretrained: False
     TEACHER: "./experiment/pose2mesh_smpl_only_h36m/best_epoch.bin"
-    STUDENT: "./experiment/exp_10-06_17_11/checkpoint/best.pth.tar"
+    STUDENT: "./experiment/student/checkpoint/best.pth.tar"
 
 TRAIN:
     print_freq: 20
