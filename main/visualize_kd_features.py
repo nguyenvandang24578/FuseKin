@@ -15,8 +15,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cfg', type=str, default='config/train_init_mesh.yaml', help='experiment configure file name')
     parser.add_argument('--debug', action='store_true', default=True, help='reduce dataset items')
+    parser.add_argument('--gpu', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2')
     args, _ = parser.parse_known_args()
     
+    if args.gpu:
+        os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+        
     update_config(args.cfg)
     cfg.TRAIN.batch_size = 1 # Force batch size 1 for visualization
     
