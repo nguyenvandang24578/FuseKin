@@ -29,7 +29,7 @@ def main():
     trainer = Student_Trainer(args, load_dir='')
     
     # Lấy đường dẫn checkpoint của Student từ config và nạp trọng số
-    student_ckpt = cfg.MODEL.get('STUDENT', '')
+    student_ckpt = "./experiment/student/checkpoint/best.pth.tar"
     if student_ckpt and os.path.exists(student_ckpt):
         print(f"Loading Student weights from {student_ckpt}...")
         from core.base import load_model_weights
