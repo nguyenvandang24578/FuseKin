@@ -636,10 +636,10 @@ class Student_Trainer:
         load_model_weights(self.teacher, teacher_ckpt)
 
         resume = hasattr(args, 'resume_training') and args.resume_training
-        if not resume:
-            self.model.smpl_model.load_state_dict(self.teacher.smpl_model.state_dict())
-            self.model.backbone.load_state_dict(self.teacher.backbone.state_dict())
-            print('===> Student smpl_model + backbone initialized from Teacher')
+        # if not resume:
+        #     self.model.smpl_model.load_state_dict(self.teacher.smpl_model.state_dict(), strict=False)
+        #     self.model.backbone.load_state_dict(self.teacher.backbone.state_dict())
+        #     print('===> Student smpl_model + backbone initialized from Teacher')
 
         self.teacher = torch.nn.DataParallel(self.teacher).cuda()
         self.teacher.eval()
