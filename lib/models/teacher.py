@@ -200,17 +200,8 @@ class Teacher(nn.Module):
             resid_pdrop=0.1,
             depth=depth
         )
-
-        # Final LayerNorm sau cross-transformer (dùng cho cả teacher và student)
-        self.norm_img = nn.LayerNorm(embed_dim)
-        self.norm_joint = nn.LayerNorm(embed_dim)
-        
-        # LayerNorm đầu vào cho img_tok để cân bằng scale với joints_tok
-        self.norm_img_out = nn.LayerNorm(embed_dim)
-        self.norm_joint_out = nn.LayerNorm(embed_dim)        
-        
         self.norm_img_in = nn.LayerNorm(embed_dim)
-        self.norm_joint_in = nn.LayerNorm(embed_dim)
+        
         # Output projection cho regressorspin (nhận concat 2 vector 512 -> 1024)
         self.out_proj = nn.Linear(embed_dim * 2, 2048)
     def forward(self, joints, img_feats, is_train=True, J_regressor=None, return_features=False):
@@ -222,8 +213,11 @@ class Teacher(nn.Module):
         )          # (bs, 144)
         mean_shape  = self.init_shape.expand(bs, 10)  # (bs, 10)
         # 1. Project joints (B, 17, 3) -> (B, 17, 512)
-        joints_tok = self.joint_proj(joints) + self.pos_emb_joint
-        
+        if self.name == "student":
+            joints_tok = self.projector_student(joints, self.pos_emb_joint)
+        else:
+            joints_tok = self.norm_joint_proj(self.joint_proj(joints) + self.pos_emb_joint)
+
         # 2. Image tokens (B, C, H, W) -> (B, H*W, 512)
         img_tok = img_feats.view(bs, c, -1).permute(0, 2, 1)
         
@@ -236,24 +230,19 @@ class Teacher(nn.Module):
             pos_emb = self.pos_emb_img
             
         img_tok = img_tok + pos_emb
-        # print(f"\n[{self.name.upper() if getattr(self, 'name', None) else 'TEACHER'} - DEBUG SCALE] Feature before CFCER:")
-        # print(f"  -> img_tok    : Mean = {img_tok.mean().item():.4f}, Std = {img_tok.std().item():.4f}, Norm = {torch.norm(img_tok, dim=-1).mean().item():.4f}")
-        # print(f"  -> joints_tok : Mean = {joints_tok.mean().item():.4f}, Std = {joints_tok.std().item():.4f}, Norm = {torch.norm(joints_tok, dim=-1).mean().item():.4f}\n")
-        img_norm = self.norm_img_in(img_tok)
-        joint_norm = self.norm_joint_in(joints_tok)
-        # print(f"\n[{self.name.upper() if getattr(self, 'name', None) else 'TEACHER'} - DEBUG SCALE] Feature after Norm:")
-        # print(f"  -> img_tok    : Mean = {img_norm.mean().item():.4f}, Std = {img_norm.std().item():.4f}, Norm = {torch.norm(img_norm, dim=-1).mean().item():.4f}")
-        # print(f"  -> joints_tok : Mean = {joint_norm.mean().item():.4f}, Std = {joint_norm.std().item():.4f}, Norm = {torch.norm(joint_norm, dim=-1).mean().item():.4f}\n")
+        img_tok = self.norm_img_in(img_tok)
+            
         # 3. Cross Attention fusion
-        img_out, joint_out = self.cfcer(img_norm, joint_norm)
-        
+        cfcer_output = self.cfcer(
+            img_tok, joints_tok, return_intermediate=return_features
+        )
+        if return_features:
+            img_out, joint_out, layer_features = cfcer_output
+        else:
+            img_out, joint_out = cfcer_output
+            layer_features = []
         # 4. Global Pooling & Fusion
         # Lấy trung bình dọc theo chiều token
-        img_out = self.norm_img_out(img_out)
-        joint_out = self.norm_joint_out(joint_out)
-        # print(f"\n[{self.name.upper() if getattr(self, 'name', None) else 'TEACHER'} - DEBUG SCALE] Feature after CFCER:")
-        # print(f"  -> img_tok    : Mean = {img_out.mean().item():.4f}, Std = {img_out.std().item():.4f}, Norm = {torch.norm(img_out, dim=-1).mean().item():.4f}")
-        # print(f"  -> joints_tok : Mean = {joint_out.mean().item():.4f}, Std = {joint_out.std().item():.4f}, Norm = {torch.norm(joint_out, dim=-1).mean().item():.4f}\n")
         img_global = img_out.mean(dim=1) # (B, 512)
         joint_global = joint_out.mean(dim=1) # (B, 512)
         
@@ -275,7 +264,8 @@ class Teacher(nn.Module):
             return spin_out, pose_6d, shape, cam, {
                 'joint_out': joint_out,      # (B, 17, C) - per-joint tokens
                 'img_out': img_out,          # (B, H*W, C) - unpooled image tokens
-                'concat_feat': concat_feat,  # (B, 1024) - global pooled feature
+                'joint_proj': joints_tok,  # (B, 1024) - global pooled feature
+                'layers': layer_features,
             }
         return pose_6d, shape, cam
 # ============================================================
