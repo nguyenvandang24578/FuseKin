@@ -56,7 +56,7 @@ class Pose2Mesh(nn.Module):
             num_heads=8, mlp_ratio=4., qkv_bias=True,
             drop=0., attn_drop=0., drop_path=0.2, has_mlp=True
         )
-        self.student = Student(num_joint, embed_dim, vert_anchors = 16, horz_anchors = 16, depth = 3)
+        self.student = Student(num_joint, embed_dim, vert_anchors = 8, horz_anchors = 8, depth = 3)
 
         student_ckpt_path = getattr(cfg.MODEL, 'STUDENT', '')
         if student_ckpt_path and osp.exists(student_ckpt_path):
