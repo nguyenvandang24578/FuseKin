@@ -23,7 +23,31 @@ def pa_align(pred, gt):
     return scale * p @ R + mu_g
 
 
-def evaluate(lifter, loader, name, max_batches):
+def get_gt_joints(targets, dataset, device='cuda'):
+    """
+    Ưu tiên orig_joint_cam (có sẵn ở train).
+    Nếu không có (test set), regress H36M-17 từ smpl_mesh_cam.
+    Trả về np.ndarray (B,17,3), root-relative, mét.
+    """
+    if 'orig_joint_cam' in targets:
+        gt = targets['orig_joint_cam'].float().numpy()
+        return gt - gt[:, 0:1, :]
+    if 'fit_joint_cam' in targets:
+        gt = targets['fit_joint_cam'].float().numpy()
+        return gt - gt[:, 0:1, :]
+    # Test set: chỉ có mesh → regress joint
+    mesh = targets['smpl_mesh_cam'].to(device).float()  # (B,6890,3)
+    h36m_reg = torch.as_tensor(
+        dataset.h36m_joint_regressor, device=device, dtype=mesh.dtype
+    )  # (17,6890)
+    gt_joints = torch.matmul(
+        h36m_reg.unsqueeze(0).expand(mesh.shape[0], -1, -1), mesh
+    )  # (B,17,3)
+    gt_joints = gt_joints - gt_joints[:, 0:1, :]
+    return gt_joints.cpu().numpy()
+
+
+def evaluate(lifter, loader, dataset, name, max_batches):
     mpjpe_sum, pa_sum, n = 0.0, 0.0, 0
     per_joint = np.zeros(17)
     per_joint_cnt = np.zeros(17)
@@ -31,18 +55,18 @@ def evaluate(lifter, loader, name, max_batches):
         if max_batches > 0 and i >= max_batches:
             break
         if i == 0:
-            print(f'[{name}] targets keys: {list(targets.keys())} | meta keys: {list(meta.keys())}')
-        img_dummy = None
+            print(f'\n[{name}] targets keys: {list(targets.keys())} | meta keys: {list(meta.keys())}')
+
         pose2d = inputs['joints'].cuda().float()
         joints_mask = inputs['joints_mask'].cuda().float()
-        key = 'orig_joint_cam' if 'orig_joint_cam' in targets else 'fit_joint_cam'
-        gt = targets[key].float()
-        gt = (gt - gt[:, 0:1, :]).numpy()  # (B,17,3) mét, root-relative
+
+        gt = get_gt_joints(targets, dataset)  # (B,17,3) mét, root-relative, numpy
 
         with torch.no_grad():
             pred = lifter(pose2d, joints_mask=joints_mask)
             pred = (pred - pred[:, 0:1, :]).cpu().numpy()
 
+        # Mask hợp lệ (dùng khi train set có)
         if 'orig_joint_valid' in meta:
             valid = meta['orig_joint_valid'].numpy().reshape(gt.shape[0], 17, -1)[..., 0]
         else:
@@ -59,13 +83,15 @@ def evaluate(lifter, loader, name, max_batches):
             aligned = pa_align(pred[b][v], gt[b][v])
             pa_sum += np.linalg.norm(aligned - gt[b][v], axis=-1).mean()
             n += 1
+
     mpjpe = mpjpe_sum / max(n, 1) * 1000
     pa = pa_sum / max(n, 1) * 1000
     print(f'==> [{name}] MotionBERT lift: MPJPE={mpjpe:.2f} mm | PA-MPJPE={pa:.2f} mm | samples={n}')
+    joint_names = ['Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso',
+                   'Neck', 'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist',
+                   'R_Shoulder', 'R_Elbow', 'R_Wrist']
     pj = per_joint / np.maximum(per_joint_cnt, 1) * 1000
-    names = ['Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck',
-             'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist']
-    print('    per-joint MPJPE (mm): ' + ', '.join(f'{k}={v:.0f}' for k, v in zip(names, pj)))
+    print('    per-joint MPJPE (mm): ' + ', '.join(f'{k}={v:.0f}' for k, v in zip(joint_names, pj)))
     return mpjpe, pa
 
 
@@ -73,31 +99,32 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cfg', type=str, default='config/train_student.yml')
     parser.add_argument('--gpu', type=str, default='0')
-    parser.add_argument('--max_batches', type=int, default=200, help='<=0: toàn bộ')
+    parser.add_argument('--max_batches', type=int, default=200, help='<=0: toàn bộ dataset')
     parser.add_argument('--debug', action='store_true', default=False)
     args, _ = parser.parse_known_args()
+
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
     update_config(args.cfg)
 
-    # Dựng ARTS ở mode student để có pose_lifter (MotionBERT) với đúng trọng số finetune
+    # Dựng ARTS ở mode student để lấy pose_lifter (MotionBERT đã finetune)
     from models.ARTS import ARTS
     old_mode = cfg.MODEL.name
     cfg.MODEL.name = 'student'
-    model = ARTS(num_joint=17, embed_dim=cfg.MODEL.get('hpe_dim', 512)).cuda().eval()
+    artnet = ARTS(num_joint=17, embed_dim=cfg.MODEL.get('hpe_dim', 512)).cuda().eval()
     cfg.MODEL.name = old_mode
-    lifter = model.lift_2d_to_3d
+    lifter = artnet.lift_2d_to_3d
 
     cfg.TEST.batch_size = max(cfg.TEST.batch_size, 32)
 
     print('===== TRAIN (3dpw-train, có augmentation) =====')
-    _, train_loader = get_dataloader(args, cfg.DATASET.train_list, is_train=True)
-    evaluate(lifter, train_loader, 'train', args.max_batches)
+    train_datasets, train_loader = get_dataloader(args, cfg.DATASET.train_list, is_train=True)
+    evaluate(lifter, train_loader, train_datasets[0], 'train', args.max_batches)
 
-    print('===== TEST =====')
+    print('\n===== TEST =====')
     test_names = cfg.DATASET.test_list
-    _, test_loaders = get_dataloader(args, test_names, is_train=False)
-    for nm, loader in zip(test_names, test_loaders):
-        evaluate(lifter, loader, f'test-{nm}', args.max_batches)
+    test_datasets, test_loaders = get_dataloader(args, test_names, is_train=False)
+    for nm, dataset, loader in zip(test_names, test_datasets, test_loaders):
+        evaluate(lifter, loader, dataset, f'test-{nm}', args.max_batches)
 
 
 if __name__ == '__main__':
