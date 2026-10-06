@@ -222,7 +222,8 @@ class Teacher(nn.Module):
         if self.name == "student":
             joints_tok = self.projector_student(joints, self.pos_emb_joint)
         else:
-            joints_tok = self.norm_joint_proj(self.joint_proj(joints) + self.pos_emb_joint)
+            # joints_tok = self.norm_joint_proj(self.joint_proj(joints) + self.pos_emb_joint)
+            joints_tok = self.joint_proj(joints) + self.pos_emb_joint
 
         # 2. Image tokens (B, C, H, W) -> (B, H*W, 512)
         img_tok = img_feats.view(bs, c, -1).permute(0, 2, 1)
@@ -236,7 +237,7 @@ class Teacher(nn.Module):
             pos_emb = self.pos_emb_img
             
         img_tok = img_tok + pos_emb
-        img_tok = self.norm_img_in(img_tok)
+        # img_tok = self.norm_img_in(img_tok)
         
         # # --- DEBUG SCALE (Kiểm tra bias giữa 2 loại đặc trưng) ---
         # print(f"\n[{self.name.upper() if getattr(self, 'name', None) else 'TEACHER'} - DEBUG SCALE] Feature before CFCER:")
