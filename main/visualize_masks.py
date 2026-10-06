@@ -54,13 +54,18 @@ def main():
         
         img_np = denormalize_image(input_image)
         
+        # Scale coordinates from heatmap size back to input image size
+        # Assuming orig_joint_img is in output_hm_shape (e.g. 64x64) and img_np is in input_img_shape (e.g. 256x256)
+        scale_x = cfg.input_img_shape[1] / cfg.output_hm_shape[2] if len(cfg.output_hm_shape) == 3 else cfg.input_img_shape[1] / cfg.output_hm_shape[1]
+        scale_y = cfg.input_img_shape[0] / cfg.output_hm_shape[1] if len(cfg.output_hm_shape) == 3 else cfg.input_img_shape[0] / cfg.output_hm_shape[0]
+
         fig, axes = plt.subplots(1, 2, figsize=(10, 5))
         
         # Plot orig_joint_valid
         axes[0].imshow(img_np)
         axes[0].set_title("orig_joint_valid\nGreen=Valid, Red=Invalid")
         for j in range(orig_joint_img.shape[0]):
-            x, y = orig_joint_img[j, 0], orig_joint_img[j, 1]
+            x, y = orig_joint_img[j, 0] * scale_x, orig_joint_img[j, 1] * scale_y
             if x > 0 and y > 0 and x < img_np.shape[1] and y < img_np.shape[0]:
                 is_valid = orig_joint_valid[j]
                 color = 'green' if np.all(is_valid) else 'red'
@@ -71,7 +76,7 @@ def main():
         axes[1].set_title("fit_joint_trunc\nGreen=Not Truncated, Red=Truncated")
         # For fit_joint_trunc we might need fit_joint_img, but we can just use orig_joint_img for demonstration
         for j in range(orig_joint_img.shape[0]):
-            x, y = orig_joint_img[j, 0], orig_joint_img[j, 1]
+            x, y = orig_joint_img[j, 0] * scale_x, orig_joint_img[j, 1] * scale_y
             if x > 0 and y > 0 and x < img_np.shape[1] and y < img_np.shape[0]:
                 is_trunc = fit_joint_trunc[j]
                 # trunc == 1 usually means truncated, or maybe 0 means valid. Let's assume 1 = truncated (bad), 0 = ok
