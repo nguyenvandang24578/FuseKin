@@ -35,8 +35,11 @@ def main():
     dataset_names = cfg.DATASET.train_list
     _, batch_generator = get_dataloader(args, dataset_names, is_train=True)
     
+    num_saved = 0
+    max_save = 5 # Số lượng ảnh có mask bạn muốn lưu
+    
     for i, (inputs, targets, meta) in enumerate(batch_generator):
-        print("Batch loaded!")
+        print(f"Checking batch {i}...")
         input_image = inputs['img'][0] # (3, H, W)
         
         # We need 2D coordinates for orig_joint to plot on image. 
@@ -51,6 +54,13 @@ def main():
             
         orig_joint_valid = meta['orig_joint_valid'][0].numpy() # shape usually (J, 1) or (J)
         fit_joint_trunc = meta['fit_joint_trunc'][0].numpy()
+        
+        # Lọc: Chỉ lấy những ảnh CÓ mask (nghĩa là có ít nhất 1 điểm bị lỗi / bị che / bị cắt)
+        # Tức là tồn tại ít nhất 1 giá trị <= 0 trong orig_joint_valid hoặc fit_joint_trunc
+        if np.all(orig_joint_valid > 0) and np.all(fit_joint_trunc > 0):
+            continue
+            
+        print(f"Found image with masks! Saving as {num_saved + 1}/{max_save}")
         
         img_np = denormalize_image(input_image)
         
@@ -84,9 +94,14 @@ def main():
                 color = 'green' if np.all(is_trunc > 0) else 'red' 
                 axes[1].scatter(x, y, c=color, s=20)
                 
-        plt.savefig('visualize_masks_output.png')
-        print("Saved visualization to visualize_masks_output.png")
-        break
+        out_name = f'visualize_masks_output_{num_saved}.png'
+        plt.savefig(out_name)
+        plt.close(fig)
+        print(f"Saved visualization to {out_name}")
+        
+        num_saved += 1
+        if num_saved >= max_save:
+            break
 
 if __name__ == '__main__':
     main()
