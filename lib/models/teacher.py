@@ -239,8 +239,11 @@ class Teacher(nn.Module):
         print(f"\n[{self.name.upper() if getattr(self, 'name', None) else 'TEACHER'} - DEBUG SCALE] Feature before CFCER:")
         print(f"  -> img_tok    : Mean = {img_tok.mean().item():.4f}, Std = {img_tok.std().item():.4f}, Norm = {torch.norm(img_tok, dim=-1).mean().item():.4f}")
         print(f"  -> joints_tok : Mean = {joints_tok.mean().item():.4f}, Std = {joints_tok.std().item():.4f}, Norm = {torch.norm(joints_tok, dim=-1).mean().item():.4f}\n")
-        img_norm = self.norm_img(img_tok)
-        joint_norm = self.norm_joint(joints_tok)
+        img_norm = self.norm_img_in(img_tok)
+        joint_norm = self.norm_joint_in(joints_tok)
+        print(f"\n[{self.name.upper() if getattr(self, 'name', None) else 'TEACHER'} - DEBUG SCALE] Feature after Norm:")
+        print(f"  -> img_tok    : Mean = {img_norm.mean().item():.4f}, Std = {img_norm.std().item():.4f}, Norm = {torch.norm(img_norm, dim=-1).mean().item():.4f}")
+        print(f"  -> joints_tok : Mean = {joint_norm.mean().item():.4f}, Std = {joint_norm.std().item():.4f}, Norm = {torch.norm(joint_norm, dim=-1).mean().item():.4f}\n")
         # 3. Cross Attention fusion
         img_out, joint_out = self.cfcer(img_norm, joint_norm)
         
