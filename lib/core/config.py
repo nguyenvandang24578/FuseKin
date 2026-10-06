@@ -75,6 +75,7 @@ cfg.human_model_path = osp.join(cfg.root_dir, 'data_final', 'base_data', 'human_
 cfg.MODEL = edict()
 cfg.MODEL.name = 'ARTS'
 cfg.MODEL.resnet_type = 50
+cfg.MODEL.freeze_backbone = True
 cfg.MODEL.pretrained_backbone = False
 cfg.MODEL.hpe_dim = 256
 cfg.MODEL.hpe_dep = 3
@@ -91,7 +92,7 @@ cfg.MODEL.motionbert_pretrained = ''
 cfg.MODEL.TEACHER = './experiment/teacher/checkpoint'
 cfg.MODEL.STUDENT = './experiment/multimodel/best_epoch.bin'
 cfg.MODEL.kd_weight = 1.0
-cfg.MODEL.motionbert_pretrained = './experiment/finetune_motionbert/best_epoch.bin'
+
 """ Train Detail """
 cfg.TRAIN = edict()
 cfg.TRAIN.print_freq = 20
@@ -103,6 +104,7 @@ cfg.TRAIN.curriculum_epochs = 15.0
 cfg.TRAIN.edge_loss_start = 2
 cfg.TRAIN.scheduler = 'cosine'
 cfg.TRAIN.lr = 1e-4
+cfg.TRAIN.backbone_lr_scale = 0.1
 cfg.TRAIN.lr_step = [5, 10, 15]
 cfg.TRAIN.lr_factor = 0.95
 cfg.TRAIN.warmup_epochs = 1
