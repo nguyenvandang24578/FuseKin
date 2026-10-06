@@ -133,7 +133,7 @@ class Trainer:
         self.coordLoss = CoordLoss(has_valid=True)
 
         # KD loss: Cosine + MSE
-        self.kd_weight = getattr(cfg.MODEL, 'kd_weight', 0.5)
+        # self.kd_weight = getattr(cfg.MODEL, 'kd_weight', 0.5)
 
         # 5 losses now (including mesh_loss)
         self.awl = AutomaticWeightedLoss(5).cuda()
@@ -172,6 +172,8 @@ class Trainer:
 
         lr_check(self.optimizer, epoch)
         running_loss = 0.0
+        running_mpjpe = 0.0
+        mpjpe_count = 0
         batch_generator = tqdm(self.batch_generator)
         for i, (inputs, targets, meta) in enumerate(batch_generator):
             # convert to cuda
@@ -232,7 +234,14 @@ class Trainer:
             pred_smplpose = model_output['smpl_pose']
             pred_smplshape = model_output['smpl_shape']
             cam_param = model_output['cam_param']
+            
+            pose3d_pred = model_output.get('joint_img', None)
+            if pose3d_pred is not None:
+                mpjpe_error = torch.mean(torch.sqrt(torch.sum((pose3d_pred - gt_fit_joint_cam) ** 2, dim=-1))) * 1000
+                running_mpjpe += float(mpjpe_error.detach().item())
+                mpjpe_count += 1
 
+            
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
             pred_pose = pred_pose - pred_pose[:, 0:1, :]
 
@@ -251,6 +260,7 @@ class Trainer:
             proj_2d = scale * pred_pose_17[:, :, :2] + trans
             proj_pixel = (proj_2d + 1.0) * 0.5 * cfg.input_img_shape[0]
             pred_joint_proj = proj_pixel * (cfg.output_hm_shape[1] / cfg.input_img_shape[0])
+            
             loss_body_joint_proj = self.jotr_coord_loss(
                 pred_joint_proj,
                 targets['orig_joint_img'].cuda()[:, :, :2],
@@ -347,6 +357,8 @@ class Trainer:
 
         self.loss_history.append(running_loss / len(batch_generator))
         print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}')
+        if mpjpe_count > 0:
+            print(f'Epoch{epoch} Train MPJPE Error (mm): {running_mpjpe / mpjpe_count:.4f}')
 
 class Tester:
     def __init__(self, args, load_dir=''):

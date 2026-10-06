@@ -58,61 +58,56 @@ class Pose2Mesh(nn.Module):
         )
         self.student = Student(num_joint, embed_dim, vert_anchors = 16, horz_anchors = 16, depth = 3)
 
-        # # --- Frozen teacher for KD (same architecture, loaded from checkpoint) ---
-        # self.teacher = Teacher(num_joint, embed_dim, vert_anchors=16, horz_anchors=16, depth=3)
-        # teacher_ckpt_path = getattr(cfg.MODEL, 'TEACHER', '')
-        # if teacher_ckpt_path and osp.exists(teacher_ckpt_path):
-        #     import pickle as _pkl
-        #     class _NpUnpickler(_pkl.Unpickler):
-        #         def find_class(self, module, name):
-        #             if module.startswith('numpy._core'):
-        #                 module = module.replace('numpy._core', 'numpy.core', 1)
-        #             return super().find_class(module, name)
-        #     class _PklShim:
-        #         Unpickler = _NpUnpickler
-        #         load = _pkl.load; Pickler = _pkl.Pickler; dump = _pkl.dump
+        student_ckpt_path = getattr(cfg.MODEL, 'STUDENT', '')
+        if student_ckpt_path and osp.exists(student_ckpt_path):
+            import pickle as _pkl
+            class _NpUnpickler(_pkl.Unpickler):
+                def find_class(self, module, name):
+                    if module.startswith('numpy._core'):
+                        module = module.replace('numpy._core', 'numpy.core', 1)
+                    return super().find_class(module, name)
+            class _PklShim:
+                Unpickler = _NpUnpickler
+                load = _pkl.load; Pickler = _pkl.Pickler; dump = _pkl.dump
 
-        #     ckpt = torch.load(teacher_ckpt_path, map_location='cpu',
-        #                       pickle_module=_PklShim, weights_only=False)
-        #     state = ckpt
-        #     if isinstance(ckpt, dict):
-        #         for _k in ('model_state_dict', 'state_dict', 'model'):
-        #             if _k in ckpt:
-        #                 state = ckpt[_k]; break
+            ckpt = torch.load(student_ckpt_path, map_location='cpu',
+                              pickle_module=_PklShim, weights_only=False)
+            state = ckpt
+            if isinstance(ckpt, dict):
+                for _k in ('model_state_dict', 'state_dict', 'model'):
+                    if _k in ckpt:
+                        state = ckpt[_k]; break
 
-        #     # 1) Strip 'module.' (DataParallel)
-        #     state = {(k[7:] if k.startswith('module.') else k): v
-        #              for k, v in state.items()}
-        #     # 2) Remap old 'teacher_model.' → 'smpl_model.'
-        #     state = {(('smpl_model.' + k[len('teacher_model.'):]) if k.startswith('teacher_model.') else k): v
-        #              for k, v in state.items()}
-        #     # 3) Strip 'smpl_model.' to get bare Teacher keys
-        #     state = {(k[len('smpl_model.'):] if k.startswith('smpl_model.') else k): v
-        #              for k, v in state.items()}
+            # 1) Strip 'module.' (DataParallel)
+            state = {(k[7:] if k.startswith('module.') else k): v
+                     for k, v in state.items()}
+            # 3) Strip 'smpl_model.' to get bare Teacher keys
+            state = {(k[len('smpl_model.'):] if k.startswith('smpl_model.') else k): v
+                     for k, v in state.items()}
 
-        #     # 4) Skip keys not in Teacher (pose_lifter, backbone, etc.) + shape mismatch
-        #     _skip = ('pose_lifter.', 'backbone.')
-        #     own = self.teacher.state_dict()
-        #     filtered = {}
-        #     for k, v in state.items():
-        #         if any(k.startswith(p) for p in _skip):
-        #             continue
-        #         if k in own and own[k].shape != v.shape:
-        #             print(f'  [Teacher KD] shape mismatch: {k} ckpt={tuple(v.shape)} model={tuple(own[k].shape)}')
-        #             continue
-        #         filtered[k] = v
+            # 4) Skip keys not in Teacher (pose_lifter, backbone, etc.) + shape mismatch
+            _skip = ('pose_lifter.', 'backbone.')
+            own = self.student.state_dict()
+            filtered = {}
+            for k, v in state.items():
+                if any(k.startswith(p) for p in _skip):
+                    continue
+                if k in own and own[k].shape != v.shape:
+                    print(f'  [student KD] shape mismatch: {k} ckpt={tuple(v.shape)} model={tuple(own[k].shape)}')
+                    continue
+                filtered[k] = v
 
-        #     missing, unexpected = self.teacher.load_state_dict(filtered, strict=False)
-        #     print(f'[Pose2Mesh] Teacher loaded {len(filtered)} tensors. '
-        #           f'missing={len(missing)}, unexpected={len(unexpected)}')
-        #     if missing:
-        #         print(f'  MISSING (first 5): {sorted(missing)[:5]}')
-        # else:
-        #     print('[Pose2Mesh] WARNING: No teacher checkpoint found, teacher uses random weights.')
-        # # Freeze teacher
-        # for p in self.teacher.parameters():
-        #     p.requires_grad = False
-        # self.teacher.eval()
+            missing, unexpected = self.student.load_state_dict(filtered, strict=False)
+            print(f'[Pose2Mesh] student loaded {len(filtered)} tensors. '
+                  f'missing={len(missing)}, unexpected={len(unexpected)}')
+            if missing:
+                print(f'  MISSING (first 5): {sorted(missing)[:5]}')
+        else:
+            print('[Pose2Mesh] WARNING: No student checkpoint found, student uses random weights.')
+        # Freeze student
+        for p in self.student.parameters():
+            p.requires_grad = False
+        self.student.eval()
 
         self.node_pe = nn.Embedding(17, embed_dim)
         self.num_hyper_layers = 3
@@ -278,8 +273,8 @@ class Pose2Mesh(nn.Module):
             'smpl_mesh_cam_proj': mesh_cam_proj,
             'smpl_pose': full_pose,
             'smpl_shape': shape_param,
-            'cam_param': cam_trans,
-        }
+            'cam_param': cam_trans
+            }
         if self.refiner == 'diffusion':
             result['diff_loss'] = diff_loss
             result['pred_pose_6d_refined'] = pred_x0
