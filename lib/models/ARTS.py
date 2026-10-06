@@ -83,15 +83,26 @@ class ARTS(nn.Module):
         print(f"Load MotionBERT xong. Thiếu: {missing}. Thừa: {unexpected}.")
 
     def freeze_backbone_and_pose_lifter(self):
-        for module in (self.backbone, self.pose_lifter):
-            if module is not None:
-                for param in module.parameters():
+        # MotionBERT is always frozen during ARTS/Student training.
+        if self.pose_lifter is not None:
+            for param in self.pose_lifter.parameters():
+                param.requires_grad = False
+            self.pose_lifter.eval()
+            
+        # Backbone freezing is conditional based on config (default True)
+        if getattr(cfg.MODEL, 'freeze_backbone', True):
+            print("==> Freezing ResNet backbone")
+            if self.backbone is not None:
+                for param in self.backbone.parameters():
                     param.requires_grad = False
-                module.eval()
+                self.backbone.eval()
+        else:
+            print("==> ResNet backbone is NOT frozen (will be trained)")
 
     def train(self, mode=True):
         super().train(mode)
-        self.backbone.eval()
+        if getattr(cfg.MODEL, 'freeze_backbone', True):
+            self.backbone.eval()
         if self.pose_lifter is not None:
             self.pose_lifter.eval()
         return self

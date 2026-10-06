@@ -78,24 +78,37 @@ def count_parameters(model):
 
 def get_optimizer(model):
     optimizer = None
+    
+    # Phân tách param groups nếu backbone được mở
+    backbone_params = []
+    other_params = []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if 'backbone' in name:
+            backbone_params.append(p)
+        else:
+            other_params.append(p)
+            
+    lr = cfg.TRAIN.lr
+    backbone_lr = lr * getattr(cfg.TRAIN, 'backbone_lr_scale', 0.1)
+    
+    param_groups = [{'params': other_params, 'lr': lr}]
+    if backbone_params:
+        param_groups.append({'params': backbone_params, 'lr': backbone_lr})
+        print(f"==> Optimizer: Backbone LR = {backbone_lr}, Head LR = {lr}")
+
     if cfg.TRAIN.optimizer == 'sgd':
         optimizer = optim.SGD(
-            filter(lambda p: p.requires_grad, model.parameters()),
-            lr=cfg.TRAIN.lr,
+            param_groups,
             momentum=cfg.TRAIN.momentum,
             weight_decay=cfg.TRAIN.weight_decay,
             nesterov=cfg.TRAIN.nesterov
         )
     elif cfg.TRAIN.optimizer == 'rmsprop':
-        optimizer = optim.RMSprop(
-            filter(lambda p: p.requires_grad, model.parameters()),
-            lr=cfg.TRAIN.lr
-        )
+        optimizer = optim.RMSprop(param_groups)
     elif cfg.TRAIN.optimizer == 'adam':
-        optimizer = optim.Adam(
-            filter(lambda p: p.requires_grad, model.parameters()),
-            lr=cfg.TRAIN.lr
-        )
+        optimizer = optim.Adam(param_groups)
 
     return optimizer
 
