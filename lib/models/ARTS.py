@@ -55,8 +55,10 @@ class ARTS(nn.Module):
             self.pose_lifter = None
 
         if self.mode == "teacher":
+            print("Đang gọi mô hình teacher")
             self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim, depth = 3)
         elif self.mode == "student":
+            print("Đang gọi mô hình student")
             self.smpl_model = Student(num_joint=num_joint, embed_dim=embed_dim, depth = 3)
             self.privileged_joint_head = nn.Linear(embed_dim, 3)
         elif self.mode == "ARTS":
@@ -165,8 +167,8 @@ class ARTS(nn.Module):
         result = self.format_smpl_output(smpl_output)
         result['feat'] = feature['joint_out']
         result['feat_img'] = feature['img_out']
-        # result['joint_proj'] = feature['joint_proj']
-        # result['feat_layers'] = feature['layers']
+        result['joint_proj'] = feature['joint_proj']
+        result['feat_layers'] = feature['layers']
         return result
 
     def forward_student(self, image, pose_2d, is_train, gt_pose_3d=None, alpha=1.0, joints_mask=None):

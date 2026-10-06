@@ -627,8 +627,12 @@ class Student_Trainer:
         assert teacher_ckpt, 'Cần đặt cfg.MODEL.TEACHER (checkpoint của Teacher_Trainer)'
         self.kd_weight = cfg.MODEL.get('kd_weight', 1.0)
 
-        self.teacher = copy.deepcopy(self.model)   # cùng kiến trúc với student
-        self.teacher.mode = 'teacher'              # forward() sẽ chạy forward_teacher
+        from models.ARTS import ARTS
+        old_mode = cfg.MODEL.name
+        cfg.MODEL.name = "teacher"
+        hpe_dim = cfg.MODEL.get('hpe_dim', 512)
+        self.teacher = ARTS(num_joint=self.main_dataset.joint_num, embed_dim=hpe_dim)
+        cfg.MODEL.name = old_mode
         load_model_weights(self.teacher, teacher_ckpt)
 
         resume = hasattr(args, 'resume_training') and args.resume_training
