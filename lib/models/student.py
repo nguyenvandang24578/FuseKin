@@ -163,7 +163,7 @@ class RGBJointCrossTransformer(nn.Module):
 
 
 class Student(nn.Module):
-    def __init__(self, num_joint, embed_dim=512, vert_anchors=16, horz_anchors=16, in_channels=2048, depth=1, norm_layer = None):
+    def __init__(self, num_joint, embed_dim=512, vert_anchors=8, horz_anchors=8, in_channels=2048, depth=1, norm_layer = None):
         super(Student, self).__init__()
 
         self.mesh = Mesh()
