@@ -91,7 +91,7 @@ cfg.MODEL.motionbert_pretrained = ''
 cfg.MODEL.TEACHER = './experiment/teacher/checkpoint'
 cfg.MODEL.STUDENT = './experiment/multimodel/best_epoch.bin'
 cfg.MODEL.kd_weight = 1.0
-cfg.MODEL.motionbert_pretrained = './experiment/motionbert/best_epoch.bin'
+cfg.MODEL.motionbert_pretrained = './experiment/finetune_motionbert/anh_Nhan/best_epoch.bin'
 """ Train Detail """
 cfg.TRAIN = edict()
 cfg.TRAIN.print_freq = 20
