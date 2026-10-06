@@ -8,7 +8,7 @@ import cv2
 import matplotlib.pyplot as plt
 
 from core.config import cfg, update_config
-from core.base import Trainer, Teacher_Trainer, Student_Trainer
+from core.base import get_dataloader
 from utils.transforms import cam2pixel
 
 def denormalize_image(img_tensor):
@@ -32,17 +32,8 @@ def main():
     # Force batch size to 1 for easier visualization
     cfg.TRAIN.batch_size = 1
     
-    if cfg.MODEL.name == 'ARTS':
-        trainer = Trainer(args, load_dir='')
-    elif cfg.MODEL.name == 'teacher':
-        trainer = Teacher_Trainer(args, load_dir='')
-    elif cfg.MODEL.name == 'student':
-        trainer = Student_Trainer(args, load_dir='')
-    else:
-        trainer = Student_Trainer(args, load_dir='')
-        
-    print("Loading one batch from dataloader...")
-    batch_generator = trainer.batch_generator
+    dataset_names = cfg.DATASET.train_list
+    _, batch_generator = get_dataloader(args, dataset_names, is_train=True)
     
     for i, (inputs, targets, meta) in enumerate(batch_generator):
         print("Batch loaded!")
