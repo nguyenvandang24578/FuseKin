@@ -185,7 +185,7 @@ class RGBJointFusion(nn.Module):
         if joint_encoder == 'noisy':
             self.projector_student = StudentJointExtractor(in_dim=3, out_dim=embed_dim)
         else:
-            print("TEACHER IN TEACHER_STUDENT.PY")
+            # print("TEACHER IN TEACHER_STUDENT.PY")
             self.joint_proj = nn.Linear(3, embed_dim)
             self.norm_joint_proj = nn.LayerNorm(embed_dim)
 
