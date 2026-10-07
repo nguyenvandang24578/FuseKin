@@ -834,15 +834,15 @@ class Student_Trainer:
             ).detach()
 
             # Response-based KD: ép mesh của Student gần với mesh của Teacher (L1 loss)
-            t_mesh = t_out['smpl_mesh_cam'].detach()
-            mesh_kd_per_sample = F.l1_loss(pred_mesh, t_mesh, reduction='none').mean((-1, -2))
+            # t_mesh = t_out['smpl_mesh_cam'].detach()
+            # mesh_kd_per_sample = F.l1_loss(pred_mesh, t_mesh, reduction='none').mean((-1, -2))
 
             kd_per_sample = (
                 cosine_joint_per_sample + cosine_img_per_sample + cosine_proj_per_sample
                 + 0.25 * layer_per_sample
                 + 0.10 * relation_per_sample
                 + 0.05 * attention_per_sample
-                + 10.0 * mesh_kd_per_sample  # Thêm Mesh KD (scale 10 vì L1 ~ 0.05)
+                # + 10.0 * mesh_kd_per_sample  # Thêm Mesh KD (scale 10 vì L1 ~ 0.05) - Đang tắt
             )
             
             kd_loss = (adaptive_weight * kd_per_sample).mean()
