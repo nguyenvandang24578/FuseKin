@@ -111,19 +111,19 @@ class Pose2Mesh(nn.Module):
 
         self.node_pe = nn.Embedding(17, embed_dim)
         self.num_hyper_layers = 3
-        # self.spatial_hypers = create_layers(dim=embed_dim,
-        #                             n_layers=self.num_hyper_layers,
-        #                             mlp_ratio=4,
-        #                             act_layer=nn.GELU,
-        #                             attn_drop=0.,
-        #                             drop_rate=0.,
-        #                             drop_path_rate=0.,                                 
-        #                             use_layer_scale=True,                                  
-        #                             layer_scale_init_value=1e-5,
-        #                             use_adaptive_fusion=False,
-        #                             hierarchical=False,
-        #                             neighbour_num=4,
-        #                             )
+        self.spatial_hypers = create_layers(dim=embed_dim,
+                                    n_layers=self.num_hyper_layers,
+                                    mlp_ratio=4,
+                                    act_layer=nn.GELU,
+                                    attn_drop=0.,
+                                    drop_rate=0.,
+                                    drop_path_rate=0.,                                 
+                                    use_layer_scale=True,                                  
+                                    layer_scale_init_value=1e-5,
+                                    use_adaptive_fusion=False,
+                                    hierarchical=False,
+                                    neighbour_num=4,
+                                    )
 
         
         self.root_pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, 2)
@@ -213,14 +213,14 @@ class Pose2Mesh(nn.Module):
             joint_out_ctx = feature['joint_out']
             pose_token = self.pose_embed(pred_pose_6d) #(B, 24, dim)
 
-            # idx = torch.arange(17, device=device)
-            # dang = self.norm(joint_out_ctx) + self.node_pe(idx)
+            idx = torch.arange(17, device=device)
+            dang = self.norm(joint_out_ctx) + self.node_pe(idx)
             
-            # dang = dang.unsqueeze(1)
-            # dang = self.spatial_hypers(dang)
-            # dang = dang.squeeze(1) #(B, 17, dim)
+            dang = dang.unsqueeze(1)
+            dang = self.spatial_hypers(dang)
+            dang = dang.squeeze(1) #(B, 17, dim)
 
-            feat = self.pose_context_attn(pose_token, joint_out_ctx, joint_out_ctx)
+            feat = self.pose_context_attn(pose_token, dang, dang)
             
             pose_global = feat.mean(dim=1)
 
