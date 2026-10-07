@@ -399,8 +399,8 @@ class Teacher_Trainer:
 
         self.J_regressor = eval(f'torch.Tensor(self.main_dataset.joint_regressor_{cfg.DATASET.target_joint_set}).cuda()')
 
-        # The dataset wrapper already emits H36M-17 GT and 2D inputs. Kept for
-        # parity with the other trainers (Teacher uses only H36M-17 targets).
+        # The dataset wrapper already emits H36M-17 GT and 2D inputs.
+        # h36m_from_smpl30 dung de lay 17 khop H36M tu 30 khop joint_proj cua model.
         h36m_joints = ('Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck', 'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist')
         smpl30_joints = self.main_dataset.mesh_model.joints_name
         self.h36m_from_smpl30 = [smpl30_joints.index(name) for name in h36m_joints]
@@ -441,20 +441,19 @@ class Teacher_Trainer:
         for i, (inputs, targets, meta) in enumerate(batch_generator):
             # convert to cuda
             input_image = inputs['img'].cuda().float()
-            gt_orig_joint_cam = targets['orig_joint_cam'].cuda() #ÄÃ¢y lÃ  tá»a Ä‘á»™ 3D thá»±c táº¿ Ä‘o Ä‘Æ°á»£c tá»« cÃ¡c cáº£m biáº¿n
-            gt_fit_joint_cam = targets['fit_joint_cam'].cuda() # tá»a Ä‘á»™ 3D sinh ra tá»« smpl prj
+            gt_orig_joint_cam = targets['orig_joint_cam'].cuda() # Đây là tọa độ 3D thực tế đo được từ các cảm biến
+            gt_fit_joint_cam = targets['fit_joint_cam'].cuda() # tọa độ 3D sinh ra từ smpl prj
             gt_mesh_cam = targets['smpl_mesh_cam'].cuda()
-            orig_joint_valid = meta['orig_joint_valid'].cuda() #mask, = 0 thÃ¬ k tÃ­nh loss
+            orig_joint_valid = meta['orig_joint_valid'].cuda() # mask, = 0 thì k tính loss
             fit_joint_trunc = meta['fit_joint_trunc'].cuda() # mask
-            
+
             gt_smplpose = targets['pose_param'].cuda()
             gt_smplshape = targets['shape_param'].cuda()
             is_3d = meta['is_3D'].cuda()
             is_valid_fit = meta['is_valid_fit'].cuda()
-            
+
             # Teacher dùng GT 3D gốc (mét, root-relative) từ orig_joint_cam, không chuẩn hóa
             teacher_gt_pose3d = gt_orig_joint_cam - gt_orig_joint_cam[:, 0:1, :]
-            # print(f"  -> teacher_gt_pose3d : Min = {teacher_gt_pose3d.min().item():.4f}, Max = {teacher_gt_pose3d.max().item():.4f}, Mean = {teacher_gt_pose3d.mean().item():.4f}, Std = {teacher_gt_pose3d.std().item():.4f}, Norm = {torch.norm(teacher_gt_pose3d, dim=-1).mean().item():.4f}\n")
             model_output = self.model(input_image, teacher_gt_pose3d, is_train=True)
 
             pred_mesh = model_output['smpl_mesh_cam']
@@ -464,8 +463,6 @@ class Teacher_Trainer:
             # Regress H36M joints from the predicted SMPL mesh.
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
             pred_pose = pred_pose - pred_pose[:, 0:1, :]
-            # print(f"  -> pred_pose : Min = {pred_pose.min().item():.4f}, Max = {pred_pose.max().item():.4f}, Mean = {pred_pose.mean().item():.4f}, Std = {pred_pose.std().item():.4f}, Norm = {torch.norm(pred_pose, dim=-1).mean().item():.4f}\n")
-            # print(f"  -> gt_fit_joint_cam : Min = {gt_fit_joint_cam.min().item():.4f}, Max = {gt_fit_joint_cam.max().item():.4f}, Mean = {gt_fit_joint_cam.mean().item():.4f}, Std = {gt_fit_joint_cam.std().item():.4f}, Norm = {torch.norm(gt_fit_joint_cam, dim=-1).mean().item():.4f}\n")
             loss_smpl_joint_cam = self.jotr_coord_loss(
                 pred_pose,
                 gt_fit_joint_cam,
@@ -477,16 +474,11 @@ class Teacher_Trainer:
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
             mesh_loss = self.coordLoss(pred_mesh, gt_mesh_cam, is_valid_fit[:, None, None])
 
-            # 2D projection loss (Weak Perspective Projection)
+            # 2D projection loss: dung phep chieu phoi canh cua chinh model (focal/princpt trong cfg.DATASET),
+            # toa do he heatmap. joint_proj_det da detach pose neu cfg.LOSS.DETACH_POSE_FOR_PROJ bat.
             gt_orig_joint_img = targets['orig_joint_img'].cuda()
             orig_joint_trunc = meta['orig_joint_trunc'].cuda()
-            cam = model_output['cam_param']  # (B, 3)
-            scale = cam[:, 0:1, None]
-            trans = cam[:, 1:3, None].transpose(1, 2)  # (B, 1, 2)
-            pred_pose_17 = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
-            proj_2d = scale * pred_pose_17[:, :, :2] + trans
-            proj_pixel = (proj_2d + 1.0) * 0.5 * cfg.input_img_shape[0]
-            pred_joint_proj = proj_pixel * (cfg.output_hm_shape[1] / cfg.input_img_shape[0])
+            pred_joint_proj = model_output['joint_proj_det'][:, self.h36m_from_smpl30, :2]
             loss_body_joint_proj = self.jotr_coord_loss(
                 pred_joint_proj,
                 gt_orig_joint_img[:, :, :2],
@@ -621,6 +613,7 @@ def load_model_weights(model, ckpt_path, skip_prefixes=('pose_lifter.',)):
         print('  UNEXPECTED(10 đầu):', sorted(unexpected)[:10])
 
     # 5) dừng ngay nếu teacher nạp chưa đủ
+    # (Teacher phai duoc train bang Teacher_Trainer moi; ckpt SPIN cu se thieu HyperGCN/heads -> assert o day)
     assert not shape_bad, f'Có key lệch shape: {shape_bad[:3]}'
     assert not [k for k in missing if k.startswith(('smpl_model.', 'backbone.'))], \
         f'Teacher chưa nạp đủ smpl_model/backbone: {missing[:5]}'
@@ -648,10 +641,13 @@ class Student_Trainer:
         load_model_weights(self.teacher, teacher_ckpt)
 
         resume = hasattr(args, 'resume_training') and args.resume_training
-        # if not resume:
-        #     self.model.smpl_model.load_state_dict(self.teacher.smpl_model.state_dict(), strict=False)
-        #     self.model.backbone.load_state_dict(self.teacher.backbone.state_dict())
-        #     print('===> Student smpl_model + backbone initialized from Teacher')
+        # Student va Teacher cung kien truc (chi khac bo ma hoa joint) -> khoi tao Student tu Teacher.
+        # Key khac nhau (fusion.joint_proj / norm_joint_proj <-> fusion.projector_student) se bi bo qua boi strict=False.
+        if not resume and cfg.MODEL.get('init_student_from_teacher', True):
+            missing, unexpected = self.model.smpl_model.load_state_dict(
+                self.teacher.smpl_model.state_dict(), strict=False)
+            print(f'===> Student smpl_model khoi tao tu Teacher | '
+                  f'missing={len(missing)} (bo ma hoa joint cua student), unexpected={len(unexpected)}')
 
         self.teacher = torch.nn.DataParallel(self.teacher).cuda()
         self.teacher.eval()
@@ -670,7 +666,7 @@ class Student_Trainer:
         hpe_dim = cfg.MODEL.get('hpe_dim', 512)
         self.awl = AutomaticWeightedLoss(5).cuda()
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
-        
+
 # Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
             import os
@@ -680,11 +676,8 @@ class Student_Trainer:
                 if 'awl_state_dict' in ckpt:
                     self.awl.load_state_dict(ckpt['awl_state_dict'])
                     print('===> AWL weights restored from checkpoint')
-                if 'projector_state_dict' in ckpt:
-                    self.feat_projector.load_state_dict(ckpt['projector_state_dict'])
-                    print('===> Projector weights restored from checkpoint')
             except Exception as e:
-                print(f'===> Could not restore AWL/Projector weights: {e}')
+                print(f'===> Could not restore AWL weights: {e}')
 
         if cfg.TRAIN.wandb:
             wandb.init(config=cfg,
@@ -696,7 +689,7 @@ class Student_Trainer:
 
     def train(self, epoch):
         self.model.train()
-        self.teacher.eval() 
+        self.teacher.eval()
 
         lr_check(self.optimizer, epoch)
 # beta của smooth L1 cho privileged loss (giả định đơn vị mét; nếu GT là mm thì tăng lên)
@@ -720,16 +713,16 @@ class Student_Trainer:
             input_pose2d = inputs['joints'].cuda().float()
             joints_mask = inputs['joints_mask'].cuda().float()
             gt_orig_joint_cam = targets['orig_joint_cam'].cuda()
-            gt_fit_joint_cam = targets['fit_joint_cam'].cuda() 
-            orig_joint_valid = meta['orig_joint_valid'].cuda() 
-            fit_joint_trunc = meta['fit_joint_trunc'].cuda() 
-            
+            gt_fit_joint_cam = targets['fit_joint_cam'].cuda()
+            orig_joint_valid = meta['orig_joint_valid'].cuda()
+            fit_joint_trunc = meta['fit_joint_trunc'].cuda()
+
             gt_smplpose = targets['pose_param'].cuda()
             gt_smplshape = targets['shape_param'].cuda()
             gt_mesh_cam = targets['smpl_mesh_cam'].cuda()
             is_3d = meta['is_3D'].cuda()
             is_valid_fit = meta['is_valid_fit'].cuda()
-            
+
 
             gt_pose_input = gt_orig_joint_cam - gt_orig_joint_cam[:, 0:1, :]
 
@@ -752,12 +745,12 @@ class Student_Trainer:
                 t_out = self.teacher(input_image, gt_pose_input, is_train=False)
 
             # ---------- privileged reconstruction + multi-level distillation ----------
-            s_feat_joint = model_output['feat']
-            t_feat_joint = t_out['feat'].detach()
+            s_feat_joint = model_output['feat_joint']
+            t_feat_joint = t_out['feat_joint'].detach()
             s_feat_img = model_output['feat_img']
             t_feat_img = t_out['feat_img'].detach()
-            s_proj_feat = model_output['joint_proj']
-            t_proj_feat = t_out['joint_proj'].detach()
+            s_proj_feat = model_output['feat_joint_in']          # token joint sau encoder (truoc cross-attn)
+            t_proj_feat = t_out['feat_joint_in'].detach()
 
             valid_joint = fit_joint_trunc
             if valid_joint.dim() == 3:
@@ -839,14 +832,11 @@ class Student_Trainer:
                 + 0.10 * relation_per_sample
                 + 0.05 * attention_per_sample
             )
-            
+
             kd_loss = (adaptive_weight * kd_per_sample).mean()
             privileged_loss = privileged_per_sample.mean()
 
 # ---------------------------------------------------------
-            # print(f"pred_pose_rootrel range : min={pred_pose_rootrel.min().item():.2f}, max={pred_pose_rootrel.max().item():.2f}")
-            # print(f"gt_fit_joint_cam range : min={gt_fit_joint_cam.min().item():.2f}, max={gt_fit_joint_cam.max().item():.2f}")
-
             loss_smpl_joint_cam = self.jotr_coord_loss(
                 pred_pose_rootrel,
                 gt_fit_joint_cam,
@@ -856,24 +846,13 @@ class Student_Trainer:
             gt_orig_joint_img = targets['orig_joint_img'].cuda()
             orig_joint_trunc = meta['orig_joint_trunc'].cuda()
 
-# Tính loss body_joint_proj (2D)
-# Dùng Weak Perspective Projection của SPIN (từ cam_param: scale, tx, ty)
-            cam = model_output['cam_param'] # (B, 3)
-            scale = cam[:, 0:1, None]
-            trans = cam[:, 1:3, None].transpose(1, 2) # (B, 1, 2)
-            
-# Chiếu 17 khớp 3D (pred_pose, chưa root-relative) xuống 2D (tọa độ normalize [-1, 1])
-            proj_2d = scale * pred_pose[:, :, :2] + trans
-            
-# Đổi từ [-1, 1] sang tọa độ pixel của ảnh input (ví dụ: 256x256)
-            proj_pixel = (proj_2d + 1.0) * 0.5 * cfg.input_img_shape[0]
-            
-# Chuẩn hóa về tọa độ heatmap (ví dụ: 64x64)
-            pred_joint_proj = proj_pixel * (cfg.output_hm_shape[1] / cfg.input_img_shape[0])
-            
+# Loss body_joint_proj (2D): dung phep chieu phoi canh cua chinh model (focal/princpt trong cfg.DATASET),
+# toa do he heatmap. joint_proj_det da detach pose neu cfg.LOSS.DETACH_POSE_FOR_PROJ bat.
+            pred_joint_proj = model_output['joint_proj_det'][:, self.h36m_from_smpl30, :2]
+
             loss_body_joint_proj = self.jotr_coord_loss(
-                pred_joint_proj, 
-                gt_orig_joint_img[:, :, :2], 
+                pred_joint_proj,
+                gt_orig_joint_img[:, :, :2],
                 orig_joint_trunc
             ).mean()
 
@@ -894,7 +873,7 @@ class Student_Trainer:
             hard_loss = sum(loss_dict.values())
             loss = 0.5 * hard_loss + 0.5 * kd_loss + privileged_loss
             # loss = hard_loss
-            
+
 # update weights
             self.optimizer.zero_grad()
             loss.backward()
@@ -973,7 +952,7 @@ class Student_Trainer:
               f'KD relation: {avg_relation:.4f} | '
               f'Privileged 3D: {avg_privileged:.4f} | '
               f'Adaptive weight: {avg_adaptive_weight:.4f}')
-        
+
         if cfg.TRAIN.wandb:
             wandb.log({
                 'epoch_metric/cos_sim_joint': avg_cos_joint,

@@ -13,7 +13,7 @@ import math
 from models.hypergcn import HYPERGCv2
 from models.HGraph import create_layers
 from models.teacher import Teacher
-from lib.models.student import Student
+from lib.models.teacher_student import Student
 from models.Core_model import CrossAttentionBlock
 from models.common import Vposer
 from models.smpl_hyperdiff import SMPL_HyperDiff

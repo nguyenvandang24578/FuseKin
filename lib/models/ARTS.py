@@ -8,8 +8,7 @@ from core.config import cfg
 from models import Multimodel
 from models.backbones.resnet import ResNetBackbone
 from models.DSTformer import DSTformer
-from models.teacher import Teacher
-from models.student import Student
+from models.teacher_student import Teacher, Student   # model end-to-end moi (khong con SPIN)
 
 os.environ.setdefault("WANDB_MODE", "offline")
 
@@ -34,11 +33,11 @@ class ARTS(nn.Module):
         self.mode = cfg.MODEL.name
 
         self.backbone = ResNetBackbone(cfg.MODEL.resnet_type)
-        
+
         # Lấy hpe_dim từ config để hỗ trợ MotionBERT-Lite (256) hoặc Full (512)
         mb_dim = cfg.MODEL.get('hpe_dim', 512)
         mb_mlp_ratio = cfg.MODEL.get('mlp_ratio', 4 if mb_dim == 256 else 2)
-        
+
         # Override dim_feat và mlp_ratio theo config
         mb_config = MOTIONBERT_CONFIG.copy()
         mb_config['dim_feat'] = mb_dim
@@ -56,10 +55,10 @@ class ARTS(nn.Module):
 
         if self.mode == "teacher":
             print("Đang gọi mô hình teacher")
-            self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim, depth = 3)
+            self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim, depth=3)
         elif self.mode == "student":
             print("Đang gọi mô hình student")
-            self.smpl_model = Student(num_joint=num_joint, embed_dim=embed_dim, depth = 3)
+            self.smpl_model = Student(num_joint=num_joint, embed_dim=embed_dim, depth=3)
             self.privileged_joint_head = nn.Linear(embed_dim, 3)
         elif self.mode == "ARTS":
             self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim)
@@ -128,48 +127,17 @@ class ARTS(nn.Module):
         # Teacher expects METERS.
         return pose_3d[:, 0]  # (B, 17, 3) mét
 
-    def format_smpl_output(self, smpl_output):
-        theta = smpl_output["theta"]
-        if theta.dim() == 3:
-            theta = theta[:, -1]
-            
-        verts = smpl_output["verts"]
-        if verts.dim() == 4:
-            verts = verts[:, -1]
-            
-        kp_3d = smpl_output.get("kp_3d", smpl_output.get("joint_img"))
-        if kp_3d is not None and kp_3d.dim() == 4:
-            kp_3d = kp_3d[:, -1]
-
-        cam = smpl_output.get("cam", None)
-        if cam is not None and cam.dim() == 3:
-            cam = cam[:, -1]
-
-        return {
-            "joint_img": kp_3d,
-            "smpl_mesh_cam": verts,
-            "smpl_pose": theta[:, 3:75],
-            "smpl_shape": theta[:, 75:],
-            "cam_param": cam,
-        }
-
     def forward_teacher(self, image, gt_pose_3d, is_train):
         with torch.no_grad():
             feature_map, _ = self.get_image_features(image)
 
-        spin_out, pred_pose_6d, pred_shape, pred_cam, feature = self.smpl_model(
+        # gt_pose_3d: (B, 17, 3), met, root-relative (da xu ly o Trainer)
+        return self.smpl_model(
             joints=gt_pose_3d,
             img_feats=feature_map,
             is_train=is_train,
-            return_features=True
+            return_features=True,
         )
-        smpl_output = spin_out
-        result = self.format_smpl_output(smpl_output)
-        result['feat'] = feature['joint_out']
-        result['feat_img'] = feature['img_out']
-        result['joint_proj'] = feature['joint_proj']
-        result['feat_layers'] = feature['layers']
-        return result
 
     def forward_student(self, image, pose_2d, is_train, gt_pose_3d=None, alpha=1.0, joints_mask=None):
         with torch.no_grad():
@@ -178,20 +146,14 @@ class ARTS(nn.Module):
             pose_3d = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask)
             pose_3d = pose_3d - pose_3d[:, 0:1, :]            # root-relative
 
-        # print(f"pose_3d range : min={pose_3d.min().item():.2f}, max={pose_3d.max().item():.2f}")
-        spin_out, pred_pose_6d, pred_shape, pred_cam, feats = self.smpl_model(
+        result = self.smpl_model(
             joints=pose_3d,
             img_feats=feature_map,
             is_train=is_train,
-            return_features=True
+            return_features=True,
         )
-        smpl_output = spin_out
-        result = self.format_smpl_output(smpl_output)
-        result['feat'] = feats['joint_out']
-        result['feat_img'] = feats['img_out']
-        result['joint_proj'] = feats['joint_proj']
-        result['feat_layers'] = feats['layers']
-        result['privileged_3d'] = self.privileged_joint_head(feats['joint_out'])
+        result['privileged_3d'] = self.privileged_joint_head(result['feat_joint'])
+        result['lifted_joints_3d'] = pose_3d   # joint nhiễu đưa vào student (để log / loss nếu cần)
         return result
 
     def forward_arts(self, image, pose_input, is_train, use_gt_3d=False,
@@ -216,7 +178,7 @@ class ARTS(nn.Module):
             kp2d=kp2d,
             kp_conf=kp_conf,
             pose_valid_mask=pose_valid_mask
-            )
+        )
         # MotionBERT outputs 3D joints in millimeters; convert to meters so
         # joint_img shares the unit of the GT joints used in the training loss.
         output["joint_img"] = pose_3d
