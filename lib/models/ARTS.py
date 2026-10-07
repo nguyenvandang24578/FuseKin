@@ -90,18 +90,22 @@ class ARTS(nn.Module):
             self.pose_lifter.eval()
             
         # Backbone freezing is conditional based on config (default True)
-        if getattr(cfg.MODEL, 'freeze_backbone', True):
-            print("==> Freezing ResNet backbone")
+        # However, if this is the Teacher model, we always freeze it.
+        should_freeze = getattr(cfg.MODEL, 'freeze_backbone', True) or (self.mode == 'teacher')
+        
+        if should_freeze:
+            print(f"==> Freezing ResNet backbone for {self.mode}")
             if self.backbone is not None:
                 for param in self.backbone.parameters():
                     param.requires_grad = False
                 self.backbone.eval()
         else:
-            print("==> ResNet backbone is NOT frozen (will be trained)")
+            print(f"==> ResNet backbone is NOT frozen for {self.mode} (will be trained)")
 
     def train(self, mode=True):
         super().train(mode)
-        if getattr(cfg.MODEL, 'freeze_backbone', True):
+        should_freeze = getattr(cfg.MODEL, 'freeze_backbone', True) or (self.mode == 'teacher')
+        if should_freeze:
             self.backbone.eval()
         if self.pose_lifter is not None:
             self.pose_lifter.eval()
