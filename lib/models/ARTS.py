@@ -128,7 +128,7 @@ class ARTS(nn.Module):
         return pose_3d[:, 0]  # (B, 17, 3) mét
 
     def forward_teacher(self, image, gt_pose_3d, is_train):
-        print(f"TEACHER IN ARTS.PY")
+        # print(f"TEACHER IN ARTS.PY")
         with torch.no_grad():
             feature_map, _ = self.get_image_features(image)
 
