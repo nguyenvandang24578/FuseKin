@@ -54,6 +54,7 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda'):
 
             # --- Forward ---
             if cfg.MODEL.name == 'teacher':
+                print("TEACHER IN EVALUATION 3DPW")
                 # Giống Teacher_Trainer (base.py): GT 3D gốc, mét, root-relative
                 # (H36M-17 regress từ GT mesh, cùng nguồn với orig_joint_cam lúc train).
                 h36m_regressor = torch.as_tensor(
