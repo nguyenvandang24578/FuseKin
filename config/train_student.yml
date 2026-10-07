@@ -11,7 +11,7 @@ DATASET:
 MODEL:
   name: 'student'
   resnet_type: 50
-  freeze_backbone: False
+  freeze_backbone: True
   hpe_dim: 512
   hpe_dep: 5
   motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
