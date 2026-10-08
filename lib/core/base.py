@@ -755,7 +755,25 @@ class Student_Trainer:
                            * valid_joint).sum(-1) / n_valid                             # (B,)
             kd_global_ps = _cos_dist(model_output['feat_global'], t_out['feat_global'])  # (B,)
 
-            kd_per_sample = w_proj * kd_proj_ps + w_joint * kd_joint_ps + w_global * kd_global_ps
+            # ---------- KD: sâu hơn (GCN / Transformer pose) ----------
+            kd_hyper_ps = 0.0
+            if model_output.get('feat_hyper') is not None and t_out.get('feat_hyper') is not None:
+                kd_hyper_ps = (_cos_dist(model_output['feat_hyper'], t_out['feat_hyper']) * valid_joint).sum(-1) / n_valid
+            
+            kd_pose_ps = 0.0
+            if model_output.get('feat_pose') is not None and t_out.get('feat_pose') is not None:
+                kd_pose_ps = _cos_dist(model_output['feat_pose'], t_out['feat_pose']).mean(-1)
+            
+            kd_root_ps = 0.0
+            if model_output.get('root_pose_6d') is not None and t_out.get('root_pose_6d') is not None:
+                kd_root_ps = F.l1_loss(model_output['root_pose_6d'], t_out['root_pose_6d'].detach(), reduction='none').mean(-1)
+                
+            kd_latent_ps = 0.0
+            if model_output.get('pose_latent') is not None and t_out.get('pose_latent') is not None:
+                kd_latent_ps = F.l1_loss(model_output['pose_latent'], t_out['pose_latent'].detach(), reduction='none').mean(-1)
+
+            kd_per_sample = (w_proj * kd_proj_ps + w_joint * kd_joint_ps + w_global * kd_global_ps 
+                             + kd_hyper_ps + kd_pose_ps + kd_root_ps + kd_latent_ps)
 
             # ---------- privileged reconstruction (student -> GT 3D) ----------
             privileged_pred = model_output['privileged_3d']
@@ -823,10 +841,21 @@ class Student_Trainer:
 
             # log (khoảng cách cosine đã center: 0 = giống teacher hoàn toàn)
             running_loss += float(loss.detach().item())
+            
+            # Helper để tính mean an toàn cho tensor hoặc số thực
+            def _get_val(x):
+                if isinstance(x, torch.Tensor):
+                    return x.mean().item()
+                return float(x)
+                
             step_stats = {
                 'kd_proj': kd_proj_ps.mean().item(),
                 'kd_joint': kd_joint_ps.mean().item(),
                 'kd_global': kd_global_ps.mean().item(),
+                'kd_hyper': _get_val(kd_hyper_ps),
+                'kd_pose': _get_val(kd_pose_ps),
+                'kd_root': _get_val(kd_root_ps),
+                'kd_latent': _get_val(kd_latent_ps),
                 'privileged_3d': privileged_loss.item(),
                 'adaptive_kd_weight': adaptive_weight.mean().item(),
             }
@@ -844,6 +873,10 @@ class Student_Trainer:
                         'train_loss/kd_proj': step_stats['kd_proj'],
                         'train_loss/kd_joint': step_stats['kd_joint'],
                         'train_loss/kd_global': step_stats['kd_global'],
+                        'train_loss/kd_hyper': step_stats['kd_hyper'],
+                        'train_loss/kd_pose': step_stats['kd_pose'],
+                        'train_loss/kd_root': step_stats['kd_root'],
+                        'train_loss/kd_latent': step_stats['kd_latent'],
                         'train_loss/privileged_3d': step_stats['privileged_3d'],
                         'train_loss/adaptive_kd_weight': step_stats['adaptive_kd_weight'],
                         'train_loss/hard_total': hard_loss.item(),
