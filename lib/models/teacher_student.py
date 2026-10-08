@@ -303,12 +303,12 @@ class FusionPose2Mesh(nn.Module):
         self.pose_pe = nn.Embedding(24, embed_dim) if use_pose_pe else None
         self.node_pe = nn.Embedding(num_joint, embed_dim)
         self.norm = nn.LayerNorm(embed_dim)
-        self.spatial_hypers = create_layers(
-            dim=embed_dim, n_layers=3, mlp_ratio=4, act_layer=nn.GELU,
-            attn_drop=0., drop_rate=0., drop_path_rate=0.,
-            use_layer_scale=True, layer_scale_init_value=1e-5,
-            use_adaptive_fusion=False, hierarchical=False, neighbour_num=4,
-        )
+        # self.spatial_hypers = create_layers(
+        #     dim=embed_dim, n_layers=3, mlp_ratio=4, act_layer=nn.GELU,
+        #     attn_drop=0., drop_rate=0., drop_path_rate=0.,
+        #     use_layer_scale=True, layer_scale_init_value=1e-5,
+        #     use_adaptive_fusion=False, hierarchical=False, neighbour_num=4,
+        # )
         self.pose_context_attn = CrossAttentionBlock(
             q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim, kv_num=num_joint,
             num_heads=8, mlp_ratio=4., qkv_bias=True,
@@ -383,12 +383,12 @@ class FusionPose2Mesh(nn.Module):
             if self.pose_pe is not None:
                 pose_token = pose_token + self.pose_pe.weight.unsqueeze(0)
 
-            idx = torch.arange(self.num_joint, device=device)
-            ctx = self.norm(joint_out) + self.node_pe(idx)
-            ctx = self.spatial_hypers(ctx.unsqueeze(1)).squeeze(1)       # (B, J, dim)
-            hyper_ctx = ctx
+            # idx = torch.arange(self.num_joint, device=device)
+            # ctx = self.norm(joint_out) + self.node_pe(idx)
+            # ctx = self.spatial_hypers(ctx.unsqueeze(1)).squeeze(1)       # (B, J, dim)
+            # hyper_ctx = ctx
 
-            pose_feat = self.pose_context_attn(pose_token, ctx, ctx)     # (B, 24, dim)
+            pose_feat = self.pose_context_attn(pose_token, joint_out,joint_out)     # (B, 24, dim)
 
             root_pose_6d = self.root_pose_head(pose_feat[:, 0, :])
             root_pose = rot6d_to_axis_angle(root_pose_6d)
