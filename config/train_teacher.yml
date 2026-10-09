@@ -13,7 +13,7 @@ MODEL:
   resnet_type: 50
   hpe_dim: 512
   hpe_dep: 5
-  motionbert_pretrained: './experiment/pretrained/best_epoch.bin'
+  motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
 
   # ---- Ep Teacher phai dung anh (xem content_ablation_test.py de kiem chung sau khi train) ----
   # (A) Luc train: input = (1-a)*GT + a*MotionBERT_lift, a ~ U(0, teacher_lift_alpha_max) rieng tung mau.
