@@ -429,7 +429,11 @@ def main():
           f"{results['mpjpe']['frac_student_better_than_motionbert']:.1%} mau tot hon")
     print(f"  Student con cach Teacher            : {gt_:+.2f} +/- {gt_ci:.2f} mm")
     print("  (khoang tin cay tinh theo mau doc lap -> lac quan voi 3DPW)")
-    if gm < args.improve_thresh:
+    if gm < 0:
+        print(f"\n  [CANH BAO] Student TE HON joint MotionBERT dau vao {-gm:.1f} mm "
+              f"({1 - results['mpjpe']['frac_student_better_than_motionbert']:.1%} mau te hon): "
+              "pipeline dang lam xau input thay vi khu nhieu.")
+    elif gm < args.improve_thresh:
         print(f"\n  [GOI Y] Student chi cai thien {gm:.1f} mm (< {args.improve_thresh} mm) so voi joint MotionBERT dau vao.")
         print("  Co the sai so cua joint dau vao dang quyet dinh ket qua; can doi chieu voi muc [5], [6] truoc khi ket luan.")
 
