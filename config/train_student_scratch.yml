@@ -1,0 +1,44 @@
+# Baseline Student "from scratch": KHONG Teacher, KHONG KD, KHONG khoi tao tu Teacher.
+# Moi thu khac GIONG HET config/train_student.yml de so sanh cong bang voi ban co KD.
+DATASET:
+  train_list: ['3dpw-train']
+  test_list: ['3dpw']
+  input_joint_set: 'human36'
+  target_joint_set: 'human36'
+  workers: 8
+  use_gt_input: False
+  seqlen: 1
+  stride: 1
+
+MODEL:
+  name: 'student'
+  resnet_type: 50
+  freeze_backbone: True
+  hpe_dim: 512
+  hpe_dep: 5
+  motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
+  # Giong ban KD: backbone ResNet-50 cua SPIN + chuan hoa anh ImageNet.
+  backbone_pretrained: 'spin'
+  # Tat KD: khong nap Teacher, loss = 0.5*hard + privileged (privileged so voi GT 3D).
+  student_use_kd: False
+
+TRAIN:
+  print_freq: 20
+  batch_size: 32
+  shuffle: True
+  begin_epoch: 1
+  end_epoch: 50
+  curriculum_epochs: 15
+  scheduler: 'step'
+  backbone_lr_scale: 0.1
+  lr: 0.0001
+  lr_step: [25, 35, 45]
+  lr_factor: 0.5
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 32
+  shuffle: False

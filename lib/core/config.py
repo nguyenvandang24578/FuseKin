@@ -125,6 +125,8 @@ cfg.MODEL.kd_w_joint = 1.0
 cfg.MODEL.kd_w_global = 1.0
 cfg.MODEL.priv_beta = 0.05
 cfg.MODEL.init_student_from_teacher = True
+# False -> Student "from scratch": khong Teacher, khong KD, khong khoi tao tu Teacher (baseline de so voi KD)
+cfg.MODEL.student_use_kd = True
 """ Train Detail """
 cfg.TRAIN = edict()
 cfg.TRAIN.print_freq = 20

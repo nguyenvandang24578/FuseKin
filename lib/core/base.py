@@ -734,31 +734,40 @@ class Student_Trainer:
 
         self.J_regressor = eval(f'torch.Tensor(self.main_dataset.joint_regressor_{cfg.DATASET.target_joint_set}).cuda()')
 #---------------------------------------------------------------------------------
-        teacher_ckpt = cfg.MODEL.get('TEACHER', '')
-        assert teacher_ckpt, 'Cần đặt cfg.MODEL.TEACHER (checkpoint của Teacher_Trainer)'
+        # student_use_kd = False -> baseline "from scratch": KHONG dung Teacher (khong KD, khong khoi tao tu Teacher),
+        # chi train bang hard loss + privileged loss (privileged so voi GT 3D, khong lien quan Teacher).
+        self.use_kd = bool(cfg.MODEL.get('student_use_kd', True))
         self.kd_weight = cfg.MODEL.get('kd_weight', 1.0)
-
-        from models.ARTS import ARTS
-        old_mode = cfg.MODEL.name
-        cfg.MODEL.name = "teacher"
-        hpe_dim = cfg.MODEL.get('hpe_dim', 512)
-        self.teacher = ARTS(num_joint=self.main_dataset.joint_num, embed_dim=hpe_dim)
-        cfg.MODEL.name = old_mode
-        load_model_weights(self.teacher, teacher_ckpt)
-
         resume = hasattr(args, 'resume_training') and args.resume_training
-        # Student va Teacher cung kien truc (chi khac bo ma hoa joint) -> khoi tao Student tu Teacher.
-        # Key khac nhau (fusion.joint_proj / norm_joint_proj <-> fusion.projector_student) se bi bo qua boi strict=False.
-        if not resume and cfg.MODEL.get('init_student_from_teacher', True):
-            missing, unexpected = self.model.smpl_model.load_state_dict(
-                self.teacher.smpl_model.state_dict(), strict=False)
-            print(f'===> Student smpl_model khoi tao tu Teacher | '
-                  f'missing={len(missing)} (bo ma hoa joint cua student), unexpected={len(unexpected)}')
 
-        self.teacher = torch.nn.DataParallel(self.teacher).cuda()
-        self.teacher.eval()
-        for p in self.teacher.parameters():
-            p.requires_grad = False
+        if self.use_kd:
+            teacher_ckpt = cfg.MODEL.get('TEACHER', '')
+            assert teacher_ckpt, 'Cần đặt cfg.MODEL.TEACHER (checkpoint của Teacher_Trainer)'
+
+            from models.ARTS import ARTS
+            old_mode = cfg.MODEL.name
+            cfg.MODEL.name = "teacher"
+            hpe_dim = cfg.MODEL.get('hpe_dim', 512)
+            self.teacher = ARTS(num_joint=self.main_dataset.joint_num, embed_dim=hpe_dim)
+            cfg.MODEL.name = old_mode
+            load_model_weights(self.teacher, teacher_ckpt)
+
+            # Student va Teacher cung kien truc (chi khac bo ma hoa joint) -> khoi tao Student tu Teacher.
+            # Key khac nhau (fusion.joint_proj / norm_joint_proj <-> fusion.projector_student) se bi bo qua boi strict=False.
+            if not resume and cfg.MODEL.get('init_student_from_teacher', True):
+                missing, unexpected = self.model.smpl_model.load_state_dict(
+                    self.teacher.smpl_model.state_dict(), strict=False)
+                print(f'===> Student smpl_model khoi tao tu Teacher | '
+                      f'missing={len(missing)} (bo ma hoa joint cua student), unexpected={len(unexpected)}')
+
+            self.teacher = torch.nn.DataParallel(self.teacher).cuda()
+            self.teacher.eval()
+            for p in self.teacher.parameters():
+                p.requires_grad = False
+        else:
+            self.teacher = None
+            print('===> Student FROM SCRATCH: khong Teacher, khong KD, khong khoi tao tu Teacher '
+                  '(loss = 0.5*hard + privileged)')
         h36m_joints = ('Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck', 'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist')
         smpl30_joints = self.main_dataset.mesh_model.joints_name
         self.h36m_from_smpl30 = [smpl30_joints.index(name) for name in h36m_joints]
@@ -794,7 +803,8 @@ class Student_Trainer:
 
     def train(self, epoch):
         self.model.train()
-        self.teacher.eval()
+        if self.teacher is not None:
+            self.teacher.eval()
 
         lr_check(self.optimizer, epoch)
         # beta của smooth L1 cho privileged loss (giả định đơn vị mét; nếu GT là mm thì tăng lên)
@@ -843,10 +853,6 @@ class Student_Trainer:
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
             pred_pose_rootrel = pred_pose - pred_pose[:, 0:1, :]
 
-            # ---------- teacher forward (GT 3D làm đầu vào, không grad) ----------
-            with torch.no_grad():
-                t_out = self.teacher(input_image, gt_pose_input, is_train=False)
-
             # ---------- mask khớp hợp lệ ----------
             valid_joint = fit_joint_trunc
             if valid_joint.dim() == 3:
@@ -854,12 +860,24 @@ class Student_Trainer:
             valid_joint = valid_joint * is_valid_fit[:, None]
             n_valid = valid_joint.sum(-1).clamp_min(1.0)       # (B,); mẫu không có khớp hợp lệ -> loss = 0
 
+            # ---------- teacher forward (GT 3D làm đầu vào, không grad) ----------
+            # Khi khong dung KD: t_out rong -> moi so hang KD = 0 (cac nhanh .get() ben duoi tu bo qua)
+            if self.use_kd:
+                with torch.no_grad():
+                    t_out = self.teacher(input_image, gt_pose_input, is_train=False)
+            else:
+                t_out = {}
+
             # ---------- KD: 3 điểm nối ----------
-            kd_proj_ps = (_cos_dist(model_output['feat_joint_in'], t_out['feat_joint_in'])
-                          * valid_joint).sum(-1) / n_valid                              # (B,)
-            kd_joint_ps = (_cos_dist(model_output['feat_joint'], t_out['feat_joint'])
-                           * valid_joint).sum(-1) / n_valid                             # (B,)
-            kd_global_ps = _cos_dist(model_output['feat_global'], t_out['feat_global'])  # (B,)
+            zeros_b = torch.zeros(input_image.shape[0], device=input_image.device)
+            if self.use_kd:
+                kd_proj_ps = (_cos_dist(model_output['feat_joint_in'], t_out['feat_joint_in'])
+                              * valid_joint).sum(-1) / n_valid                              # (B,)
+                kd_joint_ps = (_cos_dist(model_output['feat_joint'], t_out['feat_joint'])
+                               * valid_joint).sum(-1) / n_valid                             # (B,)
+                kd_global_ps = _cos_dist(model_output['feat_global'], t_out['feat_global'])  # (B,)
+            else:
+                kd_proj_ps = kd_joint_ps = kd_global_ps = zeros_b
 
             # ---------- KD: sâu hơn (GCN / Transformer pose) ----------
             kd_hyper_ps = 0.0
