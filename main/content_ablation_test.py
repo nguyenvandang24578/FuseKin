@@ -148,6 +148,7 @@ def main():
     h36m_reg = torch.as_tensor(dataset.h36m_joint_regressor, dtype=torch.float32, device=DEVICE)
 
     s_real, s_blind, t_real, t_blind = [], [], [], []
+    s_mean, t_mean = [], []
     n_batches = 0
     with torch.no_grad():
         for inputs, targets, meta in loader:
@@ -164,17 +165,24 @@ def main():
             # ---------------- Teacher ----------------
             feat_t_real, _ = teacher.get_image_features(img)
             feat_t_blind = torch.randn_like(feat_t_real)  # xoa sach noi dung anh, giu nguyen shape
+            # mean-feature: 1 token duy nhat (TB kenh ca batch), ap cho MOI mau -> van "trong
+            # phan phoi" (khong soc OOD nhu randn) nhung xoa sach thong tin RIENG tung mau.
+            feat_t_mean = feat_t_real.mean(dim=0, keepdim=True).expand_as(feat_t_real).contiguous()
 
             out_t_real = teacher.smpl_model(joints=gt_h36m, img_feats=feat_t_real,
                                              is_train=False, return_features=True)
             out_t_blind = teacher.smpl_model(joints=gt_h36m, img_feats=feat_t_blind,
                                               is_train=False, return_features=True)
+            out_t_mean = teacher.smpl_model(joints=gt_h36m, img_feats=feat_t_mean,
+                                             is_train=False, return_features=True)
             t_real.append(mpjpe_mm(h36m_from_mesh(out_t_real['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
             t_blind.append(mpjpe_mm(h36m_from_mesh(out_t_blind['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
+            t_mean.append(mpjpe_mm(h36m_from_mesh(out_t_mean['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
 
             # ---------------- Student ----------------
             feat_s_real, _ = student.get_image_features(img)
             feat_s_blind = torch.randn_like(feat_s_real)
+            feat_s_mean = feat_s_real.mean(dim=0, keepdim=True).expand_as(feat_s_real).contiguous()
             pose_3d = student.lift_2d_to_3d(joints2d, joints_mask=joints_mask)
             pose_3d = pose_3d - pose_3d[:, 0:1, :]
 
@@ -182,32 +190,45 @@ def main():
                                              is_train=False, return_features=True)
             out_s_blind = student.smpl_model(joints=pose_3d, img_feats=feat_s_blind,
                                               is_train=False, return_features=True)
+            out_s_mean = student.smpl_model(joints=pose_3d, img_feats=feat_s_mean,
+                                             is_train=False, return_features=True)
             s_real.append(mpjpe_mm(h36m_from_mesh(out_s_real['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
             s_blind.append(mpjpe_mm(h36m_from_mesh(out_s_blind['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
+            s_mean.append(mpjpe_mm(h36m_from_mesh(out_s_mean['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
 
             if n_batches % 5 == 0:
                 print(f"  ... da xu ly {n_batches}/{args.max_batches} batch")
 
-    s_real = torch.cat(s_real).numpy(); s_blind = torch.cat(s_blind).numpy()
-    t_real = torch.cat(t_real).numpy(); t_blind = torch.cat(t_blind).numpy()
+    s_real = torch.cat(s_real).numpy(); s_blind = torch.cat(s_blind).numpy(); s_mean = torch.cat(s_mean).numpy()
+    t_real = torch.cat(t_real).numpy(); t_blind = torch.cat(t_blind).numpy(); t_mean = torch.cat(t_mean).numpy()
 
     d_s = s_blind - s_real   # duong = blind te hon = anh co ich
     d_t = t_blind - t_real
+    dm_s = s_mean - s_real   # chenh lech do mean-feature gay ra (so voi anh that)
+    dm_t = t_mean - t_real
     ds_mean, ds_ci = paired(d_s)
     dt_mean, dt_ci = paired(d_t)
+    dms_mean, dms_ci = paired(dm_s)
+    dmt_mean, dmt_ci = paired(dm_t)
 
-    hr("KET QUA — MPJPE (mm): anh that vs anh = nhieu trang (randn, xoa sach noi dung)")
-    print(f"  Student  | that: {summarize(s_real)}")
-    print(f"           | blind: {summarize(s_blind)}")
-    print(f"           | chenh lech (blind - that): {ds_mean:+.2f} +/- {ds_ci:.2f} mm (95%, n={len(d_s)}); "
+    hr("KET QUA — MPJPE (mm): anh that vs anh = nhieu trang (randn) vs anh = trung binh batch (mean)")
+    print(f"  Student  | that : {summarize(s_real)}")
+    print(f"           | blind (randn): {summarize(s_blind)}")
+    print(f"           | mean  (TB batch): {summarize(s_mean)}")
+    print(f"           | blind - that: {ds_mean:+.2f} +/- {ds_ci:.2f} mm (95%, n={len(d_s)}); "
           f"{(d_s > 0).mean():.1%} mau blind te hon")
-    print(f"  Teacher  | that: {summarize(t_real)}")
-    print(f"           | blind: {summarize(t_blind)}")
-    print(f"           | chenh lech (blind - that): {dt_mean:+.2f} +/- {dt_ci:.2f} mm (95%, n={len(d_t)}); "
+    print(f"           | mean  - that: {dms_mean:+.2f} +/- {dms_ci:.2f} mm (95%, n={len(dm_s)}); "
+          f"{(dm_s > 0).mean():.1%} mau mean te hon")
+    print(f"  Teacher  | that : {summarize(t_real)}")
+    print(f"           | blind (randn): {summarize(t_blind)}")
+    print(f"           | mean  (TB batch): {summarize(t_mean)}")
+    print(f"           | blind - that: {dt_mean:+.2f} +/- {dt_ci:.2f} mm (95%, n={len(d_t)}); "
           f"{(d_t > 0).mean():.1%} mau blind te hon")
+    print(f"           | mean  - that: {dmt_mean:+.2f} +/- {dmt_ci:.2f} mm (95%, n={len(dm_t)}); "
+          f"{(dm_t > 0).mean():.1%} mau mean te hon")
 
     hr("KET LUAN")
-    def verdict(name, mean, ci, thresh):
+    def verdict(name, mean, ci, mean_feat_mean, mean_feat_ci, thresh):
         lo = mean - ci if not np.isnan(ci) else mean
         if abs(mean) < thresh and (np.isnan(ci) or lo < thresh):
             print(f"  [{name}] Xoa sach noi dung anh (randn) HAU NHU KHONG doi MPJPE "
@@ -218,14 +239,26 @@ def main():
             print(f"       sua duoc dieu nay — phai kiem tra truc tiep nhanh fusion/img_proj/gradient toi")
             print(f"       anh, hoac tang trong so loss body_joint_proj (nguon duy nhat bat buoc dung anh).")
         else:
-            print(f"  [{name}] Xoa noi dung anh lam MPJPE DOI RO RET ({mean:+.2f} +/- {ci:.2f}mm).")
-            print(f"    -> Kien truc {name} THUC SU doc duoc noi dung anh va dung no de du doan.")
-            print(f"       Neu truoc do shuffle-test cho thay model khong nhay voi DOI anh giua cac mau,")
-            print(f"       day la dau hieu van de nam o INCENTIVE cua loss (GT-joint da du de giam loss,")
-            print(f"       nen model khong CAN dung anh de cai thien further), khong phai o kien truc.")
+            print(f"  [{name}] Xoa noi dung anh (randn) lam MPJPE DOI RO RET ({mean:+.2f} +/- {ci:.2f}mm).")
+            # ---- phan xu: do la OOD-shock hay thuc su can thong tin rieng tung mau? ----
+            lo_m = mean_feat_mean - mean_feat_ci if not np.isnan(mean_feat_ci) else mean_feat_mean
+            if abs(mean_feat_mean) < thresh and (np.isnan(mean_feat_ci) or lo_m < thresh):
+                print(f"    -> NHUNG mean-feature (van trong phan phoi, xoa thong tin RIENG tung mau)")
+                print(f"       chi doi {mean_feat_mean:+.2f}mm — GAN NHU KHONG DOI.")
+                print(f"       => Ket luan: {name} KHONG thuc su can noi dung anh cua TUNG MAU. Cai lam")
+                print(f"       MPJPE xau o randn la SOC OUT-OF-DISTRIBUTION (backbone pretrain tren anh")
+                print(f"       that, nhieu trang pha vo thong ke LayerNorm/attention), KHONG PHAI bang")
+                print(f"       chung cho viec {name} doc va dung noi dung anh mot cach co y nghia.")
+            else:
+                print(f"    -> VA mean-feature cung lam MPJPE xau di ro ret ({mean_feat_mean:+.2f} +/- "
+                      f"{mean_feat_ci:.2f}mm).")
+                print(f"       => Ket luan: {name} THUC SU can thong tin RIENG cua TUNG MAU anh, khong")
+                print(f"       chi can 'co anh hop le'. Day la bang chung that cho viec kien truc doc")
+                print(f"       duoc va dung noi dung anh — neu truoc do shuffle-test cho thay khong")
+                print(f"       nhay voi DOI anh giua cac mau, can xem lai do nhay cua shuffle-test do.")
 
-    verdict('Student', ds_mean, ds_ci, args.blind_thresh)
-    verdict('Teacher', dt_mean, dt_ci, args.blind_thresh)
+    verdict('Student', ds_mean, ds_ci, dms_mean, dms_ci, args.blind_thresh)
+    verdict('Teacher', dt_mean, dt_ci, dmt_mean, dmt_ci, args.blind_thresh)
 
 
 if __name__ == '__main__':
