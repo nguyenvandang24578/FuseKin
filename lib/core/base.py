@@ -702,8 +702,14 @@ def load_model_weights(model, ckpt_path, skip_prefixes=('pose_lifter.',)):
     # 5) dừng ngay nếu teacher nạp chưa đủ
     # (Teacher phai duoc train bang Teacher_Trainer moi; ckpt SPIN cu se thieu HyperGCN/heads -> assert o day)
     assert not shape_bad, f'Có key lệch shape: {shape_bad[:3]}'
-    assert not [k for k in missing if k.startswith(('smpl_model.', 'backbone.'))], \
-        f'Teacher chưa nạp đủ smpl_model/backbone: {missing[:5]}'
+    missing_core = [k for k in missing if k.startswith(('smpl_model.', 'backbone.'))]
+    hint = ''
+    if any('fusion.projector_student.' in k for k in missing_core):
+        hint = ' -> Model la STUDENT nhung checkpoint khong co encoder cua Student (co the la checkpoint TEACHER).'
+    elif any('fusion.joint_proj.' in k or 'fusion.norm_joint_proj.' in k for k in missing_core):
+        hint = ' -> Model la TEACHER nhung checkpoint khong co encoder cua Teacher (co the la checkpoint STUDENT).'
+    assert not missing_core, \
+        f'Checkpoint {ckpt_path} chưa nạp đủ smpl_model/backbone{hint} Thiếu (5 đầu): {missing_core[:5]}'
     return model
 class Student_Trainer:
     def __init__(self, args, load_dir):

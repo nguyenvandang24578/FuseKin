@@ -31,10 +31,15 @@ Dieu kien quyet dinh:
 Cach chay:
     cd <repo_root>
     python main/content_ablation_test.py \
-        --cfg <config_cua_student> \
-        --student_ckpt <checkpoint_student>.pth.tar \
-        [--teacher_ckpt <checkpoint_teacher>.pth.tar]   # mac dinh: cfg.MODEL.TEACHER
+        --cfg <config> \
+        --teacher_ckpt <checkpoint_teacher>.pth.tar \   # mac dinh: cfg.MODEL.TEACHER
+        [--student_ckpt <checkpoint_student>.pth.tar] \ # bo trong -> chi test Teacher
+        [--teacher_alpha 0 0.5 1.0] \                   # input Teacher = (1-a)*GT + a*MotionBERT_lift
         [--max_batches 30] [--batch_size 16]
+
+--teacher_alpha nhan nhieu gia tri: moi gia tri la mot dieu kien test rieng. a=0 la GT sach,
+a=1 la cung input voi Student. Teacher duoc train de dung anh khi joint nhieu thi phai test o a>0;
+o a=0 co the van thay "khong dung anh" vi GT sach da du.
 
 Can CUDA.
 """
@@ -55,12 +60,14 @@ from torch.utils.data import DataLoader
 
 parser = argparse.ArgumentParser(description='Content-ablation test (anh = randn) cho Teacher/Student (FuseKin)')
 parser.add_argument('--cfg', type=str, required=True, help='config yaml (dung config cua Student)')
-parser.add_argument('--student_ckpt', type=str, required=True)
+parser.add_argument('--student_ckpt', type=str, default='', help='bo trong -> chi test Teacher')
 parser.add_argument('--teacher_ckpt', type=str, default='', help='mac dinh: cfg.MODEL.TEACHER')
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--max_batches', type=int, default=30)
 parser.add_argument('--workers', type=int, default=0)
 parser.add_argument('--seed', type=int, default=0)
+parser.add_argument('--teacher_alpha', type=float, nargs='+', default=[0.0],
+                    help='input Teacher = (1-a)*GT + a*MotionBERT_lift; nhieu gia tri -> moi gia tri 1 dieu kien')
 parser.add_argument('--blind_thresh', type=float, default=3.0,
                     help='(mm) nguong de ket luan "anh khong dong gop noi dung gi"')
 args = parser.parse_args()
@@ -90,11 +97,44 @@ def hr(title=''):
         print('=' * 78)
 
 
-def build_and_load(mode, ckpt_path):
+def check_ckpt_kind(mode, ckpt_path):
+    """Bao loi ro rang neu checkpoint khong khop loai model (Teacher dung joint_proj, Student dung projector_student)."""
+    if not os.path.isfile(ckpt_path):
+        print(f"[LOI] Khong thay checkpoint {mode}: {ckpt_path}")
+        sys.exit(1)
+    from core.base import _PickleShim
+    ckpt = torch.load(ckpt_path, map_location='cpu', pickle_module=_PickleShim, weights_only=False)
+    state = ckpt
+    if isinstance(ckpt, dict):
+        for k in ('model_state_dict', 'state_dict', 'model'):
+            if k in ckpt:
+                state = ckpt[k]
+                break
+    keys = list(state.keys())
+    has_student = any('fusion.projector_student.' in k for k in keys)
+    has_teacher = any('fusion.joint_proj.' in k for k in keys)
+    kind = 'student' if has_student else ('teacher' if has_teacher else 'khong ro')
+    has_probe = any('probe_' in k for k in keys)
+    print(f"  [{mode}] {ckpt_path} -> checkpoint loai: {kind}" + (" (co head tham do anh)" if has_probe else ""))
+    if kind != 'khong ro' and kind != mode:
+        print(f"\n[LOI] Ban dua checkpoint cua {kind.upper()} vao vi tri {mode.upper()}: {ckpt_path}")
+        print(f"      Kiem tra lai --{mode}_ckpt (co the bi dao giua --student_ckpt va --teacher_ckpt).")
+        sys.exit(1)
+    return has_probe
+
+
+def build_and_load(mode, ckpt_path, need_lift=False):
+    has_probe = check_ckpt_kind(mode, ckpt_path)
     old_mode = cfg.MODEL.name
+    old_lift, old_probe = cfg.MODEL.get('teacher_lift_alpha_max', 0.0), cfg.MODEL.get('img_probe', False)
     cfg.MODEL.name = mode
+    if mode == 'teacher':
+        # need_lift: dung MotionBERT trong Teacher de tao joint nhieu; has_probe: dung dung kien truc da train
+        cfg.MODEL.teacher_lift_alpha_max = 1.0 if need_lift else 0.0
+        cfg.MODEL.img_probe = has_probe
     model = ARTS(num_joint=17, embed_dim=cfg.MODEL.hpe_dim)
     cfg.MODEL.name = old_mode
+    cfg.MODEL.teacher_lift_alpha_max, cfg.MODEL.img_probe = old_lift, old_probe
     model = model.to(DEVICE)
     model = load_model_weights(model, ckpt_path)
     model.eval()
@@ -130,12 +170,15 @@ def main():
         print("[LOI] Thieu teacher checkpoint: dung --teacher_ckpt hoac dat cfg.MODEL.TEACHER")
         sys.exit(1)
 
-    print(f"Student ckpt : {args.student_ckpt}")
+    print(f"Student ckpt : {args.student_ckpt or '(khong dung - chi test Teacher)'}")
     print(f"Teacher ckpt : {teacher_ckpt}")
+    alphas = sorted(set(float(a) for a in args.teacher_alpha))
+    need_lift = any(a > 0 for a in alphas)
+    print(f"Teacher alpha: {alphas}")
 
     hr("Dang build va nap checkpoint...")
-    student = build_and_load('student', args.student_ckpt)
-    teacher = build_and_load('teacher', teacher_ckpt)
+    student = build_and_load('student', args.student_ckpt) if args.student_ckpt else None
+    teacher = build_and_load('teacher', teacher_ckpt, need_lift=need_lift)
 
     hr("Dang chuan bi tap val (3DPW test split)...")
     test_name = cfg.DATASET.test_list[0]
@@ -147,8 +190,8 @@ def main():
 
     h36m_reg = torch.as_tensor(dataset.h36m_joint_regressor, dtype=torch.float32, device=DEVICE)
 
-    s_real, s_blind, t_real, t_blind = [], [], [], []
-    s_mean, t_mean = [], []
+    s_real, s_blind, s_mean = [], [], []
+    t_res = {a: {'real': [], 'blind': [], 'mean': [], 'input': []} for a in alphas}
     n_batches = 0
     with torch.no_grad():
         for inputs, targets, meta in loader:
@@ -169,63 +212,71 @@ def main():
             # phan phoi" (khong soc OOD nhu randn) nhung xoa sach thong tin RIENG tung mau.
             feat_t_mean = feat_t_real.mean(dim=0, keepdim=True).expand_as(feat_t_real).contiguous()
 
-            out_t_real = teacher.smpl_model(joints=gt_h36m, img_feats=feat_t_real,
-                                             is_train=False, return_features=True)
-            out_t_blind = teacher.smpl_model(joints=gt_h36m, img_feats=feat_t_blind,
-                                              is_train=False, return_features=True)
-            out_t_mean = teacher.smpl_model(joints=gt_h36m, img_feats=feat_t_mean,
-                                             is_train=False, return_features=True)
-            t_real.append(mpjpe_mm(h36m_from_mesh(out_t_real['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
-            t_blind.append(mpjpe_mm(h36m_from_mesh(out_t_blind['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
-            t_mean.append(mpjpe_mm(h36m_from_mesh(out_t_mean['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
+            lifted = None
+            if need_lift:
+                lifted = teacher.lift_2d_to_3d(joints2d, joints_mask=joints_mask)
+                lifted = (lifted - lifted[:, 0:1, :]).to(gt_h36m.dtype)
+
+            def t_mpjpe(joints_in, feats):
+                out = teacher.smpl_model(joints=joints_in, img_feats=feats, is_train=False, return_features=True)
+                return mpjpe_mm(h36m_from_mesh(out['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu()
+
+            for a in alphas:
+                # input Teacher = (1-a)*GT + a*MotionBERT_lift (cung cong thuc voi luc train)
+                t_in = gt_h36m if a == 0 else (1.0 - a) * gt_h36m + a * lifted
+                t_res[a]['input'].append(mpjpe_mm(t_in, gt_h36m).cpu())
+                t_res[a]['real'].append(t_mpjpe(t_in, feat_t_real))
+                t_res[a]['blind'].append(t_mpjpe(t_in, feat_t_blind))
+                t_res[a]['mean'].append(t_mpjpe(t_in, feat_t_mean))
 
             # ---------------- Student ----------------
-            feat_s_real, _ = student.get_image_features(img)
-            feat_s_blind = torch.randn_like(feat_s_real)
-            feat_s_mean = feat_s_real.mean(dim=0, keepdim=True).expand_as(feat_s_real).contiguous()
-            pose_3d = student.lift_2d_to_3d(joints2d, joints_mask=joints_mask)
-            pose_3d = pose_3d - pose_3d[:, 0:1, :]
+            if student is not None:
+                feat_s_real, _ = student.get_image_features(img)
+                feat_s_blind = torch.randn_like(feat_s_real)
+                feat_s_mean = feat_s_real.mean(dim=0, keepdim=True).expand_as(feat_s_real).contiguous()
+                pose_3d = student.lift_2d_to_3d(joints2d, joints_mask=joints_mask)
+                pose_3d = pose_3d - pose_3d[:, 0:1, :]
 
-            out_s_real = student.smpl_model(joints=pose_3d, img_feats=feat_s_real,
-                                             is_train=False, return_features=True)
-            out_s_blind = student.smpl_model(joints=pose_3d, img_feats=feat_s_blind,
-                                              is_train=False, return_features=True)
-            out_s_mean = student.smpl_model(joints=pose_3d, img_feats=feat_s_mean,
-                                             is_train=False, return_features=True)
-            s_real.append(mpjpe_mm(h36m_from_mesh(out_s_real['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
-            s_blind.append(mpjpe_mm(h36m_from_mesh(out_s_blind['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
-            s_mean.append(mpjpe_mm(h36m_from_mesh(out_s_mean['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
+                out_s_real = student.smpl_model(joints=pose_3d, img_feats=feat_s_real,
+                                                 is_train=False, return_features=True)
+                out_s_blind = student.smpl_model(joints=pose_3d, img_feats=feat_s_blind,
+                                                  is_train=False, return_features=True)
+                out_s_mean = student.smpl_model(joints=pose_3d, img_feats=feat_s_mean,
+                                                 is_train=False, return_features=True)
+                s_real.append(mpjpe_mm(h36m_from_mesh(out_s_real['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
+                s_blind.append(mpjpe_mm(h36m_from_mesh(out_s_blind['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
+                s_mean.append(mpjpe_mm(h36m_from_mesh(out_s_mean['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
 
             if n_batches % 5 == 0:
                 print(f"  ... da xu ly {n_batches}/{args.max_batches} batch")
 
-    s_real = torch.cat(s_real).numpy(); s_blind = torch.cat(s_blind).numpy(); s_mean = torch.cat(s_mean).numpy()
-    t_real = torch.cat(t_real).numpy(); t_blind = torch.cat(t_blind).numpy(); t_mean = torch.cat(t_mean).numpy()
+    def report(name, real, blind, mean, inp=None):
+        real, blind, mean = torch.cat(real).numpy(), torch.cat(blind).numpy(), torch.cat(mean).numpy()
+        d, dm = blind - real, mean - real   # duong = mat anh lam te hon = anh co ich
+        d_mean, d_ci = paired(d)
+        dm_mean, dm_ci = paired(dm)
+        print(f"  {name}")
+        if inp is not None:
+            print(f"    input (so voi GT)  : {summarize(torch.cat(inp).numpy())}")
+        print(f"    anh that           : {summarize(real)}")
+        print(f"    blind (randn)      : {summarize(blind)}")
+        print(f"    mean  (TB batch)   : {summarize(mean)}")
+        print(f"    blind - that       : {d_mean:+.2f} +/- {d_ci:.2f} mm (95%, n={len(d)}); "
+              f"{(d > 0).mean():.1%} mau blind te hon")
+        print(f"    mean  - that       : {dm_mean:+.2f} +/- {dm_ci:.2f} mm (95%, n={len(dm)}); "
+              f"{(dm > 0).mean():.1%} mau mean te hon")
+        return d_mean, d_ci, dm_mean, dm_ci
 
-    d_s = s_blind - s_real   # duong = blind te hon = anh co ich
-    d_t = t_blind - t_real
-    dm_s = s_mean - s_real   # chenh lech do mean-feature gay ra (so voi anh that)
-    dm_t = t_mean - t_real
-    ds_mean, ds_ci = paired(d_s)
-    dt_mean, dt_ci = paired(d_t)
-    dms_mean, dms_ci = paired(dm_s)
-    dmt_mean, dmt_ci = paired(dm_t)
-
-    hr("KET QUA — MPJPE (mm): anh that vs anh = nhieu trang (randn) vs anh = trung binh batch (mean)")
-    print(f"  Student  | that : {summarize(s_real)}")
-    print(f"           | blind (randn): {summarize(s_blind)}")
-    print(f"           | mean  (TB batch): {summarize(s_mean)}")
-    print(f"           | blind - that: {ds_mean:+.2f} +/- {ds_ci:.2f} mm (95%, n={len(d_s)}); "
-          f"{(d_s > 0).mean():.1%} mau blind te hon")
-    print(f"           | mean  - that: {dms_mean:+.2f} +/- {dms_ci:.2f} mm (95%, n={len(dm_s)}); "
-          f"{(dm_s > 0).mean():.1%} mau mean te hon")
-    print(f"  Teacher  | that : {summarize(t_real)}")
-    print(f"           | blind (randn): {summarize(t_blind)}")
-    print(f"           | mean  (TB batch): {summarize(t_mean)}")
-    print(f"           | blind - that: {dt_mean:+.2f} +/- {dt_ci:.2f} mm (95%, n={len(d_t)}); "
-          f"{(d_t > 0).mean():.1%} mau blind te hon")
-    print(f"           | mean  - that: {dmt_mean:+.2f} +/- {dmt_ci:.2f} mm (95%, n={len(dm_t)}); "
-          f"{(dm_t > 0).mean():.1%} mau mean te hon")
+    hr("KET QUA - MPJPE (mm): anh that vs anh = nhieu trang (randn) vs anh = trung binh batch (mean)")
+    verdicts = []
+    if student is not None:
+        verdicts.append(('Student', report('Student (joint MotionBERT)', s_real, s_blind, s_mean)))
+    for a in alphas:
+        tag = 'GT sach' if a == 0 else f'(1-{a})*GT + {a}*MotionBERT'
+        r = t_res[a]
+        verdicts.append((f'Teacher a={a}', report(f'Teacher a={a}  [{tag}]', r['real'], r['blind'], r['mean'],
+                                                  r['input'] if a > 0 else None)))
+    print("  (khoang tin cay tinh theo mau doc lap -> lac quan voi 3DPW)")
 
     hr("KET LUAN")
     def verdict(name, mean, ci, mean_feat_mean, mean_feat_ci, thresh):
@@ -257,8 +308,8 @@ def main():
                 print(f"       duoc va dung noi dung anh — neu truoc do shuffle-test cho thay khong")
                 print(f"       nhay voi DOI anh giua cac mau, can xem lai do nhay cua shuffle-test do.")
 
-    verdict('Student', ds_mean, ds_ci, dms_mean, dms_ci, args.blind_thresh)
-    verdict('Teacher', dt_mean, dt_ci, dmt_mean, dmt_ci, args.blind_thresh)
+    for name, (d_mean, d_ci, dm_mean, dm_ci) in verdicts:
+        verdict(name, d_mean, d_ci, dm_mean, dm_ci, args.blind_thresh)
 
 
 if __name__ == '__main__':
