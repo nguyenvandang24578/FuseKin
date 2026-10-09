@@ -689,6 +689,19 @@ def load_model_weights(model, ckpt_path, skip_prefixes=('pose_lifter.',)):
     missing, unexpected = model.load_state_dict(filtered, strict=False)
     missing = [k for k in missing if not k.startswith(skip_prefixes)]
 
+    # 4b) Chuan hoa anh cua backbone (backbone.input_mean / input_std) chi co trong checkpoint moi.
+    #     Checkpoint cu (backbone ngau nhien, KHONG chuan hoa) khong co 2 key nay -> dat ve khong chuan hoa
+    #     de giu dung hanh vi luc train, bat ke config hien tai co bat backbone_pretrained hay khong.
+    norm_keys = ('backbone.input_mean', 'backbone.input_std')
+    if hasattr(model, 'backbone') and hasattr(model.backbone, 'set_input_normalization'):
+        if not any(k in state for k in norm_keys):
+            model.backbone.set_input_normalization(imagenet=False)
+            print('[load_model_weights] checkpoint khong co chuan hoa anh cho backbone -> dung anh [0,1] nhu luc train cu')
+        else:
+            print(f'[load_model_weights] backbone dung chuan hoa tu checkpoint: '
+                  f'mean={model.backbone.input_mean.flatten().tolist()}')
+    missing = [k for k in missing if k not in norm_keys]
+
     print(f'[Teacher] loaded {len(filtered)} tensors, skipped {len(skipped)} {skip_prefixes}')
     print(f'[Teacher] missing={len(missing)}, unexpected={len(unexpected)}, '
           f'shape_mismatch={len(shape_bad)}')

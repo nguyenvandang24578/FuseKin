@@ -15,6 +15,9 @@ MODEL:
   hpe_dim: 512
   hpe_dep: 5
   motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
+  # Phai giong Teacher: backbone ResNet-50 cua SPIN + chuan hoa anh ImageNet.
+  backbone_pretrained: 'spin'
+  # NHO cap nhat TEACHER sang checkpoint Teacher MOI (train voi backbone SPIN) truoc khi train Student.
   TEACHER: './experiment/exp_10-08_00_34/checkpoint/best.pth.tar'
   kd_weight: 1.0
 

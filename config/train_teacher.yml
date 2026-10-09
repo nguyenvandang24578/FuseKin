@@ -15,6 +15,10 @@ MODEL:
   hpe_dep: 5
   motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
 
+  # Backbone ResNet-50 lay tu SPIN (truoc day backbone la NGAU NHIEN -> nhanh anh vo dung).
+  # Tu bat chuan hoa anh kieu ImageNet. Backbone van dong bang.
+  backbone_pretrained: 'spin'
+
   # ---- Ep Teacher phai dung anh (xem content_ablation_test.py de kiem chung sau khi train) ----
   # (A) Luc train: input = (1-a)*GT + a*MotionBERT_lift, a ~ U(0, teacher_lift_alpha_max) rieng tung mau.
   #     0.0 = tat, Teacher nhan GT sach nhu truoc.

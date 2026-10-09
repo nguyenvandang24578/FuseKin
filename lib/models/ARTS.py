@@ -33,6 +33,16 @@ class ARTS(nn.Module):
         self.mode = cfg.MODEL.name
 
         self.backbone = ResNetBackbone(cfg.MODEL.resnet_type)
+        # Nap trong so pretrain cho backbone ('spin' | 'imagenet' | '' = ngau nhien nhu cu).
+        # Khi nap checkpoint da train, load_model_weights se ghi de backbone (va chuan hoa) bang ban trong checkpoint.
+        bb_src = cfg.MODEL.get('backbone_pretrained', '')
+        if bb_src:
+            self.backbone.load_pretrained(
+                bb_src,
+                spin_checkpoint=cfg.MODEL.get('spin_checkpoint', 'data_final/base_data/spin_model_checkpoint.pth.tar'),
+            )
+        else:
+            print('[CANH BAO] Backbone ResNet KHONG nap pretrain (cfg.MODEL.backbone_pretrained rong) -> dac trung anh ngau nhien.')
 
         # Lấy hpe_dim từ config để hỗ trợ MotionBERT-Lite (256) hoặc Full (512)
         mb_dim = cfg.MODEL.get('hpe_dim', 512)
@@ -110,8 +120,11 @@ class ARTS(nn.Module):
         first_frame = pose_2d[:, 0]
         xy = first_frame[..., :2]
 
-        # CRITICAL FIX: MotionBERT was finetuned with root-relative 2D keypoints!
-        xy = xy - xy[:, 0:1, :]
+        # CRITICAL: MotionBERT goc (MB_ft_h36m.yaml) KHONG tru root khoi input 2D, chi tru root
+        # o 3D target/loss (rootrel: True). FuseKin truoc day tru ca input 2D -> mat tin hieu vi
+        # tri tuyet doi trong khung hinh. Dieu khien boi cfg.MODEL.motionbert_2d_rootrel de so sanh.
+        if cfg.MODEL.get('motionbert_2d_rootrel', True):
+            xy = xy - xy[:, 0:1, :]
 
         # MotionBERT's 3rd input channel was finetuned on the real per-joint
         # validity mask (see main/finetune_motionbert.py), not a constant.

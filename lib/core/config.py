@@ -76,7 +76,11 @@ cfg.MODEL = edict()
 cfg.MODEL.name = 'ARTS'
 cfg.MODEL.resnet_type = 50
 cfg.MODEL.freeze_backbone = True
-cfg.MODEL.pretrained_backbone = False
+cfg.MODEL.pretrained_backbone = False   # khong anh huong ResNetBackbone cua ARTS; dung backbone_pretrained ben duoi
+# Trong so pretrain cho ResNetBackbone: 'spin' (ResNet-50 cua SPIN/HMR) | 'imagenet' (torchvision) | '' (ngau nhien)
+# Bat cai nay thi backbone cung tu chuan hoa anh kieu ImageNet (mean/std) truoc khi trich dac trung.
+cfg.MODEL.backbone_pretrained = ''
+cfg.MODEL.spin_checkpoint = 'data_final/base_data/spin_model_checkpoint.pth.tar'
 cfg.MODEL.hpe_dim = 256
 cfg.MODEL.hpe_dep = 3
 cfg.MODEL.joint_dim = 64
