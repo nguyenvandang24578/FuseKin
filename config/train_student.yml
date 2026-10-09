@@ -15,6 +15,8 @@ MODEL:
   hpe_dim: 512
   hpe_dep: 5
   motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
+  # Phai giong Teacher: MotionBERT ban moi KHONG tru root o 2D.
+  motionbert_2d_rootrel: False
   # Phai giong Teacher: backbone ResNet-50 cua SPIN + chuan hoa anh ImageNet.
   backbone_pretrained: 'spin'
   # NHO cap nhat TEACHER sang checkpoint Teacher MOI (train voi backbone SPIN) truoc khi train Student.

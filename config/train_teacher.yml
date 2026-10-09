@@ -14,6 +14,9 @@ MODEL:
   hpe_dim: 512
   hpe_dep: 5
   motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
+  # PHAI khop voi cach finetune MotionBERT: ban moi KHONG tru root o 2D -> False.
+  # (Neu dung lai ban cu finetune co tru root thi doi thanh True.)
+  motionbert_2d_rootrel: False
 
   # Backbone ResNet-50 lay tu SPIN (truoc day backbone la NGAU NHIEN -> nhanh anh vo dung).
   # Tu bat chuan hoa anh kieu ImageNet. Backbone van dong bang.

@@ -17,6 +17,8 @@ MODEL:
   hpe_dim: 512
   hpe_dep: 5
   motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
+  # Phai giong Teacher: MotionBERT ban moi KHONG tru root o 2D.
+  motionbert_2d_rootrel: False
   # Giong ban KD: backbone ResNet-50 cua SPIN + chuan hoa anh ImageNet.
   backbone_pretrained: 'spin'
   # Tat KD: khong nap Teacher, loss = 0.5*hard + privileged (privileged so voi GT 3D).
