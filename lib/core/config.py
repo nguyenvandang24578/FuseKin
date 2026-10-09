@@ -99,7 +99,7 @@ cfg.MODEL.motionbert_pretrained = './experiment/finetune_motionbert/best_epoch.b
 # False: dung dung convention goc cua MotionBERT (xem MB_ft_h36m.yaml: rootrel chi ap dung cho
 #   3D target/loss, KHONG ap dung cho input 2D) -> model duoc giu lai tin hieu vi tri tuyet doi
 #   trong khung hinh, dung nhu luc pretrain MB_release.
-cfg.MODEL.motionbert_2d_rootrel = True
+cfg.MODEL.motionbert_2d_rootrel = False
 
 # ---- Teacher: ep Teacher phai dung anh ----
 # (A) Tron GT voi joint MotionBERT lift tu 2D: input = (1-a)*GT + a*lift, a ~ U(0, alpha_max) moi mau luc train.
