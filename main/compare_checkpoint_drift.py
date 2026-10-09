@@ -97,6 +97,88 @@ def submodule_of(key):
     return parts[1] if len(parts) > 1 else key
 
 
+# --------------------------------------------------------------------------
+# [MOI] Gating coefficients cua fusion.cfcer — "van" dieu khien bao nhieu
+# thong tin anh duoc cho phep chay vao nhanh joint (va nguoc lai).
+#
+#   joint_out = coef1(joint_tok) + coef2(joint_att)   <- coef2 = van anh->joint
+#   rgb_out   = coef3(rgb_tok)  + coef4(rgb_att)       <- coef4 = van joint->anh
+#   joint_out = coef5(joint_out) + coef6(FFN(...))
+#   rgb_out   = coef7(rgb_out)  + coef8(FFN(...))
+#
+# Khoi tao mac dinh = 1.0 cho moi coef. Neu coef2 cua Student thap hon han
+# Teacher -> bang chung TRUC TIEP (khong qua suy luan MPJPE) rang Student da
+# tu hoc cach KHOA VAN duong anh->joint trong luc train.
+# --------------------------------------------------------------------------
+FUSION_EXTRA_PREFIXES = (
+    'smpl_model.fusion.img_proj.',
+    'smpl_model.fusion.pos_emb_img',
+    'smpl_model.fusion.norm_img_in.',
+)
+
+
+def print_fusion_gate_report(teacher_state, student_state, n_blocks=3):
+    hr("[GATE] He so gating fusion.cfcer — van anh<->joint o tung block")
+    print(f"{'block':<8}{'coef':<8}{'y nghia':<26}{'Teacher':>10}{'Student':>10}{'delta':>10}")
+    rows = []
+    for b in range(n_blocks):
+        meanings = {
+            'coef1': 'giu joint goc',
+            'coef2': 'anh -> joint  (*)',
+            'coef3': 'giu anh goc',
+            'coef4': 'joint -> anh  (*)',
+            'coef5': 'giu joint (FFN)',
+            'coef6': 'FFN joint',
+            'coef7': 'giu anh (FFN)',
+            'coef8': 'FFN anh',
+        }
+        for c in range(1, 9):
+            key = f'smpl_model.fusion.cfcer.blocks.{b}.coef{c}.bias'
+            if key not in teacher_state or key not in student_state:
+                continue
+            vt = teacher_state[key].flatten()[0].item()
+            vs = student_state[key].flatten()[0].item()
+            tag = meanings[f'coef{c}']
+            flag = '  <--' if c in (2, 4) else ''
+            print(f"{b:<8}{c:<8}{tag:<26}{vt:>10.4f}{vs:>10.4f}{vs - vt:>+10.4f}{flag}")
+            rows.append((b, c, vt, vs))
+
+    coef2_vals = [(vt, vs) for b, c, vt, vs in rows if c == 2]
+    if coef2_vals:
+        t_avg = sum(v[0] for v in coef2_vals) / len(coef2_vals)
+        s_avg = sum(v[1] for v in coef2_vals) / len(coef2_vals)
+        print(f"\ncoef2 (van anh->joint) trung binh 3 block: Teacher={t_avg:.4f}  Student={s_avg:.4f}")
+        if s_avg < 0.5 * t_avg or s_avg < 0.3:
+            print("  [XAC NHAN] coef2 cua Student thap hon han Teacher (hoac gan 0 tuyet doi)")
+            print("  -> Day la BANG CHUNG TRUC TIEP: Student da tu hoc cach KHOA VAN anh->joint.")
+            print("     Khop hoan toan voi content-ablation test (randn khong doi MPJPE Student)")
+            print("     va voi viec Student bat bien voi ca shuffle lan randn trong khi Teacher")
+            print("     chi bat bien voi shuffle. Huong fix: them regularizer ep coef2 khong qua")
+            print("     nho (vd L2 toi gia tri 1.0, hoac warmup dong bang coef2 vai epoch dau),")
+            print("     hoac tang trong so loss buoc model phai dung anh de giam loss further.")
+        else:
+            print("  -> coef2 khong lech nhieu -> van gating KHONG phai nguyen nhan chinh,")
+            print("     can xem lai phan [2]/[3] ben tren (drift o pose_context_attn/heads).")
+
+    # ---- img_proj / pos_emb_img / norm_img_in ----
+    extra_rows = []
+    for prefix in FUSION_EXTRA_PREFIXES:
+        for k in sorted(k for k in teacher_state if k.startswith(prefix)):
+            if k not in student_state:
+                continue
+            wt, ws = teacher_state[k].float().flatten(), student_state[k].float().flatten()
+            if wt.shape != ws.shape:
+                continue
+            diff = ws - wt
+            rel = diff.norm().item() / wt.norm().clamp_min(1e-8).item()
+            cos = F.cosine_similarity(wt.unsqueeze(0), ws.unsqueeze(0)).item()
+            extra_rows.append((k, rel, cos))
+    if extra_rows:
+        print(f"\n{'key (img_proj / pos_emb_img / norm_img_in)':<55}{'rel_L2':>10}{'cosine':>10}")
+        for k, rel, cos in extra_rows:
+            print(f"{k:<55}{rel:>10.4f}{cos:>10.4f}")
+
+
 def hr(title=''):
     print('\n' + '=' * 78)
     if title:
@@ -186,6 +268,8 @@ def main():
         print(f"{k:<55}{rel_l2:>10.4f}{cos:>10.4f}")
 
     # ---- ket luan goi y ----
+    print_fusion_gate_report(teacher_state, student_state)
+
     hr("TONG KET")
     avg_rel = sum(r[2] * r[4] for r in rows) / sum(r[4] for r in rows)
     avg_cos = sum(r[3] * r[4] for r in rows) / sum(r[4] for r in rows)
