@@ -16,6 +16,8 @@ Cac muc in ra (va luu vao results.json):
   [5] Tung block fusion: khoang cach dac trung, entropy attention, KL(Teacher || Student) cua attention.
   [6] Shuffle test: tron ANH giua cac mau, tron JOINT giua cac mau -> model dua vao nguon nao.
   [7] Hinh: PCA feat_global (3 panel), MPJPE/khoang cach tung khop, tung block.
+  [8] (neu Teacher co head tham do anh, --img_probe) Sai so joint 3D du doan CHI tu token anh, kem moc
+      "khong co thong tin" (tu the trung binh).
 
 Cach chay (tu thu muc goc repo):
     python main/compare_teacher_student.py \
@@ -62,6 +64,11 @@ parser.add_argument('--improve_thresh', type=float, default=5.0,
                     help='(mm) nguong de goi y "Student cai thien it so voi MotionBERT"')
 parser.add_argument('--shuffle_thresh', type=float, default=3.0,
                     help='(mm) nguong de goi y "model bo qua mot nguon dau vao" khi tron anh/joint')
+parser.add_argument('--teacher_alpha', type=float, default=0.0,
+                    help='alpha > 0: Teacher nhan input = (1-a)*GT + a*MotionBERT_lift (can Teacher train voi '
+                         'teacher_lift_alpha_max > 0). Dung de shuffle test Teacher o dieu kien co nhieu')
+parser.add_argument('--img_probe', action='store_true',
+                    help='dung neu Teacher duoc train voi head tham do anh (cfg.MODEL.img_probe) de doc ket qua probe')
 args = parser.parse_args()
 
 from core.config import cfg, update_config
@@ -98,8 +105,15 @@ def hr(title=''):
 def build_and_load(mode, ckpt_path):
     old_mode = cfg.MODEL.name
     cfg.MODEL.name = mode
+    old_lift, old_probe = cfg.MODEL.get('teacher_lift_alpha_max', 0.0), cfg.MODEL.get('img_probe', False)
+    if mode == 'teacher':
+        if args.teacher_alpha > 0:
+            cfg.MODEL.teacher_lift_alpha_max = max(float(old_lift), args.teacher_alpha)
+        if args.img_probe:
+            cfg.MODEL.img_probe = True
     model = ARTS(num_joint=17, embed_dim=cfg.MODEL.hpe_dim)
     cfg.MODEL.name = old_mode
+    cfg.MODEL.teacher_lift_alpha_max, cfg.MODEL.img_probe = old_lift, old_probe
 
     model = model.to(DEVICE)
     model = load_model_weights(model, ckpt_path)
@@ -326,6 +340,13 @@ def main():
     def cat(name):
         return np.concatenate(acc[name], axis=0)
 
+    def run_teacher(img_, joints3d_, joints2d_, jmask_):
+        """Teacher forward; alpha > 0 -> input pha GT voi joint MotionBERT lift tu 2D (cung nguon voi luc train)."""
+        if args.teacher_alpha > 0:
+            a = torch.full((img_.shape[0],), float(args.teacher_alpha), device=DEVICE)
+            return teacher(img_, joints3d_, is_train=False, pose_2d=joints2d_, joints_mask=jmask_, lift_alpha=a)
+        return teacher(img_, joints3d_, is_train=False)
+
     n_batches, n_blocks = 0, 0
     with torch.no_grad():
         for inputs, targets, meta in loader:
@@ -342,7 +363,7 @@ def main():
             gt_h36m = h36m_from_mesh(gt_mesh, h36m_reg)          # (B,17,3) root-relative, GT that
 
             # Teacher: GT 3D (regress tu GT mesh, giong luc eval that). Student: 2D -> MotionBERT -> fusion.
-            t_out = teacher(img, gt_h36m, is_train=False)
+            t_out = run_teacher(img, gt_h36m, joints2d, joints_mask)
             s_out = student(img, joints2d, is_train=False, joints_mask=joints_mask)
 
             # ---- [1][2][3] MPJPE ----
@@ -353,6 +374,11 @@ def main():
             add('err_s', per_joint_err_mm(s_j, gt_h36m))
             add('err_t', per_joint_err_mm(t_j, gt_h36m))
             add('err_s_vs_t', per_joint_err_mm(s_j, t_j))
+            if t_out.get('img_probe_joints') is not None:
+                add('err_probe', per_joint_err_mm(t_out['img_probe_joints'], gt_h36m))
+                add('gt_flat', gt_h36m.reshape(B, -1))
+            if args.teacher_alpha > 0 and t_out.get('teacher_input_joints') is not None:
+                add('err_t_in', per_joint_err_mm(t_out['teacher_input_joints'], gt_h36m))
 
             # ---- [4] khoang cach dac trung (tung khop) + dac trung cho CKA / PCA ----
             add('kd_proj_pj', cos_dist(s_out['feat_joint_in'], t_out['feat_joint_in']))   # (B,17)
@@ -387,13 +413,13 @@ def main():
 
                 # tron ANH, giu nguyen joint va GT
                 s_im = student(img[pi], joints2d, is_train=False, joints_mask=joints_mask)
-                t_im = teacher(img[pi], gt_h36m, is_train=False)
+                t_im = run_teacher(img[pi], gt_h36m, joints2d, joints_mask)
                 add('s_img_shuf', per_joint_err_mm(h36m_from_mesh(s_im['smpl_mesh_cam'], h36m_reg), gt_h36m).mean(1))
                 add('t_img_shuf', per_joint_err_mm(h36m_from_mesh(t_im['smpl_mesh_cam'], h36m_reg), gt_h36m).mean(1))
 
                 # tron JOINT (va mask di kem), giu nguyen anh va GT
                 s_jn = student(img, joints2d[pj], is_train=False, joints_mask=joints_mask[pj])
-                t_jn = teacher(img, gt_h36m[pj], is_train=False)
+                t_jn = run_teacher(img, gt_h36m[pj], joints2d[pj], joints_mask[pj])
                 add('s_jnt_shuf', per_joint_err_mm(h36m_from_mesh(s_jn['smpl_mesh_cam'], h36m_reg), gt_h36m).mean(1))
                 add('t_jnt_shuf', per_joint_err_mm(h36m_from_mesh(t_jn['smpl_mesh_cam'], h36m_reg), gt_h36m).mean(1))
 
@@ -422,7 +448,8 @@ def main():
     print(f"  {'':<48}{'mean':>8}{'median':>9}{'std':>8}")
     for lab, arr in (('MotionBERT lift (can duoi, input tho cua Student)', m_mb),
                      ('Student (sau fusion + HyperGCN + VPoser)', m_s),
-                     ('Teacher (can tren, nhan GT 3D sach)', m_t)):
+                     (f'Teacher (can tren; input pha alpha={args.teacher_alpha})' if args.teacher_alpha > 0
+                      else 'Teacher (can tren, nhan GT 3D sach)', m_t)):
         s = summarize(arr)
         print(f"  {lab:<48}{s['mean']:8.2f}{s['median']:9.2f}{s['std']:8.2f}")
     print(f"\n  Student cai thien so voi MotionBERT : {gm:+.2f} +/- {gm_ci:.2f} mm (95%, n={N}); "
@@ -530,6 +557,28 @@ def main():
         print("\n[6] Bo qua shuffle test (moi batch chi co 1 mau).")
 
     # ======================================================================
+    # ======================================================================
+    if 'err_t_in' in acc:
+        e_in = cat('err_t_in').mean(1)
+        results['teacher_input_err_mm'] = summarize(e_in)
+        hr("[8a] Input thuc su dua vao Teacher (pha GT voi MotionBERT lift)")
+        print(f"  alpha = {args.teacher_alpha}: sai so input so voi GT = {e_in.mean():.2f} mm "
+              f"(MotionBERT lift thuan: {m_mb.mean():.2f} mm)")
+    if 'err_probe' in acc:
+        m_pr = cat('err_probe').mean(1)
+        gt_all = cat('gt_flat').reshape(-1, 17, 3)
+        base = np.linalg.norm(gt_all - gt_all.mean(0, keepdims=True), axis=-1).mean(1) * 1000.0
+        results['img_probe'] = {'probe': summarize(m_pr), 'mean_pose_baseline': summarize(base),
+                                'motionbert': summarize(m_mb)}
+        hr("[8] Head tham do anh: doan joint 3D CHI tu token anh dau vao fusion")
+        print(f"  Probe (chi anh)                       : {m_pr.mean():.2f} mm (median {np.median(m_pr):.2f})")
+        print(f"  Tu the trung binh (khong co thong tin): {base.mean():.2f} mm")
+        print(f"  MotionBERT lift (tu 2D)               : {m_mb.mean():.2f} mm")
+        print("  Probe thap han han moc 'tu the trung binh' -> token anh dau vao co mang thong tin tu the.")
+        print("  Probe gan moc do -> nhanh anh chua mang tu the; can xem lai dac trung anh truoc khi ket luan.")
+        print("  (moc tu the trung binh tinh tren chinh cac mau val nen hoi lac quan; Probe duoc tinh tren token")
+        print("   anh sau pos_emb nen co the dung ca thong tin vi tri, khong chi noi dung anh.)")
+
     hr("[7] Hinh ve")
     plots = [('feat_global_pca.png', lambda p: plot_pca(cat('f_gl_t'), cat('f_gl_s'), m_s, p)),
              ('per_joint.png', lambda p: plot_per_joint(H36M_JOINTS, e_mb.mean(0), e_s.mean(0), e_t.mean(0),

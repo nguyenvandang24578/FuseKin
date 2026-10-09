@@ -44,7 +44,9 @@ class ARTS(nn.Module):
         mb_config['dim_rep'] = 512  # dim_rep luôn là 512 kể cả bản Lite
         mb_config['mlp_ratio'] = mb_mlp_ratio
 
-        if self.mode != "teacher":
+        # Teacher chi can MotionBERT khi bat (A): tron GT voi joint lift (cfg.MODEL.teacher_lift_alpha_max > 0)
+        self.teacher_lift = (self.mode == "teacher" and cfg.MODEL.get('teacher_lift_alpha_max', 0.0) > 0)
+        if self.mode != "teacher" or self.teacher_lift:
             self.pose_lifter = DSTformer(
                 norm_layer=partial(nn.LayerNorm, eps=1e-6),
                 **mb_config,
@@ -55,7 +57,8 @@ class ARTS(nn.Module):
 
         if self.mode == "teacher":
             print("Đang gọi mô hình teacher")
-            self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim, depth=3)
+            self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim, depth=3,
+                                      use_img_probe=bool(cfg.MODEL.get('img_probe', False)))
         elif self.mode == "student":
             print("Đang gọi mô hình student")
             self.smpl_model = Student(num_joint=num_joint, embed_dim=embed_dim, depth=3)
@@ -127,18 +130,31 @@ class ARTS(nn.Module):
         # Teacher expects METERS.
         return pose_3d[:, 0]  # (B, 17, 3) mét
 
-    def forward_teacher(self, image, gt_pose_3d, is_train):
-        # print(f"TEACHER IN ARTS.PY")
+    def forward_teacher(self, image, gt_pose_3d, is_train, pose_2d=None, joints_mask=None, lift_alpha=None):
         with torch.no_grad():
             feature_map, _ = self.get_image_features(image)
 
-        # gt_pose_3d: (B, 17, 3), met, root-relative (da xu ly o Trainer)
-        return self.smpl_model(
-            joints=gt_pose_3d,
+            # gt_pose_3d: (B, 17, 3), met, root-relative (da xu ly o Trainer)
+            joints_in = gt_pose_3d
+            lifted = None
+            if self.teacher_lift and pose_2d is not None and lift_alpha is not None:
+                # (A) Tron GT voi joint MotionBERT lift: input = (1-a)*GT + a*lift  (a=0: GT sach, a=1: nhu Student)
+                lifted = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask)
+                lifted = (lifted - lifted[:, 0:1, :]).to(gt_pose_3d.dtype)     # root-relative
+                a = torch.as_tensor(lift_alpha, dtype=gt_pose_3d.dtype, device=gt_pose_3d.device)
+                a = a.reshape(-1, 1, 1) if a.dim() > 0 else a.reshape(1, 1, 1)
+                joints_in = (1.0 - a) * gt_pose_3d + a * lifted
+
+        result = self.smpl_model(
+            joints=joints_in,
             img_feats=feature_map,
             is_train=is_train,
             return_features=True,
         )
+        result['teacher_input_joints'] = joints_in      # (B, 17, 3) input thuc su dua vao Teacher
+        if lifted is not None:
+            result['lifted_joints_3d'] = lifted         # (B, 17, 3) joint MotionBERT lift
+        return result
 
     def forward_student(self, image, pose_2d, is_train, gt_pose_3d=None, alpha=1.0, joints_mask=None):
         with torch.no_grad():
@@ -187,9 +203,11 @@ class ARTS(nn.Module):
 
     def forward(self, image, joints, is_train=True, use_gt_3d=False,
                 gt_pose_6d=None, kp2d=None, kp_conf=None,
-                pose_valid_mask=None, gt_joints_3d=None, alpha=1.0, joints_mask=None):
+                pose_valid_mask=None, gt_joints_3d=None, alpha=1.0, joints_mask=None,
+                pose_2d=None, lift_alpha=None):
         if self.mode == "teacher":
-            return self.forward_teacher(image, joints, is_train)
+            return self.forward_teacher(image, joints, is_train, pose_2d=pose_2d,
+                                        joints_mask=joints_mask, lift_alpha=lift_alpha)
         if self.mode == "student":
             return self.forward_student(image, joints, is_train, gt_pose_3d=gt_joints_3d, alpha=alpha, joints_mask=joints_mask)
         return self.forward_arts(

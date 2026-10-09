@@ -67,7 +67,18 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda'):
                     target_mesh_tensor,
                 )
                 teacher_gt_joints = teacher_gt_joints - teacher_gt_joints[:, 0:1, :]
-                outputs = model(model_inputs['img'], teacher_gt_joints, is_train=False)
+                lift_kwargs = {}
+                alpha_max = cfg.MODEL.get('teacher_lift_alpha_max', 0.0)
+                if alpha_max > 0:
+                    # Teacher duoc train voi input = (1-a)*GT + a*MotionBERT_lift -> eval cung phai tron, a co dinh.
+                    alpha_eval = cfg.MODEL.get('teacher_lift_alpha_eval', None)
+                    alpha_eval = alpha_max if alpha_eval is None else float(alpha_eval)
+                    lift_kwargs = dict(
+                        pose_2d=model_inputs['joints'].float(),
+                        joints_mask=model_inputs.get('joints_mask'),
+                        lift_alpha=torch.full((teacher_gt_joints.shape[0],), alpha_eval, device=device),
+                    )
+                outputs = model(model_inputs['img'], teacher_gt_joints, is_train=False, **lift_kwargs)
             elif cfg.MODEL.name == 'ARTS' and hasattr(dataset, 'h36m_joint_regressor'):
                 outputs = model(
                     model_inputs['img'], model_inputs['joints'],

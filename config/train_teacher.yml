@@ -15,6 +15,27 @@ MODEL:
   hpe_dep: 5
   motionbert_pretrained: './experiment/pretrained/best_epoch.bin'
 
+  # ---- Ep Teacher phai dung anh (xem content_ablation_test.py de kiem chung sau khi train) ----
+  # (A) Luc train: input = (1-a)*GT + a*MotionBERT_lift, a ~ U(0, teacher_lift_alpha_max) rieng tung mau.
+  #     0.0 = tat, Teacher nhan GT sach nhu truoc.
+  teacher_lift_alpha_max: 0.5
+  # (A) Luc eval: a CO DINH (khong random) de cac lan chay so sanh duoc voi nhau.
+  #     Co y dat RIENG voi teacher_lift_alpha_max de doi alpha_max giua cac thi nghiem
+  #     khong lam doi "thuoc do" luc eval.
+  teacher_lift_alpha_eval: 0.5
+
+  # (B) Che/nhieu mot phan khop GT luc train (TAT o lan nay, dung (A) truoc cho sach).
+  #     Chi bat (prob > 0) neu (A) chua du, tranh cong don 2 co che cung luc.
+  teacher_joint_corrupt_prob: 0.0
+  teacher_joint_corrupt_mode: 'zero'          # 'zero' | 'noise'
+  teacher_joint_corrupt_noise_std: 0.15
+  teacher_joint_corrupt_warmup_epochs: 0
+
+  # (C) Head tham do: doan joint 3D CHI tu token anh dau vao fusion (truoc khi thay joint).
+  #     Bo tro/chan doan, khong thay the (A)/(B) — xem log 'probe_mpjpe_mm' moi epoch.
+  img_probe: True
+  img_probe_w: 0.1
+
 TRAIN:
   print_freq: 20
   batch_size: 32

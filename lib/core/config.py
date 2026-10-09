@@ -93,6 +93,27 @@ cfg.MODEL.TEACHER = './experiment/teacher/checkpoint'
 cfg.MODEL.STUDENT = './experiment/multimodel/best_epoch.bin'
 cfg.MODEL.kd_weight = 1.0
 cfg.MODEL.motionbert_pretrained = './experiment/finetune_motionbert/best_epoch.bin'
+
+# ---- Teacher: ep Teacher phai dung anh ----
+# (A) Tron GT voi joint MotionBERT lift tu 2D: input = (1-a)*GT + a*lift, a ~ U(0, alpha_max) moi mau luc train.
+#     alpha_max = 0 -> tat (hanh vi cu, Teacher nhan GT sach).
+cfg.MODEL.teacher_lift_alpha_max = 0.0
+#     alpha co dinh luc eval; None -> dung alpha_max. 0.0 -> eval voi GT sach.
+cfg.MODEL.teacher_lift_alpha_eval = None
+# (C) Head tham do: doan joint 3D CHI tu token anh dau vao fusion (do/ep nhanh anh mang thong tin tu the).
+cfg.MODEL.img_probe = False
+cfg.MODEL.img_probe_w = 0.1
+# (B) Che/nhieu mot phan khop GT luc train (da co trong Teacher_Trainer._corrupt_joints).
+cfg.MODEL.teacher_joint_corrupt_prob = 0.0
+cfg.MODEL.teacher_joint_corrupt_mode = 'zero'          # 'zero' | 'noise'
+cfg.MODEL.teacher_joint_corrupt_noise_std = 0.15
+cfg.MODEL.teacher_joint_corrupt_warmup_epochs = 0
+# ---- Student: KD / privileged (dung trong Student_Trainer, mac dinh nhu trong code) ----
+cfg.MODEL.kd_w_proj = 1.0
+cfg.MODEL.kd_w_joint = 1.0
+cfg.MODEL.kd_w_global = 1.0
+cfg.MODEL.priv_beta = 0.05
+cfg.MODEL.init_student_from_teacher = True
 """ Train Detail """
 cfg.TRAIN = edict()
 cfg.TRAIN.print_freq = 20

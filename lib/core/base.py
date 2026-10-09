@@ -412,6 +412,28 @@ class Teacher_Trainer:
         self.coordLoss = CoordLoss(has_valid=True)
         self.awl = AutomaticWeightedLoss(5).cuda()  # 5 losses: joint_cam, pose, shape, mesh, body_joint_proj
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
+
+        # ---- Ep Teacher phai dung anh: che/nhieu mot phan khop GT luc train ----
+        # (xem content_ablation_test.py: Teacher goc content-blind vi GT sach khong
+        #  bao gio can anh de giam loss; mesh_loss/smpl_joint_cam/smpl_pose van dung
+        #  pass KHONG detach nen van ep duoc nhanh pose phai dung anh khi khop bi che).
+        self.joint_corrupt_prob = cfg.MODEL.get('teacher_joint_corrupt_prob', 0.0)
+        self.joint_corrupt_mode = cfg.MODEL.get('teacher_joint_corrupt_mode', 'zero')  # 'zero' | 'noise'
+        self.joint_corrupt_noise_std = cfg.MODEL.get('teacher_joint_corrupt_noise_std', 0.15)
+        self.joint_corrupt_warmup_epochs = cfg.MODEL.get('teacher_joint_corrupt_warmup_epochs', 0)
+        if self.joint_corrupt_prob > 0:
+            print(f'===> Teacher joint-corruption BAT: prob={self.joint_corrupt_prob}, '
+                  f'mode={self.joint_corrupt_mode}, warmup={self.joint_corrupt_warmup_epochs} epoch')
+
+        # ---- (A) tron GT voi joint MotionBERT lift, (C) head tham do anh ----
+        self.lift_alpha_max = float(cfg.MODEL.get('teacher_lift_alpha_max', 0.0))
+        self.img_probe = bool(cfg.MODEL.get('img_probe', False))
+        self.img_probe_w = float(cfg.MODEL.get('img_probe_w', 0.1))
+        if self.lift_alpha_max > 0:
+            print(f'===> Teacher (A) tron GT voi MotionBERT lift: alpha ~ U(0, {self.lift_alpha_max})')
+        if self.img_probe:
+            print(f'===> Teacher (C) head tham do anh BAT: weight={self.img_probe_w}')
+
         # Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
             import os
@@ -432,11 +454,36 @@ class Teacher_Trainer:
                    job_type="training",
                    reinit=True)
 
+    def _corrupt_joints(self, joints3d, epoch):
+        """joints3d: (B,17,3) GT root-relative, mon vi met. Tra ve BAN SAO da bi che/nhieu
+        mot phan khop (joint 0 = root luon giu nguyen vi da = 0 mot cach tam thuong).
+        CHI dung lam INPUT cho model — moi loss van so voi joints3d GOC (sach), nen
+        model buoc phai dung anh de doan dung lai cac khop bi che.
+        """
+        if self.joint_corrupt_prob <= 0:
+            return joints3d
+        B, J, _ = joints3d.shape
+        prob = self.joint_corrupt_prob
+        if self.joint_corrupt_warmup_epochs > 0:
+            prob = prob * min(1.0, float(epoch) / self.joint_corrupt_warmup_epochs)
+        if prob <= 0:
+            return joints3d
+        mask = (torch.rand(B, J, 1, device=joints3d.device) < prob).float()
+        mask[:, 0, :] = 0.0  # khong che root (= 0 mot cach tam thuong, che cung vo nghia)
+        corrupted = joints3d.clone()
+        if self.joint_corrupt_mode == 'zero':
+            corrupted = corrupted * (1.0 - mask)
+        else:  # 'noise': cong nhieu Gauss manh vao dung cac khop bi chon
+            noise = torch.randn_like(corrupted) * self.joint_corrupt_noise_std
+            corrupted = corrupted + noise * mask
+        return corrupted
+
     def train(self, epoch):
         self.model.train()
 
         lr_check(self.optimizer, epoch)
         running_loss = 0.0
+        run_extra = {}   # loss tham do anh / MPJPE tham do / sai so input (A), tich luy theo epoch
         batch_generator = tqdm(self.batch_generator)
         for i, (inputs, targets, meta) in enumerate(batch_generator):
             # convert to cuda
@@ -454,7 +501,18 @@ class Teacher_Trainer:
 
             # Teacher dùng GT 3D gốc (mét, root-relative) từ orig_joint_cam, không chuẩn hóa
             teacher_gt_pose3d = gt_orig_joint_cam - gt_orig_joint_cam[:, 0:1, :]
-            model_output = self.model(input_image, teacher_gt_pose3d, is_train=True)
+            # INPUT dua vao model co the bi che/nhieu mot phan khop (xem _corrupt_joints);
+            # moi loss ben duoi van dung GT SACH (gt_fit_joint_cam / gt_smplpose / gt_mesh_cam...)
+            # nen model buoc phai doc anh de bu lai phan khop bi che.
+            teacher_model_input = self._corrupt_joints(teacher_gt_pose3d, epoch)
+            fwd_kwargs = {}
+            if self.lift_alpha_max > 0:
+                # (A) input = (1-a)*GT + a*MotionBERT_lift, a ~ U(0, alpha_max) rieng tung mau
+                lift_alpha = torch.rand(input_image.shape[0], device=input_image.device) * self.lift_alpha_max
+                fwd_kwargs = dict(pose_2d=inputs['joints'].cuda().float(),
+                                  joints_mask=inputs['joints_mask'].cuda().float(),
+                                  lift_alpha=lift_alpha)
+            model_output = self.model(input_image, teacher_model_input, is_train=True, **fwd_kwargs)
 
             pred_mesh = model_output['smpl_mesh_cam']
             pred_smplpose = model_output['smpl_pose']
@@ -495,6 +553,33 @@ class Teacher_Trainer:
             loss_dict = self.awl(loss_dict)
             loss = sum(loss_dict.values())
 
+            # ---- (C) loss head tham do anh + (A) log sai so cua input thuc su dua vao Teacher ----
+            extra_stats = {}
+            valid_joint = fit_joint_trunc
+            if valid_joint.dim() == 3:
+                valid_joint = valid_joint.squeeze(-1)
+            valid_joint = valid_joint * is_valid_fit[:, None]
+            n_valid_tot = valid_joint.sum().clamp_min(1.0)
+            if self.img_probe:
+                probe_pred = model_output['img_probe_joints']
+                probe_err = F.smooth_l1_loss(probe_pred, teacher_gt_pose3d, reduction='none', beta=0.05).mean(-1)  # (B, J)
+                probe_loss = (probe_err * valid_joint).sum() / n_valid_tot
+                loss = loss + self.img_probe_w * probe_loss
+                with torch.no_grad():
+                    extra_stats['probe_loss'] = probe_loss.item()
+                    extra_stats['probe_mpjpe_mm'] = (((probe_pred - teacher_gt_pose3d).norm(dim=-1) * 1000.0)
+                                                     * valid_joint).sum().item() / n_valid_tot.item()
+            if self.lift_alpha_max > 0:
+                with torch.no_grad():
+                    in_err = (model_output['teacher_input_joints'] - teacher_gt_pose3d).norm(dim=-1) * 1000.0
+                    extra_stats['input_err_mm'] = (in_err * valid_joint).sum().item() / n_valid_tot.item()
+            for k_, v_ in extra_stats.items():
+                run_extra[k_] = run_extra.get(k_, 0.0) + v_
+            if extra_stats and cfg.TRAIN.wandb:
+                wandb.log({f'train_loss/{k_}': v_ for k_, v_ in extra_stats.items()})
+            if extra_stats and i % self.print_freq == 0:
+                batch_generator.set_postfix_str(' '.join(f'{k_}: {v_:.3f}' for k_, v_ in extra_stats.items()))
+
             # update weights
             self.optimizer.zero_grad()
             loss.backward()
@@ -525,6 +610,8 @@ class Teacher_Trainer:
 
         self.loss_history.append(running_loss / len(batch_generator))
         print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}')
+        if run_extra:
+            print('  ' + ' | '.join(f'{k_}: {v_ / len(batch_generator):.4f}' for k_, v_ in run_extra.items()))
 
 class Teacher_Tester:
     def __init__(self, args, load_dir=''):

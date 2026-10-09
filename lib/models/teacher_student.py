@@ -229,6 +229,7 @@ class RGBJointFusion(nn.Module):
             'img_out': img_out,          # (B, H*W, C)
             'joint_out': joint_out,      # (B, J, C)
             'joint_tok': joints_tok,     # (B, J, C) token joint sau encoder, truoc cross-attn
+            'img_tok': img_tok,          # (B, H*W, C) token anh DAU VAO fusion (sau pos_emb + LN), chua nhin thay joint
             'concat_feat': concat_feat,  # (B, 2C)
             'layers': layers,
         }
@@ -261,7 +262,7 @@ class MLP(nn.Module):
 class FusionPose2Mesh(nn.Module):
     def __init__(self, num_joint=17, embed_dim=512, joint_encoder='gt', refiner='hypergcn',
                  vert_anchors=8, horz_anchors=8, depth=3,
-                 smpl_head_hidden_dim=256, smpl_head_depth=3, use_pose_pe=True):
+                 smpl_head_hidden_dim=256, smpl_head_depth=3, use_pose_pe=True, use_img_probe=False):
         super().__init__()
         assert refiner in ('hypergcn', 'diffusion'), f"refiner khong hop le: {refiner}"
         self.refiner = refiner
@@ -330,6 +331,16 @@ class FusionPose2Mesh(nn.Module):
         # ---- Camera ----
         self.cam_head = MLP(global_dim, smpl_head_hidden_dim, 3, 2)
 
+        # ---- Head tham do anh (tuy chon): doan joint 3D CHI tu token anh dau vao fusion ----
+        # Muc dich: (1) ep img_proj / pos_emb_img / norm_img_in mang thong tin tu the,
+        #           (2) do truc tiep xem dac trung anh co du tot khong (so voi MotionBERT).
+        self.use_img_probe = use_img_probe
+        if use_img_probe:
+            self.probe_query = nn.Embedding(num_joint, embed_dim)
+            self.probe_attn = nn.MultiheadAttention(embed_dim, 8, batch_first=True)
+            self.probe_norm = nn.LayerNorm(embed_dim)
+            self.probe_head = MLP(embed_dim, smpl_head_hidden_dim, 3, 2)
+
         # ---- Diffusion (tuy chon) ----
         if refiner == 'diffusion':
             from models.smpl_hyperdiff import SMPL_HyperDiff
@@ -361,6 +372,14 @@ class FusionPose2Mesh(nn.Module):
         fus = self.fusion(joints, img_feats, return_features=return_features)
         joint_out = fus['joint_out']
         global_ft = fus['concat_feat']
+
+        # 1b. Head tham do anh: chi dung token anh dau vao fusion (khong qua joint)
+        img_probe_joints = None
+        if self.use_img_probe:
+            q = self.probe_query.weight.unsqueeze(0).expand(B, -1, -1)
+            att, _ = self.probe_attn(q, fus['img_tok'], fus['img_tok'], need_weights=False)
+            probe = self.probe_head(self.probe_norm(q + att))              # (B, J, 3)
+            img_probe_joints = probe - probe[:, 0:1, :]                    # root-relative nhu GT
 
         # 2. Pose
         diff_loss = torch.zeros(1, device=device).squeeze()
@@ -432,6 +451,8 @@ class FusionPose2Mesh(nn.Module):
         if self.refiner == 'diffusion':
             result['diff_loss'] = diff_loss
             result['pred_pose_6d_refined'] = pred_x0
+        if self.use_img_probe:
+            result['img_probe_joints'] = img_probe_joints          # (B, J, 3) chi tu anh
 
         # --- dung cho KD ---
         if return_features:
