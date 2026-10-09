@@ -93,6 +93,13 @@ cfg.MODEL.TEACHER = './experiment/teacher/checkpoint'
 cfg.MODEL.STUDENT = './experiment/multimodel/best_epoch.bin'
 cfg.MODEL.kd_weight = 1.0
 cfg.MODEL.motionbert_pretrained = './experiment/finetune_motionbert/best_epoch.bin'
+# True (mac dinh, hanh vi cu): tru root khoi 2D TRUOC khi dua vao MotionBERT (ca luc finetune
+#   lan luc dung that trong ARTS.lift_2d_to_3d) -> model chi thay HINH DANG tuong doi, mat tin
+#   hieu vi tri nguoi trong khung hinh.
+# False: dung dung convention goc cua MotionBERT (xem MB_ft_h36m.yaml: rootrel chi ap dung cho
+#   3D target/loss, KHONG ap dung cho input 2D) -> model duoc giu lai tin hieu vi tri tuyet doi
+#   trong khung hinh, dung nhu luc pretrain MB_release.
+cfg.MODEL.motionbert_2d_rootrel = True
 
 # ---- Teacher: ep Teacher phai dung anh ----
 # (A) Tron GT voi joint MotionBERT lift tu 2D: input = (1-a)*GT + a*lift, a ~ U(0, alpha_max) moi mau luc train.

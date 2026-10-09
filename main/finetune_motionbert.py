@@ -49,8 +49,11 @@ def train_epoch(args, mb_cfg, model, train_loader, optimizer, device):
         target_3d_seq = target_3d.unsqueeze(1).clone() # (B, 1, 17, 3)
         
         with torch.no_grad():
-            # Root relative (same as MotionBERT train.py line 168)
-            mb_input[..., :2] = mb_input[..., :2] - mb_input[:, :, 0:1, :2]
+            # Root relative (same as MotionBERT train.py line 168) -- CHI ap dung cho 2D input
+            # neu cfg.MODEL.motionbert_2d_rootrel=True (mac dinh). Ban goc MotionBERT (MB_ft_h36m.yaml)
+            # KHONG tru root khoi input 2D, chi tru root o 3D target (xem duoi).
+            if cfg.MODEL.get('motionbert_2d_rootrel', True):
+                mb_input[..., :2] = mb_input[..., :2] - mb_input[:, :, 0:1, :2]
             target_3d_seq = target_3d_seq - target_3d_seq[:, :, 0:1, :]
             # MotionBERT pretrain output ở đơn vị MÉT!
             # Teacher cũng dùng MÉT.
@@ -133,9 +136,10 @@ def evaluate_epoch(args, mb_cfg, model, test_loader, device, h36m_regressor):
             mb_input = pose2d_3ch.unsqueeze(1).clone()  # (B, 1, 17, 3)
             target_3d_seq = target_3d.unsqueeze(1).clone()  # (B, 1, 17, 3)
 
-            mb_input[..., :2] = mb_input[..., :2] - mb_input[:, :, 0:1, :2]
+            if cfg.MODEL.get('motionbert_2d_rootrel', True):
+                mb_input[..., :2] = mb_input[..., :2] - mb_input[:, :, 0:1, :2]
             target_3d_seq = target_3d_seq - target_3d_seq[:, :, 0:1, :]
-            target_3d_seq = target_3d_seq * 1000.0
+            target_3d_seq = target_3d_seq
 
             predicted_3d = model(mb_input)
 
