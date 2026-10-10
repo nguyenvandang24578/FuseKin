@@ -22,6 +22,9 @@ parser.add_argument('--resume_training', action='store_true', help='Resume Train
 parser.add_argument('--debug', action='store_true', help='reduce dataset items')
 parser.add_argument('--gpu', type=str, default='0,1', help='assign multi-gpus by comma concat')
 parser.add_argument('--cfg', type=str, help='experiment configure file name')
+parser.add_argument('--exp_name', type=str, default='',
+                    help='ten thu muc thi nghiem: experiment/<exp_name> (doc trong core/config.py). '
+                         'Bo trong -> <ten file cfg>_<MM-DD_HH-MM-SS>')
 
 args = parser.parse_args()
 if args.cfg:

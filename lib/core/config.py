@@ -1,5 +1,6 @@
 import os
 import os.path as osp
+import sys
 import shutil
 import yaml
 from easydict import EasyDict as edict
@@ -13,6 +14,18 @@ def init_dirs(dir_list):
         os.mkdir(dir)
 
 
+def _argv_value(flag):
+    """Doc gia tri cua --flag tu sys.argv (config.py chay luc import, truoc argparse cua script).
+    Ho tro '--flag value' va '--flag=value'."""
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a == flag and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith(flag + '='):
+            return a.split('=', 1)[1]
+    return None
+
+
 cfg = edict()
 
 
@@ -22,12 +35,31 @@ cfg.root_dir = osp.join(cfg.cur_dir, '../../')
 cfg.data_dir = './data'
 cfg.smpl_path = osp.join(cfg.root_dir, 'smplpytorch')
 cfg.mano_dir = osp.join(cfg.root_dir, 'manopth')
-KST = datetime.timezone(datetime.timedelta(hours=8))
-save_folder = 'exp_' + str(datetime.datetime.now(tz=KST))[5:-16]
-save_folder = save_folder.replace(" ", "_")
-save_folder = save_folder.replace(":", "_")
-save_folder_path = 'experiment/{}'.format(save_folder)
+# ---- Ten thu muc thi nghiem ----
+# Thu tu uu tien:
+#   1) --exp_name <ten>              -> experiment/<ten>
+#   2) bien moi truong FUSEKIN_EXP   -> experiment/<ten>
+#   3) mac dinh: <ten file cfg>_<MM-DD_HH-MM-SS>  (vd train_teacher_gt_noshape_10-11_00-05-12)
+# Script KHONG phai main/train.py (eval, chan doan...) -> experiment/_eval/<ten script>_<thoi gian>
+# de khong lam roi thu muc experiment/.
+# An toan: neu --exp_name trung voi thu muc DA CO -> bao loi, KHONG xoa (tru khi --resume_training thi dung lai).
+VN_TZ = datetime.timezone(datetime.timedelta(hours=7))
+_stamp = datetime.datetime.now(tz=VN_TZ).strftime('%m-%d_%H-%M-%S')
+_script = osp.splitext(osp.basename(sys.argv[0]))[0] if sys.argv and sys.argv[0] else 'interactive'
+_is_train = (_script == 'train')
+_exp_name = _argv_value('--exp_name') or os.environ.get('FUSEKIN_EXP', '')
+_resume = '--resume_training' in sys.argv
+_cfg_arg = _argv_value('--cfg')
 
+if _exp_name:
+    save_folder_path = osp.join('experiment', _exp_name)
+elif _is_train:
+    _stem = osp.splitext(osp.basename(_cfg_arg))[0] if _cfg_arg else 'exp'
+    save_folder_path = osp.join('experiment', f'{_stem}_{_stamp}')
+else:
+    save_folder_path = osp.join('experiment', '_eval', f'{_script}_{_stamp}')
+
+cfg.exp_name = osp.basename(save_folder_path)
 cfg.output_dir = osp.join(cfg.root_dir, save_folder_path)
 cfg.graph_dir = osp.join(cfg.output_dir, 'graph')
 cfg.vis_dir = osp.join(cfg.output_dir, 'vis')
@@ -35,7 +67,28 @@ cfg.res_dir = osp.join(cfg.output_dir, 'result')
 cfg.checkpoint_dir = osp.join(cfg.output_dir, 'checkpoint')
 
 print("Experiment Data on {}".format(cfg.output_dir))
-init_dirs([cfg.output_dir, cfg.graph_dir, cfg.vis_dir, cfg.checkpoint_dir])
+if osp.isdir(cfg.output_dir) and os.listdir(cfg.output_dir):
+    if _resume:
+        print(f"[config] --resume_training: dung lai thu muc da co, KHONG xoa: {cfg.output_dir}")
+        for _d in (cfg.graph_dir, cfg.vis_dir, cfg.checkpoint_dir):
+            os.makedirs(_d, exist_ok=True)
+    elif _exp_name:
+        raise SystemExit(f"[config] Thu muc thi nghiem '{cfg.output_dir}' DA TON TAI va khong rong.\n"
+                         f"         Doi --exp_name khac, xoa thu muc cu bang tay, hoac them --resume_training.")
+    else:
+        # Mac dinh co giay -> gan nhu khong trung; neu trung van khong xoa, them hau to.
+        cfg.output_dir = cfg.output_dir + '_' + str(os.getpid())
+        cfg.exp_name = osp.basename(cfg.output_dir)
+        cfg.graph_dir = osp.join(cfg.output_dir, 'graph')
+        cfg.vis_dir = osp.join(cfg.output_dir, 'vis')
+        cfg.res_dir = osp.join(cfg.output_dir, 'result')
+        cfg.checkpoint_dir = osp.join(cfg.output_dir, 'checkpoint')
+        print(f"[config] Thu muc trung -> dung {cfg.output_dir}")
+        os.makedirs(cfg.output_dir)
+        init_dirs([cfg.graph_dir, cfg.vis_dir, cfg.checkpoint_dir])
+else:
+    os.makedirs(osp.dirname(osp.normpath(cfg.output_dir)), exist_ok=True)
+    init_dirs([cfg.output_dir, cfg.graph_dir, cfg.vis_dir, cfg.checkpoint_dir])
 
 """ Dataset """
 cfg.DATASET = edict()
@@ -283,6 +336,11 @@ def _update_dict(cfg_sub, v, prefix=''):
 
 def update_config(config_file):
     exp_config = None
+    # Luu ban sao file yml vao thu muc thi nghiem de biet run nay dung config nao.
+    try:
+        shutil.copyfile(config_file, osp.join(cfg.output_dir, osp.basename(config_file)))
+    except Exception as e:
+        print(f"[config] Khong sao chep duoc {config_file} vao {cfg.output_dir}: {e}")
     with open(config_file) as f:
         exp_config = edict(yaml.safe_load(f))
         for k, v in exp_config.items():
