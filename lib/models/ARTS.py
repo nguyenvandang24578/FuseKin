@@ -9,6 +9,7 @@ from models import Multimodel
 from models.backbones.resnet import ResNetBackbone
 from models.DSTformer import DSTformer
 from models.teacher_student import Teacher, Student   # model end-to-end moi (khong con SPIN)
+from utils.h36m_adapter import drop_joints_2d, h36m_joint_indices
 
 os.environ.setdefault("WANDB_MODE", "offline")
 
@@ -134,13 +135,17 @@ class ARTS(nn.Module):
             confidence = first_frame[..., 2:3]
         else:
             confidence = torch.ones_like(xy[..., :1])
+        # Xoa cac khop giong luc finetune (cfg.MODEL.motionbert_drop_joints, mac dinh [] = khong xoa)
+        drop_names = cfg.MODEL.get('motionbert_drop_joints', [])
+        if drop_names:
+            xy, confidence = drop_joints_2d(xy, confidence, h36m_joint_indices(drop_names))
         pose_xyc = torch.cat([xy, confidence], dim=-1)
 
         # Truyền trực tiếp 1 frame tĩnh (F=1) vào thay vì lặp lại NUM_FRAMES lần
         single_frame = pose_xyc.unsqueeze(1)  # (B, 1, 17, 3)
         pose_3d = self.pose_lifter(single_frame)
-        # MotionBERT pretrained weights natively output METERS.
-        # Teacher expects METERS.
+        # Checkpoint finetune trong FuseKin xuat MET (root-rel). Luu y: ban goc MotionBERT
+        # (MB_release, MB_ft_h36m) xuat toa do pixel chuan hoa, KHONG phai met.
         return pose_3d[:, 0]  # (B, 17, 3) mét
 
     def forward_teacher(self, image, gt_pose_3d, is_train, pose_2d=None, joints_mask=None, lift_alpha=None):

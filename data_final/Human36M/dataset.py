@@ -13,7 +13,7 @@ from core.config import cfg
 import lmdb
 from utils.posefix import replace_joint_img
 from utils.smpl import SMPL
-from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch_image, augmentation, load_img_from_lmdb
+from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch_image, augmentation, load_img_from_lmdb, augmentation_noimg
 from utils.transforms import world2cam, cam2pixel, pixel2cam, rigid_align, transform_joint_to_other_db
 # from utils.vis import vis_mesh, save_obj
 
@@ -263,12 +263,18 @@ class Human36M(torch.utils.data.Dataset):
         if cfg.update_bbox:
             height, width = img_shape
             bbox = process_bbox(data['tight_bbox'], width, height)
+        lift_only = cfg.DATASET.lift_only
         # img
-        img = load_img(img_path)
-        # img = load_img_from_lmdb(img_path, self.lmdb)
-        img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split)
-        img = self.transform(img.astype(np.float32))/255.
-        
+        if lift_only:
+            # Che do lifter: khong doc anh, chi can phep bien doi affine de dua 2D vao khung crop
+            img2bb_trans, bb2img_trans, rot, do_flip = augmentation_noimg(bbox, self.data_split, img_shape)
+            img = torch.zeros(1)
+        else:
+            img = load_img(img_path)
+            # img = load_img_from_lmdb(img_path, self.lmdb)
+            img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split)
+            img = self.transform(img.astype(np.float32))/255.
+
         if self.data_split == 'train':
             # h36m gt
             h36m_joint_img = data['joint_img']
@@ -307,10 +313,12 @@ class Human36M(torch.utils.data.Dataset):
             """
 
             # transform h36m joints to target db joints
-            h36m_joint_img = transform_joint_to_other_db(h36m_joint_img, self.h36m_joints_name, self.joints_name)
-            h36m_joint_cam = transform_joint_to_other_db(h36m_joint_cam, self.h36m_joints_name, self.joints_name)
-            h36m_joint_valid = transform_joint_to_other_db(h36m_joint_valid, self.h36m_joints_name, self.joints_name)
-            h36m_joint_trunc = transform_joint_to_other_db(h36m_joint_trunc, self.h36m_joints_name, self.joints_name)
+            # (lift_only: giu nguyen H36M-17, khong vong qua SMPL 29 -> khong mat Head_top)
+            if not lift_only:
+                h36m_joint_img = transform_joint_to_other_db(h36m_joint_img, self.h36m_joints_name, self.joints_name)
+                h36m_joint_cam = transform_joint_to_other_db(h36m_joint_cam, self.h36m_joints_name, self.joints_name)
+                h36m_joint_valid = transform_joint_to_other_db(h36m_joint_valid, self.h36m_joints_name, self.joints_name)
+                h36m_joint_trunc = transform_joint_to_other_db(h36m_joint_trunc, self.h36m_joints_name, self.joints_name)
 
             # apply PoseFix
             input_h36m_joint_img[:, 2] = 1  # joint valid
@@ -329,8 +337,20 @@ class Human36M(torch.utils.data.Dataset):
             """
             input_h36m_joint_img[:, 0] = input_h36m_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
             input_h36m_joint_img[:, 1] = input_h36m_joint_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
-            input_h36m_joint_img = transform_joint_to_other_db(input_h36m_joint_img, self.h36m_joints_name, self.joints_name)
             joint_mask = h36m_joint_trunc
+
+            if lift_only:
+                # Chi tra du lieu lifter can, tat ca o H36M-17. Bo qua SMPL (rat ton thoi gian).
+                rot_aug_mat = np.array([[np.cos(np.deg2rad(-rot)), -np.sin(np.deg2rad(-rot)), 0],
+                [np.sin(np.deg2rad(-rot)), np.cos(np.deg2rad(-rot)), 0],
+                [0, 0, 1]], dtype=np.float32)
+                h36m_joint_cam = np.dot(rot_aug_mat, h36m_joint_cam.transpose(1,0)).transpose(1,0) / 1000 # milimeter to meter
+                inputs = {'img': img, 'joints': input_h36m_joint_img[:, :2].astype(np.float32), 'joints_mask': joint_mask.astype(np.float32)}
+                targets = {'orig_joint_img': h36m_joint_img.astype(np.float32), 'orig_joint_cam': h36m_joint_cam.astype(np.float32)}
+                meta_info = {'orig_joint_valid': h36m_joint_valid.astype(np.float32), 'orig_joint_trunc': h36m_joint_trunc.astype(np.float32), 'is_3D': float(True)}
+                return inputs, targets, meta_info
+
+            input_h36m_joint_img = transform_joint_to_other_db(input_h36m_joint_img, self.h36m_joints_name, self.joints_name)
 
             if smpl_param is not None:
                 # smpl coordinates

@@ -30,6 +30,28 @@ def convert_smpl_to_human36m(joints, joint_mask, smpl_joints_name):
     return converted_joints, converted_mask
 
 
+def h36m_joint_indices(names):
+    """Doi danh sach ten khop H36M-17 sang chi so. Bao loi neu ten sai (tranh go nham trong yml)."""
+    idx = []
+    for n in names:
+        if n not in HUMAN36M_JOINTS:
+            raise ValueError(f"Khop '{n}' khong co trong H36M-17: {HUMAN36M_JOINTS}")
+        idx.append(HUMAN36M_JOINTS.index(n))
+    return idx
+
+
+def drop_joints_2d(xy, conf, drop_idx):
+    """Xoa cac khop drop_idx khoi dau vao MotionBERT: toa do = 0, confidence = 0.
+    xy: (..., 17, 2) tensor, conf: (..., 17, 1) tensor. Tra ve ban sao, khong sua tai cho."""
+    if not drop_idx:
+        return xy, conf
+    xy = xy.clone()
+    conf = conf.clone()
+    xy[..., drop_idx, :] = 0
+    conf[..., drop_idx, :] = 0
+    return xy, conf
+
+
 def convert_sample_inputs(inputs, smpl_joints_name):
     """Return a copy of a JOTR input dict with Human36M-17 2D joints."""
     converted = dict(inputs)

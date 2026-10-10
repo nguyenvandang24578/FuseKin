@@ -1,0 +1,59 @@
+# ======================================================
+# FuseKin — Finetune MotionBERT tren H36M + MuCo (KHONG dung 3DPW-train)
+# Muc tieu: loi lift tren 3DPW-train ~ 3DPW-test (het hoc thuoc), chon ckpt tren 3DPW-val.
+# Chay: python main/finetune_motionbert.py --cfg config/finetune_motionbert_full.yaml --gpu 0,1
+# ======================================================
+
+DATASET:
+    train_list: ['Human36M', 'MuCo']
+    test_list: ['3dpw']          # chi test 1 lan cuoi voi best ckpt
+    input_joint_set: 'human36'
+    target_joint_set: 'human36'
+    workers: 8
+    use_gt_input: False
+    seqlen: 1
+    stride: 1
+    noise: 0
+    lift_only: True              # khong doc anh, khong tinh SMPL, tra thang H36M-17
+
+MODEL:
+    motionbert_2d_rootrel: False
+    # OpenPose cua 3DPW khong co 2 khop nay -> xoa luon luc train cho giong.
+    # NHO: yml Teacher/Student dung ckpt nay cung phai dat dung gia tri nay.
+    motionbert_drop_joints: ['Torso', 'Head_top']
+
+MOTIONBERT:
+    pretrained: 'MotionBERT/checkpoint/pretrain/MB_release.bin'   # --pretrained tren dong lenh se ghi de
+    save_dir: 'experiment/finetune_motionbert_full'
+    val_set: '3dpw-val'
+    iters_per_epoch: 2000
+    gt2d_prob: 0.5               # 50% mau dung GT 2D sach (cho Teacher GT 2D), 50% 2D + nhieu PoseFix
+    joint_drop_prob: 0.1         # gia lap detector bo sot khop
+
+    # Training
+    finetune: True
+    epochs: 30
+    checkpoint_frequency: 5
+    batch_size: 64
+    dropout: 0.0
+    learning_rate: 0.0002
+    weight_decay: 0.01
+    lr_decay: 0.95
+
+    # Model (DSTformer) - phai khop ARTS (hpe_dim 512, mlp_ratio 2, depth 5)
+    maxlen: 243
+    dim_feat: 512
+    mlp_ratio: 2
+    depth: 5
+    dim_rep: 512
+    num_heads: 8
+    att_fuse: True
+    num_joints: 17
+
+    # Loss weights (velocity = 0 khi F=1)
+    lambda_3d_velocity: 20.0
+    lambda_scale: 0.5
+    lambda_lv: 0.0
+    lambda_lg: 0.0
+    lambda_a: 0.0
+    lambda_av: 0.0

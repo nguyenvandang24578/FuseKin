@@ -48,11 +48,18 @@ cfg.DATASET.use_gt_input = False
 cfg.DATASET.seqlen = 1
 cfg.DATASET.stride = 1
 cfg.DATASET.noise = 0
+# True: che do chi phuc vu train/eval lifter (MotionBERT). Dataset KHONG doc anh (img = tensor rong),
+#   KHONG tinh SMPL (H36M, MuCo), tra thang H36M-17 (khong di vong qua SMPL 29 nen khong mat khop).
+#   False (mac dinh): hanh vi cu.
+cfg.DATASET.lift_only = False
 cfg.DATASET.jotr_data_root = os.environ.get(
     'JOTR_DATA_ROOT',
     osp.abspath(osp.join(cfg.root_dir, 'data_final')),
 )
 cfg.use_gt_info = True
+# Truoc day Human36M/MuCo/MSCOCO/CrowdPose doc cfg.update_bbox nhung key nay chua khai bao -> AttributeError.
+# False: dung bbox da xu ly trong load_data (hanh vi cua 3DCrowdNet/JOTR).
+cfg.update_bbox = False
 cfg.input_img_shape = (256, 256)
 cfg.output_hm_shape = (64, 64, 64)
 cfg.bbox_3d_size = 2
@@ -104,6 +111,11 @@ cfg.MODEL.motionbert_pretrained = './experiment/finetune_motionbert/best_epoch.b
 #   3D target/loss, KHONG ap dung cho input 2D) -> model duoc giu lai tin hieu vi tri tuyet doi
 #   trong khung hinh, dung nhu luc pretrain MB_release.
 cfg.MODEL.motionbert_2d_rootrel = False
+# Cac khop H36M-17 luon bi xoa (toa do 0, mask 0) truoc khi dua vao MotionBERT, ca luc finetune lan luc
+# dung that (ARTS.lift_2d_to_3d). OpenPose cua 3DPW khong co 'Torso', 'Head_top' nen checkpoint train tren
+# H36M/MuCo can xoa 2 khop nay de dau vao giong 3DPW. Giong motionbert_2d_rootrel: PHAI khop voi checkpoint.
+# [] (mac dinh): khong xoa gi (hanh vi cu).
+cfg.MODEL.motionbert_drop_joints = []
 
 # ---- Teacher: ep Teacher phai dung anh ----
 # (A) Tron GT voi joint MotionBERT lift tu 2D: input = (1-a)*GT + a*lift, a ~ U(0, alpha_max) moi mau luc train.
@@ -180,6 +192,20 @@ cfg.MOTIONBERT.lambda_lv = 0.0
 cfg.MOTIONBERT.lambda_lg = 0.0
 cfg.MOTIONBERT.lambda_a = 0.0
 cfg.MOTIONBERT.lambda_av = 0.0
+# File khoi tao (vd MB_release.bin, MB_ft_h36m.bin). '' -> dung --pretrained tren dong lenh (hanh vi cu).
+cfg.MOTIONBERT.pretrained = ''
+# Thu muc luu checkpoint + log. Mac dinh giu duong dan cu.
+cfg.MOTIONBERT.save_dir = 'experiment/finetune_motionbert'
+# Tap dung de CHON best checkpoint. '3dpw' (mac dinh, hanh vi cu) = chon tren test -> ro ri test.
+#   Nen dung '3dpw-val' (3DPW validation, OpenPose, tach roi train/test).
+cfg.MOTIONBERT.val_set = '3dpw'
+# So iteration moi epoch. 0 = chay het dataloader (hanh vi cu). Dung khi tron dataset lon (H36M).
+cfg.MOTIONBERT.iters_per_epoch = 0
+# Xac suat moi mau thay 2D nhieu bang GT 2D sach (targets['orig_joint_img']). 0 = tat (hanh vi cu).
+#   Dung de 1 checkpoint lift duoc ca 2D nhieu (Student) lan GT 2D (Teacher GT 2D).
+cfg.MOTIONBERT.gt2d_prob = 0.0
+# Xac suat xoa ngau nhien tung khop hop le cua dau vao 2D luc train (gia lap detector bo sot khop). 0 = tat.
+cfg.MOTIONBERT.joint_drop_prob = 0.0
 
 """ Diffusion (SMPL_HyperDiff) """
 cfg.DIFF = edict()

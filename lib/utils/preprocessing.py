@@ -152,6 +152,30 @@ def augmentation(img, bbox, data_split, exclude_flip=False):
     return img, trans, inv_trans, rot, do_flip
 
 
+def augmentation_noimg(bbox, data_split, img_shape, exclude_flip=False):
+    """Giong augmentation() nhung KHONG doc/warp anh (dung cho cfg.DATASET.lift_only).
+    Cung thu tu goi random nhu augmentation() nen phan phoi scale/rot/flip giu nguyen.
+    img_shape = (height, width) cua anh goc (can de lat tam bbox khi flip).
+    Tra ve: trans, inv_trans, rot, do_flip."""
+    if data_split == 'train':
+        scale, rot, _, do_flip = get_aug_config(exclude_flip,)
+    else:
+        scale, rot, do_flip = 1.0, 0.0, False
+
+    img_width = img_shape[1]
+    bb_c_x = float(bbox[0] + 0.5*bbox[2])
+    bb_c_y = float(bbox[1] + 0.5*bbox[3])
+    bb_width = float(bbox[2])
+    bb_height = float(bbox[3])
+    if do_flip:
+        bb_c_x = img_width - bb_c_x - 1
+
+    out_shape = cfg.input_img_shape
+    trans = gen_trans_from_patch_cv(bb_c_x, bb_c_y, bb_width, bb_height, out_shape[1], out_shape[0], scale, rot)
+    inv_trans = gen_trans_from_patch_cv(bb_c_x, bb_c_y, bb_width, bb_height, out_shape[1], out_shape[0], scale, rot, inv=True)
+    return trans, inv_trans, rot, do_flip
+
+
 def generate_patch_image(cvimg, bbox, scale, rot, do_flip, out_shape):
     img = cvimg.copy()
     img_height, img_width, img_channels = img.shape

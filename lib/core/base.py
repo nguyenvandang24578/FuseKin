@@ -1080,3 +1080,127 @@ class Student_Tester:
             self.joint_error = sum(item['mpjpe'] for item in results.values()) / len(results)
             self.surface_error = sum(item['mpvpe'] for item in results.values()) / len(results)
         return results
+
+class LiftTrainer:
+    def __init__(self, args, load_dir):
+        self.batch_generator, self.dataset_list, self.model, self.loss, self.optimizer, self.lr_scheduler, self.loss_history, self.error_history \
+            = prepare_network(args, load_dir=load_dir, is_train=True)
+
+        self.loss = self.loss[0]
+        self.main_dataset = self.dataset_list[0]
+        self.num_joint = self.main_dataset.joint_num
+        self.print_freq = cfg.TRAIN.print_freq
+
+        self.model = self.model.cuda()
+
+        if cfg.TRAIN.wandb:
+            wandb.init(config=cfg,
+                   project=cfg.MODEL.name,
+                   name='PoseEst/' + cfg.output_dir.split('/')[-1],
+                   dir=cfg.output_dir,
+                   job_type="training",
+                   reinit=True)
+
+    def train(self, epoch):
+        self.model.train()
+
+        lr_check(self.optimizer, epoch)
+
+        running_loss = 0.0
+        batch_generator = tqdm(self.batch_generator)
+        for i, (img_joint, cam_joint, joint_valid, img_features) in enumerate(batch_generator):
+            img_joint, cam_joint = img_joint.cuda().float(), cam_joint.cuda().float()
+            joint_valid = joint_valid.cuda().float()
+            img_features = img_features.cuda().float()
+
+            pred_joint = self.model(img_joint, img_features)
+            pred_joint = pred_joint.view(-1, self.num_joint, 3)
+
+            loss = self.loss(pred_joint, cam_joint, joint_valid)
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+            running_loss += float(loss.detach().item())
+            if cfg.TRAIN.wandb:
+                wandb_loss = loss.detach()
+                wandb.log(
+                    {
+                        'train_loss/total_loss': wandb_loss
+                    }
+                )
+
+            if i % self.print_freq == 0:
+                batch_generator.set_description(f'Epoch{epoch}_({i}/{len(self.batch_generator)}) => '
+                                                f'total loss: {loss.detach():.4f} ')
+
+        self.loss_history.append(running_loss / len(self.batch_generator))
+
+        print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}')
+
+
+class LiftTester:
+    def __init__(self, args, load_dir=''):
+        self.val_loader, self.val_dataset, self.model, _, _, _, _, _ = \
+            prepare_network(args, load_dir=load_dir, is_train=False)
+        self.val_dataset = self.val_dataset[0]
+        self.val_loader = self.val_loader[0]
+
+        self.num_joint = self.val_dataset.joint_num
+        self.print_freq = cfg.TRAIN.print_freq
+
+        if self.model:
+            self.model = self.model.cuda()
+
+        # initialize error value
+        self.surface_error = 9999.9
+        self.joint_error = 9999.9
+
+    def test(self, epoch, current_model=None):
+        if current_model:
+            self.model = current_model
+        self.model.eval()
+        
+
+        result = []
+        joint_error = 0.0
+        eval_prefix = f'Epoch{epoch} ' if epoch else ''
+        loader = tqdm(self.val_loader)
+        with torch.no_grad():
+            for i, (img_joint, cam_joint, _, img_features) in enumerate(loader):
+                img_joint, cam_joint = img_joint.cuda().float(), cam_joint.cuda().float()
+                img_features = img_features.cuda().float()
+
+                pred_joint = self.model(img_joint, img_features)
+                pred_joint = pred_joint.view(-1, self.num_joint, 3)
+
+                mpjpe = self.val_dataset.compute_joint_err(pred_joint, cam_joint)
+                joint_error += mpjpe
+
+                if i % self.print_freq == 0:
+                    loader.set_description(f'{eval_prefix}({i}/{len(self.val_loader)}) => joint error: {mpjpe:.4f}')
+
+                # Final Evaluation
+                if (epoch == 0 or epoch == cfg.TRAIN.end_epoch):
+                    pred_joint, target_joint = pred_joint.detach().cpu().numpy(), cam_joint.detach().cpu().numpy()
+                    for j in range(len(pred_joint)):
+                        out = {}
+                        out['joint_coord'], out['joint_coord_target'] = pred_joint[j], target_joint[j]
+                        result.append(out)
+
+        self.joint_error = joint_error / len(self.val_loader)
+        print(f'{eval_prefix}MPJPE: {self.joint_error:.4f}')
+
+        if cfg.TRAIN.wandb:
+                wandb_error = self.joint_error
+                wandb.log(
+                    {
+                        'epoch': epoch,
+                        'error/MPJPE': wandb_error
+                    }
+                )
+
+        # Final Evaluation
+        if (epoch == 0 or epoch == cfg.TRAIN.end_epoch):
+            self.val_dataset.evaluate_joint(result)

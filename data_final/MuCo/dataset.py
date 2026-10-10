@@ -14,7 +14,7 @@ from core.config import cfg
 import lmdb
 from utils.posefix import replace_joint_img
 from utils.smpl import SMPL
-from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch_image, augmentation, compute_iou, load_img_from_lmdb
+from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch_image, augmentation, compute_iou, load_img_from_lmdb, augmentation_noimg
 from utils.transforms import world2cam, cam2pixel, pixel2cam, rigid_align, transform_joint_to_other_db
 # from utils.vis import vis_keypoints, vis_mesh, save_obj, vis_keypoints_with_skeleton, vis_bbox
 import transforms3d
@@ -47,6 +47,10 @@ class MuCo(torch.utils.data.Dataset):
         self.h36m_flip_pairs = ( (1, 4), (2, 5), (3, 6), (14, 11), (15, 12), (16, 13) )
         self.h36m_joints_name = ('Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck', 'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist')
         self.h36m_root_joint_idx = self.h36m_joints_name.index('Pelvis')
+        # Ten MuCo doi sang ten H36M-17 tuong ung (dung khi cfg.DATASET.lift_only).
+        # Quy uoc MPI-INF-3DHP 17 khop <-> H36M: Thorax ~ Neck, Spine ~ Torso, Head ~ Nose (khop dau H36M).
+        _muco2h36m_alias = {'Thorax': 'Neck', 'Spine': 'Torso', 'Head': 'Nose'}
+        self.muco_joints_name_h36m_alias = tuple(_muco2h36m_alias.get(n, n) for n in self.muco_joints_name)
 
         # SMPL joint set
         self.smpl = SMPL()
@@ -227,10 +231,16 @@ class MuCo(torch.utils.data.Dataset):
         #     img = load_img_from_lmdb(img_path, self.unaug_lmdb)
         # else:
         #     raise NotImplementedError('Unknown dataset: {}'.format(is_aug))
-        img = load_img(img_path)
-        img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split)
-        img = self.transform(img.astype(np.float32))/255.
-        
+        lift_only = cfg.DATASET.lift_only
+        if lift_only:
+            # Che do lifter: khong doc anh, chi can phep bien doi affine de dua 2D vao khung crop
+            img2bb_trans, bb2img_trans, rot, do_flip = augmentation_noimg(bbox, self.data_split, img_shape)
+            img = torch.zeros(1)
+        else:
+            img = load_img(img_path)
+            img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split)
+            img = self.transform(img.astype(np.float32))/255.
+
         # muco gt
         muco_joint_img = data['joint_img']
         muco_joint_cam = data['joint_cam']
@@ -270,10 +280,12 @@ class MuCo(torch.utils.data.Dataset):
                     (muco_joint_img[:,2] >= 0) * (muco_joint_img[:,2] < cfg.output_hm_shape[0])).reshape(-1,1).astype(np.float32)
 
         # transform muco joints to target db joints
-        muco_joint_img = transform_joint_to_other_db(muco_joint_img, self.muco_joints_name, self.joints_name)
-        muco_joint_cam = transform_joint_to_other_db(muco_joint_cam, self.muco_joints_name, self.joints_name)
-        muco_joint_valid = transform_joint_to_other_db(muco_joint_valid, self.muco_joints_name, self.joints_name)
-        muco_joint_trunc = transform_joint_to_other_db(muco_joint_trunc, self.muco_joints_name, self.joints_name)
+        # (lift_only: doi sang H36M-17 o cuoi ham, khong vong qua SMPL 29)
+        if not lift_only:
+            muco_joint_img = transform_joint_to_other_db(muco_joint_img, self.muco_joints_name, self.joints_name)
+            muco_joint_cam = transform_joint_to_other_db(muco_joint_cam, self.muco_joints_name, self.joints_name)
+            muco_joint_valid = transform_joint_to_other_db(muco_joint_valid, self.muco_joints_name, self.joints_name)
+            muco_joint_trunc = transform_joint_to_other_db(muco_joint_trunc, self.muco_joints_name, self.joints_name)
 
         # apply PoseFix
         input_muco_joint_img[:, 2] = 1 # joint valid
@@ -291,6 +303,24 @@ class MuCo(torch.utils.data.Dataset):
         """
         input_muco_joint_img[:, 0] = input_muco_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
         input_muco_joint_img[:, 1] = input_muco_joint_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+
+        if lift_only:
+            # Chi tra du lieu lifter can, tat ca o H36M-17. Bo qua SMPL (rat ton thoi gian).
+            rot_aug_mat = np.array([[np.cos(np.deg2rad(-rot)), -np.sin(np.deg2rad(-rot)), 0],
+            [np.sin(np.deg2rad(-rot)), np.cos(np.deg2rad(-rot)), 0],
+            [0, 0, 1]], dtype=np.float32)
+            muco_joint_cam = np.dot(rot_aug_mat, muco_joint_cam.transpose(1,0)).transpose(1,0) / 1000 # milimeter to meter
+            src_names = self.muco_joints_name_h36m_alias
+            h36m_input = transform_joint_to_other_db(input_muco_joint_img, src_names, self.h36m_joints_name)
+            h36m_img = transform_joint_to_other_db(muco_joint_img, src_names, self.h36m_joints_name)
+            h36m_cam = transform_joint_to_other_db(muco_joint_cam, src_names, self.h36m_joints_name)
+            h36m_valid = transform_joint_to_other_db(muco_joint_valid, src_names, self.h36m_joints_name)
+            h36m_trunc = transform_joint_to_other_db(muco_joint_trunc, src_names, self.h36m_joints_name)
+            inputs = {'img': img, 'joints': h36m_input[:, :2].astype(np.float32), 'joints_mask': h36m_trunc.astype(np.float32)}
+            targets = {'orig_joint_img': h36m_img.astype(np.float32), 'orig_joint_cam': h36m_cam.astype(np.float32)}
+            meta_info = {'orig_joint_valid': h36m_valid.astype(np.float32), 'orig_joint_trunc': h36m_trunc.astype(np.float32), 'is_3D': float(True)}
+            return inputs, targets, meta_info
+
         input_muco_joint_img = transform_joint_to_other_db(input_muco_joint_img, self.muco_joints_name, self.joints_name)
 
         if smpl_param is not None:

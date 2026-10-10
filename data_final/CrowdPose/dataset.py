@@ -110,7 +110,8 @@ class CrowdPose(torch.utils.data.Dataset):
 
                         if str(aid) in smpl_params:
                             smpl_param = smpl_params[str(aid)]
-                            if smpl_param['fit_err'] < self.fitting_thr:
+                            # Bo fit XAU (sai so lon). Truoc day viet '<' nen bo nham fit TOT.
+                            if smpl_param['fit_err'] > self.fitting_thr:
                                 smpl_param = None
                         else:
                             smpl_param = None

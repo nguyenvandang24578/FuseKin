@@ -10,7 +10,7 @@ from core.config import cfg
 # from utils.renderer import Renderer
 import lmdb
 from utils.smpl import SMPL
-from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch_image, augmentation, load_img_from_lmdb
+from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch_image, augmentation, load_img_from_lmdb, augmentation_noimg
 from utils.transforms import cam2pixel, pixel2cam, rigid_align, transform_joint_to_other_db, denorm_joints, convert_crop_cam_to_orig_img
 # from utils.vis import save_obj, vis_keypoints_with_skeleton, vis_bbox, render_mesh
 
@@ -19,7 +19,7 @@ class PW3D(torch.utils.data.Dataset):
     def __init__(self, transform, data_name):
         print('='*20, 'PW3D', '='*20)
         self.transform = transform
-        assert data_name in ['3dpw', '3dpw-pc', '3dpw-oc', '3dpw-crowd', '3dpw-train']
+        assert data_name in ['3dpw', '3dpw-pc', '3dpw-oc', '3dpw-crowd', '3dpw-train', '3dpw-val']
         self.data_name = data_name
         if self.data_name in ['3dpw', '3dpw-pc', '3dpw-oc']:
             self.data_split = 'test'
@@ -27,6 +27,11 @@ class PW3D(torch.utils.data.Dataset):
         elif self.data_name == '3dpw-crowd':
             self.data_split = 'validation'
             cfg.crowd = True
+        elif self.data_name == '3dpw-val':
+            # Split validation cua 3DPW voi dau vao OpenPose (khong phai Higher-HRNet nhu 3dpw-crowd).
+            # Dung de chon checkpoint, tach roi train va test.
+            self.data_split = 'validation'
+            cfg.crowd = False
         elif self.data_name == '3dpw-train':
             self.data_split = 'train'
             cfg.crowd = False
@@ -102,6 +107,8 @@ class PW3D(torch.utils.data.Dataset):
             db = COCO(osp.join(self.data_path, '3DPW_latest_' + self.data_split + '.json'))
         elif self.data_name == '3dpw-train':
             db = COCO(osp.join(self.data_path, '3DPW_latest_train.json'))
+        elif self.data_name == '3dpw-val':
+            db = COCO(osp.join(self.data_path, '3DPW_latest_validation.json'))
 
         # db = COCO('/home/ljh375649/data_2/vibe_data/3dpw/3DPW_oc.json')
         # db = COCO('/home/ljh375649/data_2/vibe_data/3dpw/3DPW_pc.json')
@@ -263,7 +270,9 @@ class PW3D(torch.utils.data.Dataset):
         bbox = data['bbox'] if bbox is None else bbox
 
         # img
-        img = load_img(img_path)
+        lift_only = cfg.DATASET.lift_only
+        if not lift_only:
+            img = load_img(img_path)
         # img = load_img_from_lmdb(img_path, self.lmdb)
         """
         # vis
@@ -287,8 +296,13 @@ class PW3D(torch.utils.data.Dataset):
         save_image(th_img.float().div(255), './debug/vis_3dpw_oc/3dpw_oc_{}.jpg'.format(idx))
         """
 
-        img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split, exclude_flip=True)
-        img = self.transform(img.astype(np.float32))/255.
+        if lift_only:
+            # Che do lifter: khong doc anh, chi can phep bien doi affine de dua 2D vao khung crop
+            img2bb_trans, bb2img_trans, rot, do_flip = augmentation_noimg(bbox, self.data_split, data['img_shape'], exclude_flip=True)
+            img = torch.zeros(1)
+        else:
+            img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split, exclude_flip=True)
+            img = self.transform(img.astype(np.float32))/255.
 
         """
         # vis
