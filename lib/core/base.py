@@ -427,10 +427,12 @@ class Teacher_Trainer:
 
         # ---- (A) tron GT voi joint MotionBERT lift, (C) head tham do anh ----
         self.lift_alpha_max = float(cfg.MODEL.get('teacher_lift_alpha_max', 0.0))
+        self.lift_clean_prob = float(cfg.MODEL.get('teacher_lift_clean_prob', 0.0))
         self.img_probe = bool(cfg.MODEL.get('img_probe', False))
         self.img_probe_w = float(cfg.MODEL.get('img_probe_w', 0.1))
         if self.lift_alpha_max > 0:
-            print(f'===> Teacher (A) tron GT voi MotionBERT lift: alpha ~ U(0, {self.lift_alpha_max})')
+            print(f'===> Teacher (A) tron GT voi MotionBERT lift: alpha ~ U(0, {self.lift_alpha_max}), '
+                  f'ti le mau GT sach (alpha = 0) = {self.lift_clean_prob}')
         if self.img_probe:
             print(f'===> Teacher (C) head tham do anh BAT: weight={self.img_probe_w}')
 
@@ -509,6 +511,10 @@ class Teacher_Trainer:
             if self.lift_alpha_max > 0:
                 # (A) input = (1-a)*GT + a*MotionBERT_lift, a ~ U(0, alpha_max) rieng tung mau
                 lift_alpha = torch.rand(input_image.shape[0], device=input_image.device) * self.lift_alpha_max
+                if self.lift_clean_prob > 0:
+                    # Mot phan mau nhan GT SACH (a = 0) de Teacher giu duoc do chinh xac khi dau vao sach
+                    clean = torch.rand(input_image.shape[0], device=input_image.device) < self.lift_clean_prob
+                    lift_alpha = torch.where(clean, torch.zeros_like(lift_alpha), lift_alpha)
                 fwd_kwargs = dict(pose_2d=inputs['joints'].cuda().float(),
                                   joints_mask=inputs['joints_mask'].cuda().float(),
                                   lift_alpha=lift_alpha)

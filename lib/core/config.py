@@ -111,6 +111,8 @@ cfg.MODEL.motionbert_2d_rootrel = False
 cfg.MODEL.teacher_lift_alpha_max = 0.0
 #     alpha co dinh luc eval; None -> dung alpha_max. 0.0 -> eval voi GT sach.
 cfg.MODEL.teacher_lift_alpha_eval = None
+#     Ti le mau luc train nhan GT SACH (a = 0) thay vi a ~ U(0, alpha_max). 0.0 = tat (hanh vi cu).
+cfg.MODEL.teacher_lift_clean_prob = 0.0
 # (C) Head tham do: doan joint 3D CHI tu token anh dau vao fusion (do/ep nhanh anh mang thong tin tu the).
 cfg.MODEL.img_probe = False
 cfg.MODEL.img_probe_w = 0.1
