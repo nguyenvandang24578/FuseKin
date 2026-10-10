@@ -193,8 +193,10 @@ def train_epoch(mb_cfg, model, train_loader, optimizer, device, rootrel, drop_id
 
 
 def evaluate(model, loader, h36m_regressor, device, rootrel, drop_idx, desc):
-    """Lift tren tap 3DPW (val/test): GT = H36M regressor tren smpl_mesh_cam, root-relative.
-    Tra ve MPJPE va PA-MPJPE (mm), trung binh theo MAU (khong theo batch)."""
+    """Lift tren tap val/test. GT 3D:
+      - 3DPW: H36M regressor tren smpl_mesh_cam;
+      - Human36M: targets['orig_joint_cam'] (mocap, met).
+    Root-relative. Tra ve MPJPE va PA-MPJPE (mm), trung binh theo MAU (khong theo batch)."""
     model.eval()
     reg = torch.as_tensor(h36m_regressor, dtype=torch.float32, device=device)  # (17, 6890)
     err_sum, pa_sum, n = 0.0, 0.0, 0
@@ -202,8 +204,11 @@ def evaluate(model, loader, h36m_regressor, device, rootrel, drop_idx, desc):
         for inputs_b, targets_b, meta_b in tqdm(loader, desc=desc):
             xy = inputs_b['joints'][..., :2].to(device).float()
             conf = inputs_b['joints_mask'].to(device).float()
-            mesh_gt = targets_b['smpl_mesh_cam'].to(device).float()            # (B, 6890, 3)
-            gt = torch.matmul(reg[None], mesh_gt)                               # (B, 17, 3)
+            if 'orig_joint_cam' in targets_b:
+                gt = targets_b['orig_joint_cam'].to(device).float()             # (B, 17, 3)
+            else:
+                mesh_gt = targets_b['smpl_mesh_cam'].to(device).float()        # (B, 6890, 3)
+                gt = torch.matmul(reg[None], mesh_gt)                           # (B, 17, 3)
             gt = gt - gt[:, 0:1, :]
 
             pred = model(make_mb_input(xy, conf, rootrel, drop_idx))[:, 0]     # (B, 17, 3)
@@ -265,8 +270,11 @@ def main():
     train_sets = [get_train_dataset(name, opts) for name in train_names]
     for name, ds in zip(train_names, train_sets):
         log(f"# train {name}: {len(ds)}")
-    # Tron nhieu dataset: moi dataset duoc lay mau ngang nhau (make_same_len)
-    train_dataset = train_sets[0] if len(train_sets) == 1 else MultipleDatasets(train_sets, make_same_len=True)
+    # Tron nhieu dataset: balance_datasets=True -> lay mau ngang nhau (make_same_len);
+    # False -> noi thang, moi epoch duyet moi mau dung 1 lan
+    train_dataset = train_sets[0] if len(train_sets) == 1 else \
+        MultipleDatasets(train_sets, make_same_len=mb_cfg.balance_datasets)
+    log(f"# train tong: {len(train_dataset)} mau | balance_datasets={mb_cfg.balance_datasets}")
     workers = cfg.DATASET.workers
     train_loader = DataLoader(
         dataset=train_dataset,

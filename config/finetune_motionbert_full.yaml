@@ -1,12 +1,13 @@
 # ======================================================
-# FuseKin — Finetune MotionBERT tren H36M + MuCo (KHONG dung 3DPW-train)
-# Muc tieu: loi lift tren 3DPW-train ~ 3DPW-test (het hoc thuoc), chon ckpt tren 3DPW-val.
+# FuseKin — Finetune MotionBERT tren H36M + MuCo + 3DPW-train
+# Chon ckpt tren 3DPW-val. Test 1 lan cuoi tren 3DPW-test va H36M-test (S9, S11).
+# MuCo khong co split test.
 # Chay: python main/finetune_motionbert.py --cfg config/finetune_motionbert_full.yaml --gpu 0,1
 # ======================================================
 
 DATASET:
-    train_list: ['Human36M', 'MuCo']
-    test_list: ['3dpw']          # chi test 1 lan cuoi voi best ckpt
+    train_list: ['Human36M', 'MuCo', '3dpw-train']
+    test_list: ['3dpw', 'Human36M']   # chi test 1 lan cuoi voi best ckpt
     input_joint_set: 'human36'
     target_joint_set: 'human36'
     workers: 8
@@ -33,13 +34,13 @@ MOTIONBERT:
 
     # Training
     finetune: True
-    epochs: 15
-    checkpoint_frequency: 5
+    epochs: 60
+    checkpoint_frequency: 10
     batch_size: 64
     dropout: 0.0
     learning_rate: 0.0002
     weight_decay: 0.01
-    lr_decay: 0.9
+    lr_decay: 0.97               # sau 60 epoch lr con ~16% ban dau (0.9 thi con ~0.2%, qua nho)
 
     # Model (DSTformer) - phai khop ARTS (hpe_dim 512, mlp_ratio 2, depth 5)
     maxlen: 243

@@ -275,6 +275,37 @@ class Human36M(torch.utils.data.Dataset):
             img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split)
             img = self.transform(img.astype(np.float32))/255.
 
+        if lift_only and self.data_split != 'train':
+            # Test lifter tren H36M (S9, S11, camera 4): dau vao = GT 2D + nhieu PoseFix voi seed CO DINH theo idx
+            # (moi lan test cho cung ket qua, cung kieu nhieu luc train). GT 3D = mocap, root-relative, met.
+            h36m_joint_img = data['joint_img'].copy()
+            h36m_joint_cam = data['joint_cam'] - data['joint_cam'][self.h36m_root_joint_idx, None, :]
+            h36m_joint_valid = data['joint_valid'].astype(np.float32)
+            xy1 = np.concatenate((h36m_joint_img[:, :2], np.ones_like(h36m_joint_img[:, :1])), 1)
+            h36m_joint_img[:, :2] = np.dot(img2bb_trans, xy1.transpose(1, 0)).transpose(1, 0)
+
+            input_img = h36m_joint_img.copy()
+            input_img[:, 2] = 1
+            np_state, py_state = np.random.get_state(), random.getstate()
+            np.random.seed(idx); random.seed(idx)
+            tmp = transform_joint_to_other_db(input_img, self.h36m_joints_name, self.coco_joints_name)
+            tmp = replace_joint_img(tmp, data['tight_bbox'], data['near_joints'], data['num_overlap'], img2bb_trans)
+            tmp = transform_joint_to_other_db(tmp, self.coco_joints_name, self.h36m_joints_name)
+            np.random.set_state(np_state); random.setstate(py_state)
+            input_img[self.h36m_coco_common_jidx, :2] = tmp[self.h36m_coco_common_jidx, :2]
+
+            input_img[:, 0] = input_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+            input_img[:, 1] = input_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+            gt_x = h36m_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+            gt_y = h36m_joint_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+            joint_trunc = h36m_joint_valid * ((gt_x >= 0) * (gt_x < cfg.output_hm_shape[2]) *
+                                              (gt_y >= 0) * (gt_y < cfg.output_hm_shape[1])).reshape(-1, 1).astype(np.float32)
+
+            inputs = {'img': img, 'joints': input_img[:, :2].astype(np.float32), 'joints_mask': joint_trunc}
+            targets = {'orig_joint_cam': (h36m_joint_cam / 1000).astype(np.float32)}  # milimeter to meter
+            meta_info = {'orig_joint_valid': h36m_joint_valid}
+            return inputs, targets, meta_info
+
         if self.data_split == 'train':
             # h36m gt
             h36m_joint_img = data['joint_img']

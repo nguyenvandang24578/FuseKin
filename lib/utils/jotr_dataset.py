@@ -31,7 +31,7 @@ class Human36M17Dataset(Dataset):
     # Cac key giu lai khi cfg.DATASET.lift_only (train/eval MotionBERT)
     LIFT_INPUT_KEYS = {'img', 'joints', 'joints_mask'}
     LIFT_TARGET_KEYS_TRAIN = {'orig_joint_img', 'orig_joint_cam'}
-    LIFT_TARGET_KEYS_EVAL = {'smpl_mesh_cam'}
+    LIFT_TARGET_KEYS_EVAL = {'smpl_mesh_cam', 'orig_joint_cam'}   # 3DPW: mesh; Human36M test: joint mocap
     LIFT_META_KEYS = {'orig_joint_valid', 'orig_joint_trunc', 'is_3D'}
 
     def __init__(self, dataset):
@@ -134,5 +134,12 @@ def get_train_dataset(name, args):
 
 
 def get_test_dataset(name, args):
-    # name: '3dpw' | '3dpw-pc' | '3dpw-oc' | '3dpw-crowd' | '3dpw-val'
+    # name: '3dpw' | '3dpw-pc' | '3dpw-oc' | '3dpw-crowd' | '3dpw-val' | 'Human36M'
+    if name == 'Human36M':
+        # Split test cua H36M (S9, S11, camera 4). Hien chi ho tro khi cfg.DATASET.lift_only=True.
+        if not cfg.DATASET.lift_only:
+            raise ValueError("Test 'Human36M' hien chi ho tro cfg.DATASET.lift_only=True (finetune MotionBERT).")
+        return Human36M17Dataset(Human36M(transforms.ToTensor(), 'test'))
+    if name == 'MuCo':
+        raise ValueError("MuCo khong co split test (chi co train). Bo 'MuCo' khoi test_list.")
     return Human36M17Dataset(PW3D(transforms.ToTensor(), data_name=name))
