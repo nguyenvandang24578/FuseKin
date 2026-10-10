@@ -23,7 +23,7 @@ MODEL:
     motionbert_drop_joints: ['Torso', 'Head_top']
 
 MOTIONBERT:
-    pretrained: 'MotionBERT/checkpoint/pretrain/MB_release.bin'   # --pretrained tren dong lenh se ghi de
+    pretrained: './experiment/pretrained/full/best_epoch.bin'   # --pretrained tren dong lenh se ghi de
     save_dir: 'experiment/finetune_motionbert_full'
     val_set: '3dpw-val'
     iters_per_epoch: 0           # 0 = moi epoch duyet het du lieu

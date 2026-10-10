@@ -1,6 +1,12 @@
 import os, sys
 sys.path.append('./lib')
 sys.path.append('./')
+
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"  # cho Apple Accelerate/vecLib
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import argparse
 import random
 import time
@@ -259,11 +265,8 @@ def main():
     train_sets = [get_train_dataset(name, opts) for name in train_names]
     for name, ds in zip(train_names, train_sets):
         log(f"# train {name}: {len(ds)}")
-    # Tron nhieu dataset: balance_datasets=True -> lay mau ngang nhau (make_same_len);
-    # False -> noi thang, moi epoch duyet moi mau dung 1 lan
-    train_dataset = train_sets[0] if len(train_sets) == 1 else \
-        MultipleDatasets(train_sets, make_same_len=mb_cfg.balance_datasets)
-    log(f"# train tong: {len(train_dataset)} mau | balance_datasets={mb_cfg.balance_datasets}")
+    # Tron nhieu dataset: moi dataset duoc lay mau ngang nhau (make_same_len)
+    train_dataset = train_sets[0] if len(train_sets) == 1 else MultipleDatasets(train_sets, make_same_len=True)
     workers = cfg.DATASET.workers
     train_loader = DataLoader(
         dataset=train_dataset,
