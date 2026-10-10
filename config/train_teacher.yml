@@ -25,11 +25,16 @@ MODEL:
   # ---- Ep Teacher phai dung anh (xem content_ablation_test.py de kiem chung sau khi train) ----
   # (A) Luc train: input = (1-a)*GT + a*MotionBERT_lift, a ~ U(0, teacher_lift_alpha_max) rieng tung mau.
   #     0.0 = tat, Teacher nhan GT sach nhu truoc.
-  teacher_lift_alpha_max: 0.5
+  #     Lan truoc 0.5 -> nhieu train trung binh chi ~9 mm (MotionBERT doan tap train tot hon val nhieu)
+  #     -> Teacher khong hoc dung anh khi joint nhieu. 2.0: a > 1 khuech dai sai so MotionBERT
+  #     (GT + a*(lift - GT)), nhieu train ~0-70 mm, trung binh ~35 mm, phu duoc dieu kien cua Student.
+  teacher_lift_alpha_max: 2.0
   # (A) Luc eval: a CO DINH (khong random) de cac lan chay so sanh duoc voi nhau.
   #     Co y dat RIENG voi teacher_lift_alpha_max de doi alpha_max giua cac thi nghiem
   #     khong lam doi "thuoc do" luc eval.
-  teacher_lift_alpha_eval: 0.5
+  #     1.0 = dung dau vao cua Student (joint MotionBERT thuan) -> chon best checkpoint theo dieu kien KD can.
+  #     (Lan truoc la 0.5; MPJPE val in moi epoch se KHONG so truc tiep duoc voi lan truoc.)
+  teacher_lift_alpha_eval: 1.0
 
   # (B) Che/nhieu mot phan khop GT luc train (TAT o lan nay, dung (A) truoc cho sach).
   #     Chi bat (prob > 0) neu (A) chua du, tranh cong don 2 co che cung luc.
