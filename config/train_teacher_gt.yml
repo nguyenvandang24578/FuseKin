@@ -1,0 +1,54 @@
+DATASET:
+  train_list: ['3dpw-train']
+  test_list: ['3dpw']
+  input_joint_set: 'human36'
+  target_joint_set: 'human36'
+  workers: 8
+  use_gt_input: False
+  seqlen: 1
+  stride: 1
+
+MODEL:
+  name: 'teacher'
+  resnet_type: 50
+  hpe_dim: 512
+  hpe_dep: 5
+  # Khong dung toi khi teacher_lift_alpha_max = 0 (pose_lifter khong duoc tao), giu cho dong bo.
+  motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
+  motionbert_2d_rootrel: False
+
+  # Backbone ResNet-50 tu SPIN (dong bang) + chuan hoa ImageNet.
+  backbone_pretrained: 'spin'
+
+  # ---- Teacher 100% GT ----
+  # Muc tieu: do tran tren cua Teacher khi nhan GT sach voi backbone SPIN.
+  # San decoder (vposer_floor_test): <= ~27 mm MPJPE -> ky vong a=0 xuong ~30-35 mm.
+  # (Teacher cu alpha 0.5 = 44.6 mm, Teacher A alpha 2.0 = 58.0 mm o a=0.)
+  teacher_lift_alpha_max: 0.0
+  teacher_lift_alpha_eval: 0.0
+  teacher_lift_clean_prob: 0.0
+
+  teacher_joint_corrupt_prob: 0.0
+
+  # Head tham do anh: chi de chan doan (log probe_mpjpe_mm), trong so nho.
+  img_probe: True
+  img_probe_w: 0.1
+
+TRAIN:
+  print_freq: 20
+  batch_size: 32
+  shuffle: True
+  begin_epoch: 1
+  end_epoch: 30
+  scheduler: 'step'
+  lr: 0.0001
+  lr_step: [5, 15, 25]
+  lr_factor: 0.5
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 32
+  shuffle: False
