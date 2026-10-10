@@ -436,6 +436,15 @@ class Teacher_Trainer:
         if self.img_probe:
             print(f'===> Teacher (C) head tham do anh BAT: weight={self.img_probe_w}')
 
+        # ---- Loss tham so shape (beta) ----
+        # Beta GT cua 3DPW thuoc SMPL theo GIOI TINH, con model dung SMPL NEUTRAL -> cung beta cho ra co the
+        # KHAC (vposer_floor_test: neutral + beta GT = 37.7 mm, te hon beta = 0 = 27.3 mm). Loss nay co the
+        # day sai kich thuoc co the. 1.0 = nhu cu; 0 = bo han (shape chi hoc qua loss joint/mesh).
+        self.shape_loss_w = float(cfg.MODEL.get('shape_param_loss_w', 1.0))
+        if self.shape_loss_w != 1.0:
+            print(f'===> Teacher loss smpl_shape: trong so = {self.shape_loss_w}'
+                  + (' (TAT - khong dua vao AWL)' if self.shape_loss_w <= 0 else ''))
+
         # Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
             import os
@@ -556,6 +565,11 @@ class Teacher_Trainer:
                 'mesh_loss': mesh_loss,
                 'body_joint_proj': loss_body_joint_proj,
             }
+            if self.shape_loss_w <= 0:
+                # Bo han khoi AWL (neu giu voi gia tri 0, AWL day trong so cua no ve vo cung -> de NaN)
+                loss_dict.pop('smpl_shape')
+            elif self.shape_loss_w != 1.0:
+                loss_dict['smpl_shape'] = loss_dict['smpl_shape'] * self.shape_loss_w
             loss_dict = self.awl(loss_dict)
             loss = sum(loss_dict.values())
 

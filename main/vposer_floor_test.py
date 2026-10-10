@@ -117,6 +117,23 @@ def evaluate(mesh_pred, mesh_gt, h36m_reg, smpl_reg, eval_idx):
     return out
 
 
+H36M_NAMES = ('Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck',
+              'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist')
+BONES = ((0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 6), (0, 7), (7, 8), (8, 9), (9, 10),
+         (8, 11), (11, 12), (12, 13), (8, 14), (14, 15), (15, 16))
+
+
+def bone_len_diff(mesh_pred, mesh_gt, h36m_reg):
+    """Do dai xuong (H36M-17 regress tu mesh): du doan - GT, mm. Tra ve (N, 16)."""
+    jp = np.einsum('jk,nkc->njc', h36m_reg, mesh_pred)
+    jg = np.einsum('jk,nkc->njc', h36m_reg, mesh_gt)
+    out = np.zeros((jp.shape[0], len(BONES)))
+    for b, (pa, ch) in enumerate(BONES):
+        out[:, b] = (np.linalg.norm(jp[:, ch] - jp[:, pa], axis=-1)
+                     - np.linalg.norm(jg[:, ch] - jg[:, pa], axis=-1)) * 1000
+    return out
+
+
 def main():
     ds = PW3D(None, data_name=args.split)
     datalist = ds.datalist
@@ -134,6 +151,8 @@ def main():
     names = ['[1] neutral', '[2] + tay = 0', '[3] + VPoser', '[4] + shape = 0']
     acc = {n: {'mpjpe': [], 'pa_mpjpe': [], 'mpvpe': [], 'mpjpe17': []} for n in names}
     latent_norm = []
+    bone_acc = {n: [] for n in names}   # (N,16) moi bien the: do dai xuong du doan - GT
+    gender_acc = []
 
     for st in range(0, len(idx), args.batch):
         chunk = [datalist[i]['smpl_param'] for i in idx[st:st + args.batch]]
@@ -164,10 +183,13 @@ def main():
             m4 = smpl_mesh(neutral, pose3, torch.zeros_like(shape))
 
         gt_np = gt.double().numpy()
+        gender_acc.extend(genders)
         for name, m in zip(names, (m1, m2, m3, m4)):
-            r = evaluate(m.double().numpy(), gt_np, h36m_reg, smpl_reg, eval_idx)
+            m_np = m.double().numpy()
+            r = evaluate(m_np, gt_np, h36m_reg, smpl_reg, eval_idx)
             for k in r:
                 acc[name][k].extend(r[k])
+            bone_acc[name].append(bone_len_diff(m_np, gt_np, h36m_reg))
         print(f'  ... {min(st + args.batch, len(idx))}/{len(idx)}')
 
     print('\n' + '=' * 78)
@@ -182,6 +204,29 @@ def main():
     print('    So [3] voi Teacher nhan GT sach (~43-58 mm theo dataset.evaluate cang chinh xac hon).')
     print('  - [3] - [2] = phan VPoser lam mat; [2] - [1] = phan tay = 0; [1] = phan neutral thay gioi tinh.')
     print('  - [4] cho biet shape quan trong toi dau (moc tham khao, khong phai san).')
+
+    # ---------------- Do dai xuong: beta GT (theo gioi tinh) dat vao SMPL NEUTRAL co lam lech xuong? ----------------
+    genders_np = np.array(gender_acc)
+    bones = {n: np.concatenate(bone_acc[n], 0) for n in names}
+    g_list = sorted(set(gender_acc))
+    print('\n' + '=' * 78)
+    print('DO DAI XUONG: du doan - GT (mm), trung binh. [1] = beta GT dat vao SMPL neutral; [4] = beta 0')
+    print('=' * 78)
+    cols = ['[1] tat ca'] + [f'[1] {g}' for g in g_list] + ['[4] tat ca'] + [f'[4] {g}' for g in g_list]
+    print('  ' + f"{'xuong':<22}" + ''.join(f'{c:>14}' for c in cols))
+    for b, (pa, ch) in enumerate(BONES):
+        row = f"  {H36M_NAMES[pa] + '->' + H36M_NAMES[ch]:<22}"
+        for name in ('[1] neutral', '[4] + shape = 0'):
+            d = bones[name][:, b]
+            row += f'{d.mean():+14.1f}'
+            for g in g_list:
+                row += f'{d[genders_np == g].mean():+14.1f}'
+        print(row)
+    print('  So mau theo gioi tinh: ' + ', '.join(f'{g}={int((genders_np == g).sum())}' for g in g_list))
+    print('\n  Doc ket qua:')
+    print('  - Neu cot [1] co xuong chan/tay lech he thong (vd ong chan ~ -20 mm, nhat la o 1 gioi tinh):')
+    print('    beta GT cua 3DPW KHONG dung duoc lam target cho SMPL neutral -> loss smpl_shape dang day SAI.')
+    print('  - Teacher (eval_teacher_train_subset.py) tren val: ong chan -21, dui -13, cang tay -10 mm.')
 
 
 if __name__ == '__main__':
