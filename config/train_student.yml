@@ -20,7 +20,7 @@ MODEL:
   # Phai giong Teacher: backbone ResNet-50 cua SPIN + chuan hoa anh ImageNet.
   backbone_pretrained: 'spin'
   # NHO cap nhat TEACHER sang checkpoint Teacher MOI (train voi backbone SPIN) truoc khi train Student.
-  TEACHER: './experiment/exp_10-08_00_34/checkpoint/best.pth.tar'
+  TEACHER: './experiment/exp_10-10_09_33/checkpoint/best.pth.tar'
   kd_weight: 1.0
 
 TRAIN:
