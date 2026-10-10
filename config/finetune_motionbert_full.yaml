@@ -26,19 +26,20 @@ MOTIONBERT:
     pretrained: 'MotionBERT/checkpoint/pretrain/MB_release.bin'   # --pretrained tren dong lenh se ghi de
     save_dir: 'experiment/finetune_motionbert_full'
     val_set: '3dpw-val'
-    iters_per_epoch: 2000
+    iters_per_epoch: 0           # 0 = moi epoch duyet het du lieu
+    balance_datasets: False      # khong lap lai bo nho, moi mau dung 1 lan / epoch
     gt2d_prob: 0.5               # 50% mau dung GT 2D sach (cho Teacher GT 2D), 50% 2D + nhieu PoseFix
     joint_drop_prob: 0.1         # gia lap detector bo sot khop
 
     # Training
     finetune: True
-    epochs: 30
+    epochs: 15
     checkpoint_frequency: 5
     batch_size: 64
     dropout: 0.0
     learning_rate: 0.0002
     weight_decay: 0.01
-    lr_decay: 0.95
+    lr_decay: 0.9
 
     # Model (DSTformer) - phai khop ARTS (hpe_dim 512, mlp_ratio 2, depth 5)
     maxlen: 243

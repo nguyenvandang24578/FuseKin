@@ -801,6 +801,12 @@ class Student_Trainer:
         self.awl = AutomaticWeightedLoss(5).cuda()
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
 
+        # Loss tham so shape (beta): xem giai thich o Teacher_Trainer. 1.0 = nhu cu; 0 = tat han.
+        self.shape_loss_w = float(cfg.MODEL.get('shape_param_loss_w', 1.0))
+        if self.shape_loss_w != 1.0:
+            print(f'===> Student loss smpl_shape: trong so = {self.shape_loss_w}'
+                  + (' (TAT - khong dua vao AWL)' if self.shape_loss_w <= 0 else ''))
+
 # Restore AWL weights if resuming
         if hasattr(args, 'resume_training') and args.resume_training:
             import os
@@ -973,6 +979,10 @@ class Student_Trainer:
                 'body_joint_proj': loss_body_joint_proj,
                 'mesh_loss': mesh_loss,
             }
+            if self.shape_loss_w <= 0:
+                loss_dict.pop('smpl_shape')   # bo han khoi AWL (tranh trong so AWL -> vo cung)
+            elif self.shape_loss_w != 1.0:
+                loss_dict['smpl_shape'] = loss_dict['smpl_shape'] * self.shape_loss_w
             loss_dict = self.awl(loss_dict)
             hard_loss = sum(loss_dict.values())
             loss = 0.5 * hard_loss + 0.5 * kd_loss + privileged_loss

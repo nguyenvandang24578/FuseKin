@@ -201,6 +201,9 @@ cfg.MOTIONBERT.save_dir = 'experiment/finetune_motionbert'
 cfg.MOTIONBERT.val_set = '3dpw'
 # So iteration moi epoch. 0 = chay het dataloader (hanh vi cu). Dung khi tron dataset lon (H36M).
 cfg.MOTIONBERT.iters_per_epoch = 0
+# Khi tron nhieu dataset: True = lay mau can bang (bo nho bi lap lai cho bang bo lon, make_same_len).
+#   False = noi thang cac bo, moi epoch duyet moi mau dung 1 lan (ti le theo kich thuoc that).
+cfg.MOTIONBERT.balance_datasets = True
 # Xac suat moi mau thay 2D nhieu bang GT 2D sach (targets['orig_joint_img']). 0 = tat (hanh vi cu).
 #   Dung de 1 checkpoint lift duoc ca 2D nhieu (Student) lan GT 2D (Teacher GT 2D).
 cfg.MOTIONBERT.gt2d_prob = 0.0

@@ -259,8 +259,11 @@ def main():
     train_sets = [get_train_dataset(name, opts) for name in train_names]
     for name, ds in zip(train_names, train_sets):
         log(f"# train {name}: {len(ds)}")
-    # Tron nhieu dataset: moi dataset duoc lay mau ngang nhau (make_same_len)
-    train_dataset = train_sets[0] if len(train_sets) == 1 else MultipleDatasets(train_sets, make_same_len=True)
+    # Tron nhieu dataset: balance_datasets=True -> lay mau ngang nhau (make_same_len);
+    # False -> noi thang, moi epoch duyet moi mau dung 1 lan
+    train_dataset = train_sets[0] if len(train_sets) == 1 else \
+        MultipleDatasets(train_sets, make_same_len=mb_cfg.balance_datasets)
+    log(f"# train tong: {len(train_dataset)} mau | balance_datasets={mb_cfg.balance_datasets}")
     workers = cfg.DATASET.workers
     train_loader = DataLoader(
         dataset=train_dataset,
