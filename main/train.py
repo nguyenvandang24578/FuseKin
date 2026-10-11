@@ -68,14 +68,22 @@ for file_path in files_to_backup:
 
 from core.base import Trainer, Tester, Teacher_Trainer, Teacher_Tester, Student_Trainer, Student_Tester
 
+# Resume: lay last.pth.tar trong thu muc checkpoint cua chinh run nay (experiment/<exp_name>/checkpoint)
+resume_path = ''
+if args.resume_training:
+    resume_path = os.path.join(cfg.checkpoint_dir, 'last.pth.tar')
+    if not os.path.isfile(resume_path):
+        sys.exit(f'[resume] Khong tim thay {resume_path}. Kiem tra lai --exp_name (phai trung ten thu muc run cu).')
+    print(f'===> Resume tu: {resume_path}')
+
 if cfg.MODEL.name == 'ARTS':
     trainer = Trainer(args, load_dir='./experiment/exp_04-26_09_16/checkpoint/best.pth.tar')
     tester = Tester(args)  # if not args.debug else None
 elif cfg.MODEL.name == 'teacher':
-    trainer = Teacher_Trainer(args, load_dir='')
+    trainer = Teacher_Trainer(args, load_dir=resume_path)
     tester = Teacher_Tester(args)
 elif cfg.MODEL.name == 'student':
-    trainer = Student_Trainer(args, load_dir='')
+    trainer = Student_Trainer(args, load_dir=resume_path)
     tester = Student_Tester(args)
 
 print("===> Start training...")

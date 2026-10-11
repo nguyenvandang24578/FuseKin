@@ -51,6 +51,44 @@ def get_dataloader(args, dataset_names, is_train):
                           num_workers=cfg.DATASET.workers, pin_memory=False)
         return dataset_list, batch_generator
 
+_RESUME_CKPT = None   # checkpoint dang resume (de Trainer nap AWL / projector / optimizer sau khi tao du nhom)
+
+
+def _restore_resume_state(trainer, student=False):
+    """Nap AWL, projector KD (Student) va optimizer tu checkpoint dang resume, SAU khi Trainer da them du nhom tham so."""
+    global _RESUME_CKPT
+    ck = _RESUME_CKPT
+    _RESUME_CKPT = None   # giai phong bo nho GPU sau khi nap xong
+    if ck is None:
+        print('===> [resume] khong co checkpoint de nap AWL/optimizer')
+        return
+    if 'awl_state_dict' in ck:
+        trainer.awl.load_state_dict(ck['awl_state_dict'])
+        print('===> [resume] da nap AWL')
+    if student and ck.get('projector_state_dict'):
+        psd = ck['projector_state_dict']
+        keys = [k for k in ('proj', 'joint', 'global', 'res') if f'{k}.1.weight' in psd]   # giu dung thu tu luc tao
+        mods = {}
+        for k in keys:
+            C = psd[f'{k}.1.weight'].shape[0]
+            mods[k] = torch.nn.Sequential(torch.nn.LayerNorm(C, elementwise_affine=False), torch.nn.Linear(C, C))
+        trainer.feat_projector = torch.nn.ModuleDict(mods).cuda()
+        trainer.feat_projector.load_state_dict(psd)
+        trainer.optimizer.add_param_group({'params': trainer.feat_projector.parameters(),
+                                           'lr': trainer.optimizer.param_groups[0]['lr'], 'weight_decay': 0})
+        print(f'===> [resume] da nap projector KD: {keys}')
+    try:
+        trainer.optimizer.load_state_dict(ck['optim_state_dict'])
+        for state in trainer.optimizer.state.values():
+            for k, v in state.items():
+                if torch.is_tensor(v):
+                    state[k] = v.cuda()
+        print(f'===> [resume] da nap optimizer ({len(trainer.optimizer.param_groups)} nhom), '
+              f'lr = {trainer.optimizer.param_groups[0]["lr"]:.2e}')
+    except (ValueError, KeyError) as e:
+        print(f'===> [resume] CANH BAO: khong nap duoc optimizer ({str(e)[:100]}) -> dung optimizer moi')
+
+
 def prepare_network(args, load_dir='', is_train=True):
     dataset_names = cfg.DATASET.train_list if is_train else cfg.DATASET.test_list
     dataset_list, dataloader = get_dataloader(args, dataset_names, is_train)
@@ -83,11 +121,18 @@ def prepare_network(args, load_dir='', is_train=True):
             model.load_state_dict(checkpoint['model_state_dict'])
 
         if is_train:
-            optimizer.load_state_dict(checkpoint['optim_state_dict'])
-            for state in optimizer.state.values():
-                for k, v in state.items():
-                    if torch.is_tensor(v):
-                        state[k] = v.cuda()
+            # Teacher/Student them nhom tham so (AWL, projector KD) vao optimizer SAU khi tao -> o day so nhom
+            # chua khop -> hoan nap optimizer, Trainer se nap lai sau khi tao du nhom (xem _restore_resume_state).
+            global _RESUME_CKPT
+            _RESUME_CKPT = checkpoint
+            try:
+                optimizer.load_state_dict(checkpoint['optim_state_dict'])
+                for state in optimizer.state.values():
+                    for k, v in state.items():
+                        if torch.is_tensor(v):
+                            state[k] = v.cuda()
+            except (ValueError, KeyError) as e:
+                print(f'===> Hoan nap optimizer (se nap sau khi them AWL/projector): {str(e)[:80]}')
             curr_lr = 0.0
 
             for param_group in optimizer.param_groups:
@@ -138,17 +183,9 @@ class Trainer:
         # 5 losses now (including mesh_loss)
         self.awl = AutomaticWeightedLoss(5).cuda()
         self.optimizer.add_param_group({'params': self.awl.parameters(), 'weight_decay': 0})
-        # Restore AWL weights if resuming
-        if hasattr(args, 'resume_training') and args.resume_training:
-            import os
-            from funcs_utils import load_checkpoint as _load_ckpt
-            try:
-                ckpt = _load_ckpt(load_dir=os.path.join(cfg.checkpoint_dir), pick_best=False)
-                if 'awl_state_dict' in ckpt:
-                    self.awl.load_state_dict(ckpt['awl_state_dict'])
-                    print('===> AWL weights restored from checkpoint')
-            except Exception as e:
-                print(f'===> Could not restore AWL weights: {e}')
+        # Resume: nap AWL + optimizer (sau khi da them nhom AWL vao optimizer)
+        if getattr(args, 'resume_training', False) and load_dir:
+            _restore_resume_state(self)
 
         if cfg.TRAIN.wandb:
             wandb.init(config=cfg,
@@ -445,17 +482,9 @@ class Teacher_Trainer:
             print(f'===> Teacher loss smpl_shape: trong so = {self.shape_loss_w}'
                   + (' (TAT - khong dua vao AWL)' if self.shape_loss_w <= 0 else ''))
 
-        # Restore AWL weights if resuming
-        if hasattr(args, 'resume_training') and args.resume_training:
-            import os
-            from funcs_utils import load_checkpoint as _load_ckpt
-            try:
-                ckpt = _load_ckpt(load_dir=os.path.join(cfg.checkpoint_dir), pick_best=False)
-                if 'awl_state_dict' in ckpt:
-                    self.awl.load_state_dict(ckpt['awl_state_dict'])
-                    print('===> AWL weights restored from checkpoint')
-            except Exception as e:
-                print(f'===> Could not restore AWL weights: {e}')
+        # Resume: nap AWL + optimizer (sau khi da them nhom AWL vao optimizer)
+        if getattr(args, 'resume_training', False) and load_dir:
+            _restore_resume_state(self)
 
         if cfg.TRAIN.wandb:
             wandb.init(config=cfg,
@@ -847,17 +876,9 @@ class Student_Trainer:
             print(f'===> Student loss smpl_shape: trong so = {self.shape_loss_w}'
                   + (' (TAT - khong dua vao AWL)' if self.shape_loss_w <= 0 else ''))
 
-# Restore AWL weights if resuming
-        if hasattr(args, 'resume_training') and args.resume_training:
-            import os
-            from funcs_utils import load_checkpoint as _load_ckpt
-            try:
-                ckpt = _load_ckpt(load_dir=os.path.join(cfg.checkpoint_dir), pick_best=False)
-                if 'awl_state_dict' in ckpt:
-                    self.awl.load_state_dict(ckpt['awl_state_dict'])
-                    print('===> AWL weights restored from checkpoint')
-            except Exception as e:
-                print(f'===> Could not restore AWL weights: {e}')
+        # Resume: nap AWL + projector KD + optimizer (sau khi da them nhom AWL; projector tao lai tu checkpoint)
+        if getattr(args, 'resume_training', False) and load_dir:
+            _restore_resume_state(self, student=True)
 
         if cfg.TRAIN.wandb:
             wandb.init(config=cfg,
