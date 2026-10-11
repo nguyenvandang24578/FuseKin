@@ -104,7 +104,7 @@ for epoch in range(cfg.TRAIN.begin_epoch, cfg.TRAIN.end_epoch + 1):
     }
     if hasattr(trainer, 'awl'):
         ckpt['awl_state_dict'] = trainer.awl.state_dict()
-    if hasattr(trainer, 'feat_projector'):
+    if getattr(trainer, 'feat_projector', None) is not None:   # None khi khong dung KD feat (scratch / legacy)
         ckpt['projector_state_dict'] = trainer.feat_projector.state_dict()
     save_checkpoint(ckpt, epoch, is_best)
 
