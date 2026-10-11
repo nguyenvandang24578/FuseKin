@@ -803,6 +803,22 @@ class Student_Trainer:
         self.kd_noise_wmax = float(cfg.MODEL.get('kd_noise_wmax', 3.0))
         self.kd_nce_w = float(cfg.MODEL.get('kd_nce_w', 0.0))
         self.kd_nce_temp = float(cfg.MODEL.get('kd_nce_temp', 0.1))
+        # Distill phan du (v1): bo ma hoa joint (TRUOC fusion) phai tu xap xi feat_joint SAU fusion cua Teacher;
+        # phan con thieu do fusion (anh) bu -> anh bi ep sua loi do joint nhieu. 0 = tat.
+        self.kd_res_w = float(cfg.MODEL.get('kd_res_w', 0.0))
+        # Nhieu 2D luc train (truoc MotionBERT) - chi Student, chi luc train. 0 = tat.
+        self.s2d_prob = float(cfg.MODEL.get('s2d_noise_prob', 0.0))
+        self.s2d_jitter = float(cfg.MODEL.get('s2d_noise_jitter', 0.02))
+        self.s2d_big_prob = float(cfg.MODEL.get('s2d_noise_big_prob', 0.15))
+        self.s2d_big_std = float(cfg.MODEL.get('s2d_noise_big_std', 0.2))
+        self.s2d_swap_prob = float(cfg.MODEL.get('s2d_noise_swap_prob', 0.2))
+        self.s2d_drop_prob = float(cfg.MODEL.get('s2d_noise_drop_prob', 0.05))
+        if self.s2d_prob > 0:
+            print(f'===> Nhieu 2D luc train: prob={self.s2d_prob} jitter={self.s2d_jitter} '
+                  f'big(p={self.s2d_big_prob}, std={self.s2d_big_std}) swap={self.s2d_swap_prob} drop={self.s2d_drop_prob}')
+        if self.use_kd and self.kd_mode == 'feat' and self.kd_res_w > 0:
+            print(f'===> Distill phan du (v1): kd_res_w={self.kd_res_w} '
+                  f'(feat_joint_in -> feat_joint SAU fusion cua Teacher)')
         self.feat_projector = None   # tao luc batch dau tien (biet so kenh); train.py tu luu 'projector_state_dict'
         if self.use_kd and self.kd_mode == 'feat':
             print(f'===> KD mode = feat | dist={self.kd_feat_dist} | lambda={self.kd_lambda} | hard_w={self.kd_hard_w} | '
@@ -851,13 +867,50 @@ class Student_Trainer:
                    job_type="training",
                    reinit=True)
 
+    # ---------------- Nhieu 2D luc train ----------------
+    _LR_PAIRS = ((1, 4), (2, 5), (3, 6), (11, 14), (12, 15), (13, 16))   # H36M-17: phai/trai
+
+    def _corrupt_2d(self, pose2d, mask):
+        """pose2d (B,J,2|3) toa do [-1,1]; mask (B,J,1). Tra ban sao bi lam nhieu cho ~s2d_prob mau:
+        jitter nho moi khop + lech lon vai khop + doi trai/phai 1 cap + mat khop (mask=0)."""
+        B, J = pose2d.shape[:2]
+        dev = pose2d.device
+        p = pose2d.clone()
+        m = mask.clone()
+        sel = (torch.rand(B, device=dev) < self.s2d_prob).float()[:, None, None]          # mau bi nhieu
+        xy = p[..., :2]
+        noise = torch.randn_like(xy) * self.s2d_jitter
+        big = (torch.rand(B, J, 1, device=dev) < self.s2d_big_prob).float()
+        noise = noise + big * torch.randn_like(xy) * self.s2d_big_std
+        xy_new = xy + noise * sel * (m > 0).float()
+        # doi trai/phai 1 cap ngau nhien
+        swap = (torch.rand(B, device=dev) < self.s2d_swap_prob) & (sel[:, 0, 0] > 0)
+        if swap.any():
+            pair = torch.randint(len(self._LR_PAIRS), (B,), device=dev)
+            for k, (a, b) in enumerate(self._LR_PAIRS):
+                idx = swap & (pair == k)
+                if idx.any():
+                    tmp = xy_new[idx, a].clone()
+                    xy_new[idx, a] = xy_new[idx, b]
+                    xy_new[idx, b] = tmp
+        # mat khop (khong dong root)
+        drop = (torch.rand(B, J, 1, device=dev) < self.s2d_drop_prob).float() * sel
+        drop[:, 0] = 0
+        m = m * (1.0 - drop)
+        xy_new = xy_new * (m > 0).float()
+        p[..., :2] = xy_new
+        if p.shape[-1] >= 3:
+            p[..., 2:3] = p[..., 2:3] * (m > 0).float()
+        return p, m
+
     # ---------------- KD feature (kd_mode = 'feat') ----------------
     def _ensure_projectors(self, s_out):
         """Tao projector (LN khong affine -> Linear khoi tao identity) cho moi diem noi, lan dau goi."""
         if self.feat_projector is not None:
             return
         mods = {}
-        for key, out_key in (('proj', 'feat_joint_in'), ('joint', 'feat_joint'), ('global', 'feat_global')):
+        for key, out_key in (('proj', 'feat_joint_in'), ('joint', 'feat_joint'), ('global', 'feat_global'),
+                             ('res', 'feat_joint_in')):
             C = s_out[out_key].shape[-1]
             lin = torch.nn.Linear(C, C)
             with torch.no_grad():
@@ -921,6 +974,9 @@ class Student_Trainer:
             input_image = inputs['img'].cuda().float()
             input_pose2d = inputs['joints'].cuda().float()
             joints_mask = inputs['joints_mask'].cuda().float()
+            if self.s2d_prob > 0:
+                # Nhieu 2D TRUOC MotionBERT (MotionBERT da thuoc long 3DPW-train -> joint gan dung neu khong nhieu)
+                input_pose2d, joints_mask = self._corrupt_2d(input_pose2d, joints_mask)
             gt_orig_joint_cam = targets['orig_joint_cam'].cuda()
             gt_fit_joint_cam = targets['fit_joint_cam'].cuda()
             fit_joint_trunc = meta['fit_joint_trunc'].cuda()
@@ -965,7 +1021,12 @@ class Student_Trainer:
             zeros_b = torch.zeros(input_image.shape[0], device=input_image.device)
             feat_mode = self.use_kd and self.kd_mode == 'feat'
             kd_nce = zeros_b.sum()
+            kd_res_ps = zeros_b
             noise_w_mean = 1.0
+            # loi joint dau vao Student (MotionBERT) so voi GT, mm - de kiem tra muc nhieu
+            with torch.no_grad():
+                _lerr = torch.norm(model_output['lifted_joints_3d'] - gt_pose_input, dim=-1)
+                lift_err_mm = float(((_lerr * valid_joint).sum() / valid_joint.sum().clamp_min(1.0)).item() * 1000)
             if feat_mode:
                 self._ensure_projectors(model_output)
                 # E2: trong so tung khop theo do sai cua joint dau vao Student (MotionBERT) so voi GT.
@@ -990,6 +1051,10 @@ class Student_Trainer:
                 kd_joint_ps = (self._kd_dist('joint', model_output['feat_joint'], t_out['feat_joint'])
                                * jw_valid).sum(-1) / n_valid
                 kd_global_ps = self._kd_dist('global', model_output['feat_global'], t_out['feat_global']) * sw
+                # Distill phan du (v1): joint-only (truoc fusion) -> feat_joint SAU fusion cua Teacher
+                if self.kd_res_w > 0:
+                    kd_res_ps = (self._kd_dist('res', model_output['feat_joint_in'], t_out['feat_joint'])
+                                 * jw_valid).sum(-1) / n_valid
                 # E3: InfoNCE tren token khop sau fusion va feature toan cuc
                 if self.kd_nce_w > 0:
                     kd_nce = (self._info_nce('joint', model_output['feat_joint'], t_out['feat_joint'], mask=valid_joint)
@@ -1045,7 +1110,7 @@ class Student_Trainer:
             if feat_mode:
                 # E1: trong so co dinh, khong adaptive (adaptive chi de log = 1)
                 adaptive_weight = torch.ones_like(adaptive_weight)
-                kd_loss = kd_per_sample.mean() + self.kd_nce_w * kd_nce
+                kd_loss = (kd_per_sample + self.kd_res_w * kd_res_ps).mean() + self.kd_nce_w * kd_nce
             else:
                 kd_loss = (adaptive_weight * kd_per_sample).mean()
             privileged_loss = privileged_per_sample.mean()
@@ -1120,6 +1185,8 @@ class Student_Trainer:
                 'adaptive_kd_weight': adaptive_weight.mean().item(),
                 'kd_nce': float(kd_nce.item()) if torch.is_tensor(kd_nce) else float(kd_nce),
                 'kd_noise_w': noise_w_mean,
+                'kd_res': kd_res_ps.mean().item(),
+                'lift_err_mm': lift_err_mm,
             }
             for k, v in step_stats.items():
                 running[k] = running.get(k, 0.0) + v
@@ -1143,6 +1210,8 @@ class Student_Trainer:
                         'train_loss/adaptive_kd_weight': step_stats['adaptive_kd_weight'],
                         'train_loss/kd_nce': step_stats['kd_nce'],
                         'train_loss/kd_noise_w': step_stats['kd_noise_w'],
+                        'train_loss/kd_res': step_stats['kd_res'],
+                        'train_loss/lift_err_mm': step_stats['lift_err_mm'],
                         'train_loss/hard_total': hard_loss.item(),
                         'train_loss/total': loss.item(),
                     }
@@ -1157,7 +1226,8 @@ class Student_Trainer:
                     f'proj2d: {loss_body_joint_proj.item():.3f} '
                     f'kd: {kd_loss.item():.3f} '
                     f'[P {step_stats["kd_proj"]:.3f} J {step_stats["kd_joint"]:.3f} G {step_stats["kd_global"]:.3f} '
-                    f'N {step_stats["kd_nce"]:.3f} nw {step_stats["kd_noise_w"]:.2f}] '
+                    f'N {step_stats["kd_nce"]:.3f} R {step_stats["kd_res"]:.3f} nw {step_stats["kd_noise_w"]:.2f}] '
+                    f'lift: {step_stats["lift_err_mm"]:.0f}mm '
                     f'priv: {step_stats["privileged_3d"]:.3f} '
                     f'w: {step_stats["adaptive_kd_weight"]:.2f} '
                     f'tl: {loss.detach().item():.3f}'
@@ -1170,6 +1240,8 @@ class Student_Trainer:
               f'KD dist proj: {avg["kd_proj"]:.4f} | joint: {avg["kd_joint"]:.4f} | global: {avg["kd_global"]:.4f}')
         print(f'  Privileged 3D: {avg["privileged_3d"]:.4f} | Adaptive weight: {avg["adaptive_kd_weight"]:.4f} | '
               f'InfoNCE: {avg["kd_nce"]:.4f} | noise w: {avg["kd_noise_w"]:.3f}')
+        print(f'  Residual (joint-only -> Teacher): {avg["kd_res"]:.4f} | KD fused (J): {avg["kd_joint"]:.4f} | '
+              f'loi joint dau vao (MotionBERT): {avg["lift_err_mm"]:.1f} mm')
 
         if cfg.TRAIN.wandb:
             wandb.log({f'epoch_metric/{k}': v for k, v in avg.items()})

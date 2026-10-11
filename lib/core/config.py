@@ -213,6 +213,15 @@ cfg.MODEL.kd_noise_wmax = 3.0
 # E3: InfoNCE Student->Teacher trong batch (token khop sau fusion + feature toan cuc). 0 = tat.
 cfg.MODEL.kd_nce_w = 0.0
 cfg.MODEL.kd_nce_temp = 0.1
+# Distill phan du (v1): feat_joint_in (bo ma hoa joint, TRUOC fusion) -> feat_joint SAU fusion cua Teacher. 0 = tat.
+cfg.MODEL.kd_res_w = 0.0
+# Nhieu 2D luc train cho Student (truoc MotionBERT). Toa do [-1,1] (1.0 ~ 128 px trong crop 256). 0 = tat.
+cfg.MODEL.s2d_noise_prob = 0.0        # ti le mau bi lam nhieu
+cfg.MODEL.s2d_noise_jitter = 0.02     # std lech nho moi khop (~2.5 px)
+cfg.MODEL.s2d_noise_big_prob = 0.15   # xac suat 1 khop bi lech lon
+cfg.MODEL.s2d_noise_big_std = 0.2     # std lech lon (~25 px)
+cfg.MODEL.s2d_noise_swap_prob = 0.2   # xac suat doi trai/phai 1 cap khop
+cfg.MODEL.s2d_noise_drop_prob = 0.05  # xac suat mat 1 khop (mask = 0)
 """ Train Detail """
 cfg.TRAIN = edict()
 cfg.TRAIN.print_freq = 20
