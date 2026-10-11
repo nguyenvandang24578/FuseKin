@@ -21,7 +21,7 @@ MODEL:
   motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
   motionbert_2d_rootrel: False
   backbone_pretrained: 'spin'
-  TEACHER: 'SUA_DUONG_DAN_TEACHER_GT/checkpoint/best.pth.tar'
+  TEACHER: './experiment/exp_10-10_18_35/checkpoint/best.pth.tar'
   student_use_kd: True
   init_student_from_teacher: True
 
