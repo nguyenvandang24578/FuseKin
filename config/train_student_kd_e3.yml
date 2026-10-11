@@ -1,4 +1,4 @@
-# E3: E2 + InfoNCE Student->Teacher
+# E3: E1 + InfoNCE Student->Teacher (E2 ~ E1 nen TAT trong so theo nhieu khop de chi khac E1 o InfoNCE)
 # So sanh voi Student scratch (train_student_scratch.yml): ~92 mm. KD cu (legacy, Teacher A): ~98 mm.
 # Teacher = Teacher GT 100% (train_teacher_gt.yml, 46.6 mm val) -> SUA duong dan TEACHER ben duoi.
 # motionbert_pretrained: dung DUNG duong dan MotionBERT ban moi (khong tru root 2D) nhu tren server.
@@ -21,7 +21,7 @@ MODEL:
   motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
   motionbert_2d_rootrel: False
   backbone_pretrained: 'spin'
-  TEACHER: './experiment/exp_10-10_18_35/checkpoint/best.pth.tar'
+  TEACHER: './experiment/teacher/checkpoint/best.pth.tar'
   student_use_kd: True
   init_student_from_teacher: True
 
@@ -36,7 +36,7 @@ MODEL:
   # E2: trong so tung khop = clamp(loi_khop / loi_TB_batch, 0.2, 3.0), loi = |MotionBERT - GT|:
   #     khop sai nhieu hon trung binh -> KD manh hon. tau = 0 -> chuan hoa TUONG DOI theo batch
   #     (MotionBERT tren 3DPW-train chi sai ~9 mm nen nguong tuyet doi 50 mm se dua moi khop ve 0.2).
-  kd_noise_weight: True
+  kd_noise_weight: False  # E2 khong giup -> tat, so sanh truc tiep voi E1
   kd_noise_tau: 0.0
   kd_noise_wmin: 0.2
   kd_noise_wmax: 3.0
