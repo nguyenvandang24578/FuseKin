@@ -197,6 +197,22 @@ cfg.MODEL.priv_beta = 0.05
 cfg.MODEL.init_student_from_teacher = True
 # False -> Student "from scratch": khong Teacher, khong KD, khong khoi tao tu Teacher (baseline de so voi KD)
 cfg.MODEL.student_use_kd = True
+# ---- Che do KD (Student_Trainer) ----
+# 'legacy': nhu cu. 'feat': chi KD feature (E1) [+ trong so theo nhieu khop (E2)] [+ InfoNCE (E3)],
+#   loss = kd_hard_w*hard + kd_lambda*KD + privileged; KHONG KD output, KHONG adaptive weight.
+cfg.MODEL.kd_mode = 'legacy'
+cfg.MODEL.kd_feat_dist = 'mse'       # 'mse': MSE(Linear(LN(s)), LN(t)) qua projector | 'cos': nhu cu
+cfg.MODEL.kd_lambda = 1.0
+cfg.MODEL.kd_hard_w = 1.0
+# E2: trong so KD tung khop = clamp(loi_input_khop / tau, wmin, wmax), loi input = |MotionBERT - GT| (met)
+#     tau <= 0: TUONG DOI, chia cho loi trung binh cua batch (nen dung: MotionBERT tren 3DPW-train sai rat it)
+cfg.MODEL.kd_noise_weight = False
+cfg.MODEL.kd_noise_tau = 0.0
+cfg.MODEL.kd_noise_wmin = 0.2
+cfg.MODEL.kd_noise_wmax = 3.0
+# E3: InfoNCE Student->Teacher trong batch (token khop sau fusion + feature toan cuc). 0 = tat.
+cfg.MODEL.kd_nce_w = 0.0
+cfg.MODEL.kd_nce_temp = 0.1
 """ Train Detail """
 cfg.TRAIN = edict()
 cfg.TRAIN.print_freq = 20

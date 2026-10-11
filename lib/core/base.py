@@ -788,6 +788,30 @@ class Student_Trainer:
             self.teacher = None
             print('===> Student FROM SCRATCH: khong Teacher, khong KD, khong khoi tao tu Teacher '
                   '(loss = 0.5*hard + privileged)')
+
+        # ---------------- Che do KD ----------------
+        # 'legacy': nhu cu (cosine P/J/G + KD output hyper/pose/root/latent, loss = 0.5*hard + 0.5*kd*adaptive + priv)
+        # 'feat'  : KD CHI o feature (E1) + trong so theo do nhieu tung khop (E2) + InfoNCE (E3):
+        #           loss = kd_hard_w*hard + kd_lambda*KD_feat + priv
+        self.kd_mode = cfg.MODEL.get('kd_mode', 'legacy')
+        self.kd_feat_dist = cfg.MODEL.get('kd_feat_dist', 'mse')            # 'mse' (qua projector) | 'cos'
+        self.kd_lambda = float(cfg.MODEL.get('kd_lambda', 1.0))
+        self.kd_hard_w = float(cfg.MODEL.get('kd_hard_w', 1.0))
+        self.kd_noise_weight = bool(cfg.MODEL.get('kd_noise_weight', False))
+        self.kd_noise_tau = float(cfg.MODEL.get('kd_noise_tau', 0.05))      # met: loi input 50 mm -> trong so 1
+        self.kd_noise_wmin = float(cfg.MODEL.get('kd_noise_wmin', 0.2))
+        self.kd_noise_wmax = float(cfg.MODEL.get('kd_noise_wmax', 3.0))
+        self.kd_nce_w = float(cfg.MODEL.get('kd_nce_w', 0.0))
+        self.kd_nce_temp = float(cfg.MODEL.get('kd_nce_temp', 0.1))
+        self.feat_projector = None   # tao luc batch dau tien (biet so kenh); train.py tu luu 'projector_state_dict'
+        if self.use_kd and self.kd_mode == 'feat':
+            print(f'===> KD mode = feat | dist={self.kd_feat_dist} | lambda={self.kd_lambda} | hard_w={self.kd_hard_w} | '
+                  f'w_proj={cfg.MODEL.get("kd_w_proj", 1.0)} w_joint={cfg.MODEL.get("kd_w_joint", 1.0)} '
+                  f'w_global={cfg.MODEL.get("kd_w_global", 1.0)}')
+            print(f'     E2 trong so theo nhieu tung khop: {self.kd_noise_weight} '
+                  f'(tau={self.kd_noise_tau} m, w in [{self.kd_noise_wmin}, {self.kd_noise_wmax}])')
+            print(f'     E3 InfoNCE: w={self.kd_nce_w}, temp={self.kd_nce_temp}')
+            print('     KD output (hyper/pose/root/latent) va adaptive weight: TAT')
         h36m_joints = ('Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck', 'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist')
         smpl30_joints = self.main_dataset.mesh_model.joints_name
         self.h36m_from_smpl30 = [smpl30_joints.index(name) for name in h36m_joints]
@@ -826,6 +850,49 @@ class Student_Trainer:
                    dir=cfg.output_dir,
                    job_type="training",
                    reinit=True)
+
+    # ---------------- KD feature (kd_mode = 'feat') ----------------
+    def _ensure_projectors(self, s_out):
+        """Tao projector (LN khong affine -> Linear khoi tao identity) cho moi diem noi, lan dau goi."""
+        if self.feat_projector is not None:
+            return
+        mods = {}
+        for key, out_key in (('proj', 'feat_joint_in'), ('joint', 'feat_joint'), ('global', 'feat_global')):
+            C = s_out[out_key].shape[-1]
+            lin = torch.nn.Linear(C, C)
+            with torch.no_grad():
+                lin.weight.copy_(torch.eye(C))
+                lin.bias.zero_()
+            mods[key] = torch.nn.Sequential(torch.nn.LayerNorm(C, elementwise_affine=False), lin)
+        self.feat_projector = torch.nn.ModuleDict(mods).cuda()
+        self.optimizer.add_param_group({'params': self.feat_projector.parameters(),
+                                        'lr': self.optimizer.param_groups[0]['lr'], 'weight_decay': 0})
+        print(f'===> Tao feat_projector: ' + ', '.join(f'{k}: {m[1].in_features}' for k, m in mods.items()))
+
+    def _kd_dist(self, key, s, t):
+        """Khoang cach Student->Teacher theo kenh cuoi, tra ve shape s.shape[:-1].
+        'cos': 1 - cos(LN(s), LN(t)) (nhu cu, de bao hoa ~0).
+        'mse': MSE(Linear(LN(s)), LN(t)) -> khong bao hoa, projector hoc them do lon/xoay."""
+        t = F.layer_norm(t.detach(), t.shape[-1:])
+        if self.kd_feat_dist == 'cos':
+            return 1.0 - F.cosine_similarity(F.layer_norm(s, s.shape[-1:]), t, dim=-1)
+        return ((self.feat_projector[key](s) - t) ** 2).mean(-1)
+
+    def _info_nce(self, key, s, t, mask=None):
+        """InfoNCE Student->Teacher trong batch: cung mau = duong, mau khac = am (DPMesh NKR).
+        s, t: (B, C) hoac (B, J, C); mask (B, J) cho dang token."""
+        B = s.shape[0]
+        if B < 2:
+            return s.new_zeros(())
+        zs = self.feat_projector[key](s)
+        zt = F.layer_norm(t.detach(), t.shape[-1:])
+        if mask is not None:
+            zs = zs * mask[..., None]
+            zt = zt * mask[..., None]
+        zs = F.normalize(zs.reshape(B, -1), dim=-1)
+        zt = F.normalize(zt.reshape(B, -1), dim=-1)
+        logits = zs @ zt.t() / self.kd_nce_temp
+        return F.cross_entropy(logits, torch.arange(B, device=s.device))
 
     def train(self, epoch):
         self.model.train()
@@ -896,7 +963,38 @@ class Student_Trainer:
 
             # ---------- KD: 3 điểm nối ----------
             zeros_b = torch.zeros(input_image.shape[0], device=input_image.device)
-            if self.use_kd:
+            feat_mode = self.use_kd and self.kd_mode == 'feat'
+            kd_nce = zeros_b.sum()
+            noise_w_mean = 1.0
+            if feat_mode:
+                self._ensure_projectors(model_output)
+                # E2: trong so tung khop theo do sai cua joint dau vao Student (MotionBERT) so voi GT.
+                #     Khop sai nhieu -> KD manh hon -> Student phai dung anh de keo ve dac trung cua Teacher.
+                if self.kd_noise_weight:
+                    in_err = torch.norm(model_output['lifted_joints_3d'].detach() - gt_pose_input, dim=-1)   # (B,J) met
+                    if self.kd_noise_tau > 0:
+                        scale = self.kd_noise_tau                                       # tuyet doi (met)
+                    else:
+                        # tuong doi: chia cho loi TB cua batch (MotionBERT tren 3DPW-train sai rat it ~9 mm,
+                        # nguong tuyet doi se dua gan nhu moi khop ve wmin)
+                        scale = ((in_err * valid_joint).sum() / valid_joint.sum().clamp_min(1.0)).clamp_min(1e-4)
+                    jw = (in_err / scale).clamp(self.kd_noise_wmin, self.kd_noise_wmax)
+                else:
+                    jw = torch.ones_like(valid_joint)
+                jw_valid = jw * valid_joint
+                sw = jw_valid.sum(-1) / n_valid                                                # (B,) trong so mau
+                noise_w_mean = float(sw.mean().item())
+
+                kd_proj_ps = (self._kd_dist('proj', model_output['feat_joint_in'], t_out['feat_joint_in'])
+                              * jw_valid).sum(-1) / n_valid
+                kd_joint_ps = (self._kd_dist('joint', model_output['feat_joint'], t_out['feat_joint'])
+                               * jw_valid).sum(-1) / n_valid
+                kd_global_ps = self._kd_dist('global', model_output['feat_global'], t_out['feat_global']) * sw
+                # E3: InfoNCE tren token khop sau fusion va feature toan cuc
+                if self.kd_nce_w > 0:
+                    kd_nce = (self._info_nce('joint', model_output['feat_joint'], t_out['feat_joint'], mask=valid_joint)
+                              + self._info_nce('global', model_output['feat_global'], t_out['feat_global']))
+            elif self.use_kd:
                 kd_proj_ps = (_cos_dist(model_output['feat_joint_in'], t_out['feat_joint_in'])
                               * valid_joint).sum(-1) / n_valid                              # (B,)
                 kd_joint_ps = (_cos_dist(model_output['feat_joint'], t_out['feat_joint'])
@@ -907,19 +1005,19 @@ class Student_Trainer:
 
             # ---------- KD: sâu hơn (GCN / Transformer pose) ----------
             kd_hyper_ps = 0.0
-            if model_output.get('feat_hyper') is not None and t_out.get('feat_hyper') is not None:
+            if not feat_mode and model_output.get('feat_hyper') is not None and t_out.get('feat_hyper') is not None:
                 kd_hyper_ps = (_cos_dist(model_output['feat_hyper'], t_out['feat_hyper']) * valid_joint).sum(-1) / n_valid
             
             kd_pose_ps = 0.0
-            if model_output.get('feat_pose') is not None and t_out.get('feat_pose') is not None:
+            if not feat_mode and model_output.get('feat_pose') is not None and t_out.get('feat_pose') is not None:
                 kd_pose_ps = _cos_dist(model_output['feat_pose'], t_out['feat_pose']).mean(-1)
             
             kd_root_ps = 0.0
-            if model_output.get('root_pose_6d') is not None and t_out.get('root_pose_6d') is not None:
+            if not feat_mode and model_output.get('root_pose_6d') is not None and t_out.get('root_pose_6d') is not None:
                 kd_root_ps = F.l1_loss(model_output['root_pose_6d'], t_out['root_pose_6d'].detach(), reduction='none').mean(-1)
                 
             kd_latent_ps = 0.0
-            if model_output.get('pose_latent') is not None and t_out.get('pose_latent') is not None:
+            if not feat_mode and model_output.get('pose_latent') is not None and t_out.get('pose_latent') is not None:
                 kd_latent_ps = F.l1_loss(model_output['pose_latent'], t_out['pose_latent'].detach(), reduction='none').mean(-1)
 
             kd_per_sample = (w_proj * kd_proj_ps + w_joint * kd_joint_ps + w_global * kd_global_ps 
@@ -944,7 +1042,12 @@ class Student_Trainer:
                 max=2.0
             ).detach()
 
-            kd_loss = (adaptive_weight * kd_per_sample).mean()
+            if feat_mode:
+                # E1: trong so co dinh, khong adaptive (adaptive chi de log = 1)
+                adaptive_weight = torch.ones_like(adaptive_weight)
+                kd_loss = kd_per_sample.mean() + self.kd_nce_w * kd_nce
+            else:
+                kd_loss = (adaptive_weight * kd_per_sample).mean()
             privileged_loss = privileged_per_sample.mean()
 
             # ---------- hard loss ----------
@@ -985,7 +1088,10 @@ class Student_Trainer:
                 loss_dict['smpl_shape'] = loss_dict['smpl_shape'] * self.shape_loss_w
             loss_dict = self.awl(loss_dict)
             hard_loss = sum(loss_dict.values())
-            loss = 0.5 * hard_loss + 0.5 * kd_loss + privileged_loss
+            if feat_mode:
+                loss = self.kd_hard_w * hard_loss + self.kd_lambda * kd_loss + privileged_loss
+            else:
+                loss = 0.5 * hard_loss + 0.5 * kd_loss + privileged_loss
             # loss = hard_loss
 
             # update weights
@@ -1012,6 +1118,8 @@ class Student_Trainer:
                 'kd_latent': _get_val(kd_latent_ps),
                 'privileged_3d': privileged_loss.item(),
                 'adaptive_kd_weight': adaptive_weight.mean().item(),
+                'kd_nce': float(kd_nce.item()) if torch.is_tensor(kd_nce) else float(kd_nce),
+                'kd_noise_w': noise_w_mean,
             }
             for k, v in step_stats.items():
                 running[k] = running.get(k, 0.0) + v
@@ -1033,6 +1141,8 @@ class Student_Trainer:
                         'train_loss/kd_latent': step_stats['kd_latent'],
                         'train_loss/privileged_3d': step_stats['privileged_3d'],
                         'train_loss/adaptive_kd_weight': step_stats['adaptive_kd_weight'],
+                        'train_loss/kd_nce': step_stats['kd_nce'],
+                        'train_loss/kd_noise_w': step_stats['kd_noise_w'],
                         'train_loss/hard_total': hard_loss.item(),
                         'train_loss/total': loss.item(),
                     }
@@ -1046,7 +1156,8 @@ class Student_Trainer:
                     f'mesh: {mesh_loss.item():.3f} '
                     f'proj2d: {loss_body_joint_proj.item():.3f} '
                     f'kd: {kd_loss.item():.3f} '
-                    f'[P {step_stats["kd_proj"]:.3f} J {step_stats["kd_joint"]:.3f} G {step_stats["kd_global"]:.3f}] '
+                    f'[P {step_stats["kd_proj"]:.3f} J {step_stats["kd_joint"]:.3f} G {step_stats["kd_global"]:.3f} '
+                    f'N {step_stats["kd_nce"]:.3f} nw {step_stats["kd_noise_w"]:.2f}] '
                     f'priv: {step_stats["privileged_3d"]:.3f} '
                     f'w: {step_stats["adaptive_kd_weight"]:.2f} '
                     f'tl: {loss.detach().item():.3f}'
@@ -1057,7 +1168,8 @@ class Student_Trainer:
         avg = {k: v / n_batch for k, v in running.items()}
         print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f} | '
               f'KD dist proj: {avg["kd_proj"]:.4f} | joint: {avg["kd_joint"]:.4f} | global: {avg["kd_global"]:.4f}')
-        print(f'  Privileged 3D: {avg["privileged_3d"]:.4f} | Adaptive weight: {avg["adaptive_kd_weight"]:.4f}')
+        print(f'  Privileged 3D: {avg["privileged_3d"]:.4f} | Adaptive weight: {avg["adaptive_kd_weight"]:.4f} | '
+              f'InfoNCE: {avg["kd_nce"]:.4f} | noise w: {avg["kd_noise_w"]:.3f}')
 
         if cfg.TRAIN.wandb:
             wandb.log({f'epoch_metric/{k}': v for k, v in avg.items()})
