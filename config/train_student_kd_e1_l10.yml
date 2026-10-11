@@ -1,0 +1,58 @@
+# E1 voi KD manh hon: GIONG HET E1, chi khac kd_lambda = 10 (E1 lambda=1: KD chi ~1-2% tong loss)
+# So sanh voi E1 (lambda 1), doi chung init_only (lambda 0) va Student scratch (~92 mm).
+# Teacher = Teacher GT 100% (train_teacher_gt.yml, 46.6 mm val) -> SUA duong dan TEACHER ben duoi.
+# motionbert_pretrained: dung DUNG duong dan MotionBERT ban moi (khong tru root 2D) nhu tren server.
+DATASET:
+  train_list: ['3dpw-train']
+  test_list: ['3dpw']
+  input_joint_set: 'human36'
+  target_joint_set: 'human36'
+  workers: 8
+  use_gt_input: False
+  seqlen: 1
+  stride: 1
+
+MODEL:
+  name: 'student'
+  resnet_type: 50
+  freeze_backbone: True
+  hpe_dim: 512
+  hpe_dep: 5
+  motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
+  motionbert_2d_rootrel: False
+  backbone_pretrained: 'spin'
+  TEACHER: './experiment/exp_10-10_18_35/checkpoint/best.pth.tar'
+  student_use_kd: True
+  init_student_from_teacher: True
+
+  # ---- KD feature ----
+  kd_mode: 'feat'
+  kd_feat_dist: 'mse'
+  kd_hard_w: 1.0
+  kd_lambda: 10.0         # KD manh gap 10 lan E1
+  kd_w_proj: 0.0
+  kd_w_joint: 1.0
+  kd_w_global: 1.0
+  kd_noise_weight: False
+  kd_nce_w: 0.0
+
+TRAIN:
+  print_freq: 20
+  batch_size: 32
+  shuffle: True
+  begin_epoch: 1
+  end_epoch: 50
+  curriculum_epochs: 15
+  scheduler: 'step'
+  backbone_lr_scale: 0.1
+  lr: 0.0001
+  lr_step: [25, 35, 45]
+  lr_factor: 0.5
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 32
+  shuffle: False
