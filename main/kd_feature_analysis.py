@@ -49,6 +49,8 @@ parser.add_argument('--batch_size', type=int, default=32)
 parser.add_argument('--workers', type=int, default=4)
 parser.add_argument('--seed', type=int, default=0)
 parser.add_argument('--gpu', type=str, default='0')
+parser.add_argument('--vis_dir', type=str, default='', help='thu muc luu hinh (mac dinh: thu muc _eval cua lan chay)')
+parser.add_argument('--tsne', action='store_true', help='dung t-SNE (sklearn) thay PCA cho hinh embedding')
 args = parser.parse_args()
 
 from core.config import cfg, update_config
@@ -184,6 +186,109 @@ def retrieval(S, T, ks=(1, 5)):
     return {k: float((order[:, :k] == gt).any(1).float().mean()) for k in ks}
 
 
+H36M_NAMES = ('Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck',
+              'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist')
+
+
+def visualize(name, d, Tj, Tg, perm, out_dir, t_err, use_tsne=False):
+    """Ve 5 hinh cho 1 Student, luu PNG vao out_dir."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    os.makedirs(out_dir, exist_ok=True)
+    Sj, Sg = d['Sj'], d['Sg']
+    N = Sg.shape[0]
+    paths = []
+
+    # (a) Phan bo cosine cung mau vs khac mau (global + joint), tho va sau projector
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    for ax, (lab, S, T, P) in zip(axes, (('global', Sg, Tg, d.get('Pg')), ('joint (TB 17 khop)', Sj, Tj, d.get('Pj')))):
+        same = F.cosine_similarity(S, T, dim=-1)
+        diff = F.cosine_similarity(S, T[perm], dim=-1)
+        if same.dim() > 1:
+            same, diff = same.mean(-1), diff.mean(-1)
+        bins = np.linspace(-0.2, 1.0, 61)
+        ax.hist(diff.numpy(), bins=bins, alpha=0.6, label='khac mau (xao tron)', color='tab:gray')
+        ax.hist(same.numpy(), bins=bins, alpha=0.6, label='cung mau (tho)', color='tab:blue')
+        if P is not None:
+            ps = F.cosine_similarity(P, T, dim=-1)
+            ps = ps.mean(-1) if ps.dim() > 1 else ps
+            ax.hist(ps.numpy(), bins=bins, alpha=0.6, label='cung mau (sau projector)', color='tab:orange')
+        ax.set_title(f'{name}: cosine Student-Teacher, {lab}')
+        ax.set_xlabel('cosine'); ax.set_ylabel('so mau'); ax.legend(fontsize=8)
+    fig.tight_layout()
+    p = os.path.join(out_dir, f'{name}_a_cosine_hist.png'); fig.savefig(p, dpi=130); plt.close(fig); paths.append(p)
+
+    # (b) Ma tran tuong dong Student x Teacher (64 mau dau) -> duong cheo sang = khop dung mau
+    k = min(64, N)
+    sim = (F.normalize(Sg[:k], dim=-1) @ F.normalize(Tg[:k], dim=-1).t()).numpy()
+    fig, ax = plt.subplots(figsize=(6, 5))
+    im = ax.imshow(sim, cmap='viridis')
+    ax.set_title(f'{name}: cosine global Student (hang) x Teacher (cot), {k} mau')
+    ax.set_xlabel('Teacher mau j'); ax.set_ylabel('Student mau i')
+    fig.colorbar(im, ax=ax, fraction=0.046)
+    fig.tight_layout()
+    p = os.path.join(out_dir, f'{name}_b_sim_matrix.png'); fig.savefig(p, dpi=130); plt.close(fig); paths.append(p)
+
+    # (c) Cosine theo tung khop (tho vs sau projector)
+    pj_raw = F.cosine_similarity(Sj, Tj, dim=-1).mean(0).numpy()
+    pj_diff = F.cosine_similarity(Sj, Tj[perm], dim=-1).mean(0).numpy()
+    fig, ax = plt.subplots(figsize=(12, 4))
+    x = np.arange(len(pj_raw))
+    ax.bar(x - 0.27, pj_diff, 0.27, label='khac mau', color='tab:gray')
+    ax.bar(x, pj_raw, 0.27, label='cung mau (tho)', color='tab:blue')
+    if d.get('Pj') is not None:
+        pj_p = F.cosine_similarity(d['Pj'], Tj, dim=-1).mean(0).numpy()
+        ax.bar(x + 0.27, pj_p, 0.27, label='cung mau (projector)', color='tab:orange')
+    ax.set_xticks(x); ax.set_xticklabels(H36M_NAMES[:len(x)], rotation=45, ha='right', fontsize=8)
+    ax.set_ylim(0, 1.05); ax.set_ylabel('cosine TB'); ax.legend(fontsize=8)
+    ax.set_title(f'{name}: cosine token khop Student-Teacher theo tung khop')
+    fig.tight_layout()
+    p = os.path.join(out_dir, f'{name}_c_per_joint.png'); fig.savefig(p, dpi=130); plt.close(fig); paths.append(p)
+
+    # (d) Embedding 2D feature global: Teacher va Student cung khong gian, noi cap cung mau
+    X = torch.cat([Tg, Sg]).double().numpy()
+    if use_tsne:
+        try:
+            from sklearn.manifold import TSNE
+            Z = TSNE(n_components=2, init='pca', perplexity=30, random_state=0).fit_transform(X)
+            meth = 't-SNE'
+        except Exception as e:
+            print(f'  [canh bao] t-SNE loi ({e}) -> dung PCA')
+            use_tsne = False
+    if not use_tsne:
+        Xc = X - X[:N].mean(0, keepdims=True)              # PCA khop tren Teacher
+        _, _, Vt = np.linalg.svd(Xc[:N], full_matrices=False)
+        Z = Xc @ Vt[:2].T
+        meth = 'PCA (khop tren Teacher)'
+    Zt, Zs = Z[:N], Z[N:]
+    fig, ax = plt.subplots(figsize=(7, 6))
+    m = min(150, N)
+    for i in range(m):
+        ax.plot([Zt[i, 0], Zs[i, 0]], [Zt[i, 1], Zs[i, 1]], color='lightgray', lw=0.6, zorder=1)
+    ax.scatter(Zt[:, 0], Zt[:, 1], s=6, alpha=0.5, label='Teacher', color='tab:green', zorder=2)
+    ax.scatter(Zs[:, 0], Zs[:, 1], s=6, alpha=0.5, label='Student', color='tab:purple', zorder=3)
+    ax.set_title(f'{name}: feature global, {meth}\n(net xam noi Teacher-Student CUNG mau, {m} cap)')
+    ax.legend(markerscale=3)
+    fig.tight_layout()
+    p = os.path.join(out_dir, f'{name}_d_embedding.png'); fig.savefig(p, dpi=130); plt.close(fig); paths.append(p)
+
+    # (e) Doi decoder: MPJPE tung mau, decoder Student vs decoder Teacher
+    own, swap = d['own'], d['swap']
+    fig, ax = plt.subplots(figsize=(6, 6))
+    lim = float(np.percentile(np.concatenate([own, swap]), 99))
+    ax.scatter(own, swap, s=4, alpha=0.4)
+    ax.plot([0, lim], [0, lim], 'k--', lw=0.8, label='y = x')
+    ax.axvline(t_err, color='tab:green', lw=0.8, ls=':', label=f'Teacher GT ({t_err:.1f})')
+    ax.set_xlim(0, lim); ax.set_ylim(0, lim)
+    ax.set_xlabel('MPJPE decoder Student (mm)'); ax.set_ylabel('MPJPE decoder Teacher dong bang (mm)')
+    ax.set_title(f'{name}: doi decoder (TB {own.mean():.1f} vs {swap.mean():.1f})')
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    p = os.path.join(out_dir, f'{name}_e_decoder_swap.png'); fig.savefig(p, dpi=130); plt.close(fig); paths.append(p)
+    return paths
+
+
 def main():
     hr("Dung va nap model")
     teacher, _ = build('teacher', args.teacher_ckpt)
@@ -247,8 +352,13 @@ def main():
     print(f"\n  Kiem tra decode(): sai khac max so voi forward Teacher = {sanity[0]:.2e} (phai ~0)")
 
     rows = []
+    vis = {}
     for n, _, _ in students:
         Sj, Sg = torch.cat(S[n]['j']), torch.cat(S[n]['g'])
+        vis[n] = dict(Sj=Sj, Sg=Sg,
+                      Pj=torch.cat(S[n]['pj']) if S[n]['pj'] else None,
+                      Pg=torch.cat(S[n]['pg']) if S[n]['pg'] else None,
+                      own=torch.cat(S[n]['own']).numpy(), swap=torch.cat(S[n]['swap']).numpy())
         cj_same = F.cosine_similarity(Sj, Tj, dim=-1).mean().item()
         cj_diff = F.cosine_similarity(Sj, Tj[perm], dim=-1).mean().item()
         cg_same = F.cosine_similarity(Sg, Tg, dim=-1).mean().item()
@@ -292,6 +402,14 @@ def main():
     print(f"  {'ban':<12}{'decoder Student':>16}{'decoder Teacher':>16}{'chenh':>9}")
     for r in rows:
         print(f"  {r['n']:<12}{r['own']:16.2f}{r['swap']:16.2f}{r['swap'] - r['own']:+9.2f}")
+
+    out_dir = args.vis_dir or os.path.join(cfg.output_dir, 'figs')
+    hr(f"HINH -> {out_dir}")
+    for n in vis:
+        for p in visualize(n, vis[n], Tj, Tg, perm, out_dir, t_err, use_tsne=args.tsne):
+            print(f"  {p}")
+    print("  a: phan bo cosine cung/khac mau | b: ma tran tuong dong (duong cheo) | c: theo khop")
+    print("  d: embedding Teacher/Student (net xam = cung mau) | e: doi decoder tung mau")
 
     hr("CACH DOC")
     print("  KD THAT SU co tac dung neu ban KD (vd e1) so voi doi chung (init_only/scratch):")
