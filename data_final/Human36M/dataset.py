@@ -276,8 +276,9 @@ class Human36M(torch.utils.data.Dataset):
             img = self.transform(img.astype(np.float32))/255.
 
         if lift_only and self.data_split != 'train':
-            # Test lifter tren H36M (S9, S11, camera 4): dau vao = GT 2D + nhieu PoseFix voi seed CO DINH theo idx
-            # (moi lan test cho cung ket qua, cung kieu nhieu luc train). GT 3D = mocap, root-relative, met.
+            # Test lifter tren H36M (S9, S11, camera 4): dau vao = GT 2D SACH (giao thuc "GT 2D input"),
+            # KHONG them nhieu PoseFix (PoseFix co loi rat nang -> so do bi doi len, khong phan anh kha nang lift).
+            # GT 3D = mocap, root-relative, met.
             h36m_joint_img = data['joint_img'].copy()
             h36m_joint_cam = data['joint_cam'] - data['joint_cam'][self.h36m_root_joint_idx, None, :]
             h36m_joint_valid = data['joint_valid'].astype(np.float32)
@@ -285,15 +286,6 @@ class Human36M(torch.utils.data.Dataset):
             h36m_joint_img[:, :2] = np.dot(img2bb_trans, xy1.transpose(1, 0)).transpose(1, 0)
 
             input_img = h36m_joint_img.copy()
-            input_img[:, 2] = 1
-            np_state, py_state = np.random.get_state(), random.getstate()
-            np.random.seed(idx); random.seed(idx)
-            tmp = transform_joint_to_other_db(input_img, self.h36m_joints_name, self.coco_joints_name)
-            tmp = replace_joint_img(tmp, data['tight_bbox'], data['near_joints'], data['num_overlap'], img2bb_trans)
-            tmp = transform_joint_to_other_db(tmp, self.coco_joints_name, self.h36m_joints_name)
-            np.random.set_state(np_state); random.setstate(py_state)
-            input_img[self.h36m_coco_common_jidx, :2] = tmp[self.h36m_coco_common_jidx, :2]
-
             input_img[:, 0] = input_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
             input_img[:, 1] = input_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
             gt_x = h36m_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
