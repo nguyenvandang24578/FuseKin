@@ -9,9 +9,8 @@
 # ======================================================
 
 DATASET:
-    train_list: ['3dpw-train']
-    # chi test 1 lan cuoi voi best ckpt. '3dpw-train-noaug' = do loi tren chinh 3DPW-train (kiem tra hoc thuoc)
-    test_list: ['3dpw', '3dpw-train-noaug']
+    train_list: ['Human36M', 'MuCo', '3dpw-train']
+    test_list: ['3dpw', 'Human36M', '3dpw-train-noaug']
     input_joint_set: 'human36'
     target_joint_set: 'human36'
     workers: 8
@@ -31,10 +30,10 @@ MODEL:
 
 MOTIONBERT:
     pretrained: './experiment/pretrained/full/best_epoch.bin'   # --pretrained tren dong lenh se ghi de
-    save_dir: 'experiment/finetune_motionbert_halpe26'
+    save_dir: 'experiment/finetune_motionbert_halpe26_full'   # QUAN TRONG: doi ten
     val_set: '3dpw-val'
     iters_per_epoch: 0           # 0 = moi epoch duyet het du lieu
-    balance_datasets: False      # khong lap lai bo nho, moi mau dung 1 lan / epoch
+    balance_datasets: True      # khong lap lai bo nho, moi mau dung 1 lan / epoch
     gt2d_prob: 0.5               # 50% mau dung GT 2D sach (cho Teacher GT 2D), 50% 2D + nhieu PoseFix
     joint_drop_prob: 0.1         # gia lap detector bo sot khop
 
