@@ -682,6 +682,12 @@ class Teacher_Trainer:
         print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}')
         if run_extra:
             print('  ' + ' | '.join(f'{k_}: {v_ / len(batch_generator):.4f}' for k_, v_ in run_extra.items()))
+        # Trong so hieu dung cua AWL (0.5 / p^2) theo tung loss (giong Student_Trainer)
+        if hasattr(self.awl, 'keys'):
+            awl_w = {k: (0.5 / (p.detach() ** 2)).item() for k, p in zip(self.awl.keys, self.awl.params)}
+            print('  AWL trong so: ' + ' | '.join(f'{k}: {v:.3f}' for k, v in awl_w.items()))
+            if cfg.TRAIN.wandb:
+                wandb.log({f'awl_w/{k}': v for k, v in awl_w.items()})
 
 def _select_errors(results):
     """(joint_error, surface_error) dung de chon checkpoint best (main/train.py).
