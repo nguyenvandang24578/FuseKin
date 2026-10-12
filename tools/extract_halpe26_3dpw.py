@@ -57,6 +57,15 @@ def parse_args():
 
 
 def build_model(args):
+    if args.device == 'cuda':
+        # Nap thu vien CUDA/cuDNN cai qua pip (nvidia-*-cu12) truoc khi tao session (onnxruntime >= 1.21)
+        import onnxruntime as ort
+        if hasattr(ort, 'preload_dlls'):
+            try:
+                ort.preload_dlls()
+            except Exception as e:
+                print(f'[canh bao] preload_dlls loi: {e}')
+        print(f'[onnxruntime] {ort.__version__} | providers: {ort.get_available_providers()}')
     from rtmlib import RTMPose
     if args.onnx:
         if args.input_size is None:
@@ -71,7 +80,15 @@ def build_model(args):
             raise SystemExit(f'Khong lay duoc model Halpe26 tu rtmlib ({type(e).__name__}: {e}).\n'
                              f'Hay truyen --onnx <url hoac file .onnx> --input_size W H')
     print(f'[model] {onnx} | input_size={size} | device={args.device}')
-    return RTMPose(onnx, model_input_size=size, backend='onnxruntime', device=args.device)
+    model = RTMPose(onnx, model_input_size=size, backend='onnxruntime', device=args.device)
+    # Kiem tra that su chay GPU (onnxruntime tu lui ve CPU neu thieu CUDA, chi in canh bao)
+    sess = getattr(model, 'session', None)
+    if sess is not None:
+        used = sess.get_providers()
+        print(f'[model] providers dang dung: {used}')
+        if args.device == 'cuda' and 'CUDAExecutionProvider' not in used:
+            print('[CANH BAO] Dang chay CPU (rat cham). Kiem tra lai onnxruntime-gpu / CUDA 12 / cuDNN 9.')
+    return model
 
 
 # OpenPose COCO-18 (truong 'openpose_result' trong annotation 3DPW):
