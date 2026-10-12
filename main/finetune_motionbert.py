@@ -35,6 +35,10 @@ def parse_args():
     parser.add_argument('--pretrained', default='', type=str, help='pretrained checkpoint path, ghi de cfg.MOTIONBERT.pretrained (e.g. MotionBERT/checkpoint/pretrain/MB_release.bin)')
     parser.add_argument('--gpu', type=str, default='0,1', help='assign multi-gpus by comma concat, e.g. "0,1" or "0,1,2,3"')
     parser.add_argument('--seed', type=int, default=123)
+    parser.add_argument('--eval_only', action='store_true',
+                        help='Khong train, chi danh gia checkpoint tren val_set + test_list cua yml')
+    parser.add_argument('--ckpt', type=str, default='',
+                        help='Checkpoint de danh gia khi --eval_only. Mac dinh: <save_dir>/best_epoch.bin')
     opts = parser.parse_args()
     return opts
 
@@ -265,6 +269,16 @@ def main():
     log(f"pretrained={pretrained or '(ngau nhien)'} | batch={mb_cfg.batch_size} | iters/epoch={mb_cfg.iters_per_epoch} | "
         f"epochs={mb_cfg.epochs} | lr={mb_cfg.learning_rate} | lr_decay={mb_cfg.lr_decay}")
 
+    # ---------------- Chi danh gia (khong train) ----------------
+    if opts.eval_only:
+        ckpt_path = opts.ckpt or os.path.join(save_dir, 'best_epoch.bin')
+        model = build_model(mb_cfg)
+        ckpt = torch.load(ckpt_path, map_location=lambda storage, loc: storage)
+        model.load_state_dict(ckpt['model_pos'], strict=True)
+        log(f"===== EVAL ONLY: {ckpt_path} (epoch {ckpt.get('epoch', '?')}) =====")
+        run_tests(model, [mb_cfg.val_set] + list(cfg.DATASET.test_list), mb_cfg, device, rootrel, drop_idx, log)
+        return
+
     # ---------------- Data ----------------
     train_names = list(cfg.DATASET.train_list)
     train_sets = [get_train_dataset(name, opts) for name in train_names]
@@ -290,24 +304,7 @@ def main():
     h36m_regressor = val_dataset.dataset.h36m_joint_regressor
 
     # ---------------- Model ----------------
-    print("Initializing MotionBERT (DSTformer)...")
-    model = DSTformer(
-        dim_in=3,
-        dim_out=3,
-        dim_feat=mb_cfg.dim_feat,
-        dim_rep=mb_cfg.dim_rep,
-        depth=mb_cfg.depth,
-        num_heads=mb_cfg.num_heads,
-        mlp_ratio=mb_cfg.mlp_ratio,
-        norm_layer=nn.LayerNorm,
-        maxlen=mb_cfg.maxlen,
-        num_joints=mb_cfg.num_joints,
-        att_fuse=mb_cfg.att_fuse
-    )
-    if torch.cuda.is_available():
-        model = nn.DataParallel(model)
-        model = model.cuda()
-        print(f"Model wrapped in DataParallel on {num_gpus} GPU(s)")
+    model = build_model(mb_cfg)
 
     if pretrained:
         print(f"Loading pretrained weights from {pretrained}...")
@@ -382,13 +379,43 @@ def main():
         best = torch.load(best_path, map_location=lambda storage, loc: storage)
         model.load_state_dict(best['model_pos'], strict=True)
         log(f"===== Test voi best checkpoint (epoch {best['epoch']}) =====")
-        for name in cfg.DATASET.test_list:
+        run_tests(model, list(cfg.DATASET.test_list), mb_cfg, device, rootrel, drop_idx, log)
+
+    print("Finetuning completed.")
+
+
+def build_model(mb_cfg):
+    print("Initializing MotionBERT (DSTformer)...")
+    model = DSTformer(
+        dim_in=3,
+        dim_out=3,
+        dim_feat=mb_cfg.dim_feat,
+        dim_rep=mb_cfg.dim_rep,
+        depth=mb_cfg.depth,
+        num_heads=mb_cfg.num_heads,
+        mlp_ratio=mb_cfg.mlp_ratio,
+        norm_layer=nn.LayerNorm,
+        maxlen=mb_cfg.maxlen,
+        num_joints=mb_cfg.num_joints,
+        att_fuse=mb_cfg.att_fuse
+    )
+    if torch.cuda.is_available():
+        model = nn.DataParallel(model)
+        model = model.cuda()
+        print(f"Model wrapped in DataParallel on {torch.cuda.device_count()} GPU(s)")
+    return model
+
+
+def run_tests(model, names, mb_cfg, device, rootrel, drop_idx, log):
+    """Danh gia lan luot tung tap. Mot tap loi (vd thieu file annotation) thi ghi loi va chay tiep tap sau."""
+    for name in names:
+        try:
             test_dataset, test_loader = make_eval_loader(name, mb_cfg)
             res = evaluate(model, test_loader, test_dataset.dataset.h36m_joint_regressor, device,
                            rootrel, drop_idx, desc=f'Test {name}')
             log(f"[Test {name}] MPJPE: {res['mpjpe']:.2f} mm | PA-MPJPE: {res['pa_mpjpe']:.2f} mm | n={res['n']}")
-
-    print("Finetuning completed.")
+        except Exception as e:
+            log(f"[Test {name}] LOI: {type(e).__name__}: {e}")
 
 
 if __name__ == '__main__':
