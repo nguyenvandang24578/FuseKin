@@ -247,6 +247,18 @@ cfg.MODEL.s2d_noise_big_prob = 0.15   # xac suat 1 khop bi lech lon
 cfg.MODEL.s2d_noise_big_std = 0.2     # std lech lon (~25 px)
 cfg.MODEL.s2d_noise_swap_prob = 0.2   # xac suat doi trai/phai 1 cap khop
 cfg.MODEL.s2d_noise_drop_prob = 0.05  # xac suat mat 1 khop (mask = 0)
+# ---- Kien truc v2 (PLAN_STUDENT_V2.md). Mac dinh TAT -> checkpoint / yml cu chay y nhu truoc ----
+# PE vi tri 2D Fourier DUNG CHUNG cho token khop (theo 2D detect, nhan joints_mask) va o anh (theo tam o).
+cfg.MODEL.joint_pe2d = False
+cfg.MODEL.pe2d_num_freq = 6
+# Self-attn giua 17 token khop trong moi block fusion (truoc cross-attn).
+cfg.MODEL.fusion_joint_self_attn = False
+# 'vposer': trung binh 24 token -> z (32) -> VPoser (nhu cu) | 'per_joint': moi token -> delta 6D cua khop do + mean pose.
+cfg.MODEL.pose_head_mode = 'vposer'
+# Neo query pose vao xuong: query_j += Linear(concat(ctx[cha_j], ctx[con_j])). Chi dung voi 'per_joint'.
+cfg.MODEL.pose_query_bone = False
+# 'global': shape token cross-attn 1 key global_ft (nhu cu) | 'tokens': cross-attn [ctx 17 khop, token anh].
+cfg.MODEL.shape_attn_mode = 'global'
 """ Train Detail """
 cfg.TRAIN = edict()
 cfg.TRAIN.print_freq = 20
@@ -367,6 +379,9 @@ cfg.TEST.batch_size = 64
 cfg.TEST.shuffle = False
 cfg.TEST.vis = False
 cfg.TEST.weight_path = './experiment/pretrained/mesh_3dpw.pth.tar'
+# Dataset dung de chon checkpoint best. '' = trung binh moi DATASET.test_list (nhu cu).
+# Vd '3dpw-val' voi test_list ['3dpw-val', '3dpw']: chon tren val, test van chay va in ra moi epoch.
+cfg.TEST.select_dataset = ''
 
 
 def _update_dict(cfg_sub, v, prefix=''):

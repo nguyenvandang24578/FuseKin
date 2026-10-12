@@ -73,20 +73,39 @@ class ARTS(nn.Module):
         else:
             self.pose_lifter = None
 
+        # ---- Co kien truc v2 (PLAN_STUDENT_V2.md), mac dinh TAT -> giong het ban cu ----
+        # CHU Y KD: Teacher dung cho KD duoc dung tu CUNG cfg -> se nhan cung cac co nay. Khi ap KD voi Teacher cu
+        # can tach co rieng cho Teacher (chua lam, hien chi ap cho Student scratch).
+        self.joint_pe2d = bool(cfg.MODEL.get('joint_pe2d', False))
+        arch_kw = dict(
+            joint_pe2d=self.joint_pe2d,
+            pe2d_num_freq=int(cfg.MODEL.get('pe2d_num_freq', 6)),
+            fusion_joint_self_attn=bool(cfg.MODEL.get('fusion_joint_self_attn', False)),
+            pose_head_mode=cfg.MODEL.get('pose_head_mode', 'vposer'),
+            pose_query_bone=bool(cfg.MODEL.get('pose_query_bone', False)),
+            shape_attn_mode=cfg.MODEL.get('shape_attn_mode', 'global'),
+        )
+        if self.mode in ("teacher", "student") and (self.joint_pe2d or arch_kw['fusion_joint_self_attn']
+                                                    or arch_kw['pose_head_mode'] != 'vposer'
+                                                    or arch_kw['shape_attn_mode'] != 'global'):
+            print(f"===> Kien truc v2: {arch_kw}")
+
         if self.mode == "teacher" and self.teacher_hint:
             # Cung kien truc Student (bo ma hoa joint 'noisy') + HintEncoder -> Student khoi tao duoc TOAN BO tu Teacher
             print(f"Đang gọi mô hình teacher T-hint (k={self.hint_dim}, noise={self.hint_noise}, off={self.hint_off_prob})")
             self.smpl_model = Student(num_joint=num_joint, embed_dim=embed_dim, depth=3,
-                                      hint_dim=self.hint_dim, hint_mode='teacher')
+                                      hint_dim=self.hint_dim, hint_mode='teacher', **arch_kw)
         elif self.mode == "teacher":
+            if self.joint_pe2d:
+                raise NotImplementedError('joint_pe2d cho Teacher GT can GT 2D (PLAN_TEACHER_GT2D.md), chua ho tro.')
             print("Đang gọi mô hình teacher")
             self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim, depth=3,
-                                      use_img_probe=bool(cfg.MODEL.get('img_probe', False)))
+                                      use_img_probe=bool(cfg.MODEL.get('img_probe', False)), **arch_kw)
         elif self.mode == "student":
             print("Đang gọi mô hình student" + (f" S-hint (k={self.hint_dim})" if self.student_hint else ""))
             self.smpl_model = Student(num_joint=num_joint, embed_dim=embed_dim, depth=3,
                                       hint_dim=self.hint_dim if self.student_hint else 0,
-                                      hint_mode='student' if self.student_hint else 'none')
+                                      hint_mode='student' if self.student_hint else 'none', **arch_kw)
             self.privileged_joint_head = nn.Linear(embed_dim, 3)
         elif self.mode == "ARTS":
             self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim)
@@ -162,6 +181,20 @@ class ARTS(nn.Module):
         # (MB_release, MB_ft_h36m) xuat toa do pixel chuan hoa, KHONG phai met.
         return pose_3d[:, 0]  # (B, 17, 3) mét
 
+    def _pe2d_kwargs(self, pose_2d, joints_mask=None):
+        """Toa do 2D (CUNG 2D dua vao MotionBERT) + mask cho PE vi tri trong fusion (PLAN_STUDENT_V2).
+        Tra {} khi joint_pe2d tat -> goi smpl_model nhu cu."""
+        if not self.joint_pe2d:
+            return {}
+        p2 = pose_2d[:, 0] if pose_2d.dim() == 4 else pose_2d            # (B, J, 2|3)
+        if joints_mask is not None:
+            m = joints_mask
+        elif p2.shape[-1] >= 3:
+            m = (p2[..., 2:3] > 0).to(p2.dtype)                            # cot 3 = conf / mask
+        else:
+            m = None
+        return dict(joints_2d=p2[..., :2], joints_2d_mask=m)
+
     def forward_teacher_hint(self, image, gt_pose_3d, is_train, pose_2d, joints_mask=None, hint_on=None):
         """T-hint: joint vao = MotionBERT lift (GIONG Student); goi y z = HintEncoder([GT, GT - lift]).
         Luc train: cong nhieu N(0, hint_noise^2) vao z + tat goi y (z = 0) voi xac suat hint_off_prob.
@@ -190,6 +223,7 @@ class ARTS(nn.Module):
             is_train=is_train,
             return_features=True,
             hint_z=z,
+            **self._pe2d_kwargs(pose_2d, joints_mask),
         )
         result['teacher_input_joints'] = lifted
         result['lifted_joints_3d'] = lifted
@@ -238,6 +272,7 @@ class ARTS(nn.Module):
             img_feats=feature_map,
             is_train=is_train,
             return_features=True,
+            **self._pe2d_kwargs(pose_2d, joints_mask),
         )
         result['privileged_3d'] = self.privileged_joint_head(result['feat_joint'])
         result['lifted_joints_3d'] = pose_3d   # joint nhiễu đưa vào student (để log / loss nếu cần)

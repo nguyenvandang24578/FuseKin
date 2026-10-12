@@ -683,6 +683,21 @@ class Teacher_Trainer:
         if run_extra:
             print('  ' + ' | '.join(f'{k_}: {v_ / len(batch_generator):.4f}' for k_, v_ in run_extra.items()))
 
+def _select_errors(results):
+    """(joint_error, surface_error) dung de chon checkpoint best (main/train.py).
+    cfg.TEST.select_dataset rong -> trung binh moi test_list (nhu cu); khac rong -> CHI dataset do (vd '3dpw-val')."""
+    sel = cfg.TEST.get('select_dataset', '')
+    if sel:
+        assert sel in results, f"TEST.select_dataset='{sel}' khong nam trong DATASET.test_list {list(results)}"
+        chosen = {sel: results[sel]}
+    else:
+        chosen = results
+    joint_error = sum(item['mpjpe'] for item in chosen.values()) / len(chosen)
+    surface_error = sum(item['mpvpe'] for item in chosen.values()) / len(chosen)
+    print(f'  -> chon best theo: {list(chosen)} | MPJPE {joint_error:.2f} | MPVPE {surface_error:.2f}')
+    return joint_error, surface_error
+
+
 class Teacher_Tester:
     def __init__(self, args, load_dir=''):
         self.val_loaders, self.val_datasets, self.model, _, _, _, _, _ = \
@@ -723,8 +738,7 @@ class Teacher_Tester:
                                f'test_nohint/{dataset_name}_mpvpe': m0['mpvpe']})
 
         if results:
-            self.joint_error = sum(item['mpjpe'] for item in results.values()) / len(results)
-            self.surface_error = sum(item['mpvpe'] for item in results.values()) / len(results)
+            self.joint_error, self.surface_error = _select_errors(results)
         return results
 import pickle
 
@@ -1385,8 +1399,16 @@ class Student_Trainer:
             print(f'  Goi y: MSE(z_hat, z_T) {avg["kd_hint"]:.4f} | |z_hat| {avg["hint_abs"]:.3f} | '
                   f'KD feat truc tiep (J+G) {avg["kd_hfeat"]:.4f}')
 
+        # Trong so hieu dung cua AWL (0.5 / p^2) theo tung loss: moi run hoc 1 bo khac nhau -> log de doc ablation
+        awl_w = {}
+        if hasattr(self, 'awl') and hasattr(self.awl, 'keys'):
+            awl_w = {k: (0.5 / (p.detach() ** 2)).item() for k, p in zip(self.awl.keys, self.awl.params)}
+            print('  AWL trong so: ' + ' | '.join(f'{k}: {v:.3f}' for k, v in awl_w.items()))
+
         if cfg.TRAIN.wandb:
             wandb.log({f'epoch_metric/{k}': v for k, v in avg.items()})
+            if awl_w:
+                wandb.log({f'awl_w/{k}': v for k, v in awl_w.items()})
 class Student_Tester:
     def __init__(self, args, load_dir=''):
         self.val_loaders, self.val_datasets, self.model, _, _, _, _, _ = \
@@ -1413,8 +1435,7 @@ class Student_Tester:
             )
 
         if results:
-            self.joint_error = sum(item['mpjpe'] for item in results.values()) / len(results)
-            self.surface_error = sum(item['mpvpe'] for item in results.values()) / len(results)
+            self.joint_error, self.surface_error = _select_errors(results)
         return results
 
 class LiftTrainer:
