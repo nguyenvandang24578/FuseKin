@@ -498,10 +498,11 @@ def visualize_samples(model, dataset, name, num, out_dir, device, rootrel, drop_
                 gt = np.asarray(targets['orig_joint_cam'], dtype=np.float32)
             else:
                 gt = np.dot(reg, np.asarray(targets['smpl_mesh_cam'], dtype=np.float32))
-            gt = gt - gt[0:1]
-            pred = pred - pred[0:1]
+            # regressor la float64 -> ep ca 2 ve float32 (torch matmul khong tron kieu duoc)
+            gt = (gt - gt[0:1]).astype(np.float32)
+            pred = (pred - pred[0:1]).astype(np.float32)
             err = np.linalg.norm(pred - gt, axis=-1)
-            pa = batch_pa_errors(torch.as_tensor(pred)[None], torch.as_tensor(gt)[None])[0].item()
+            pa = batch_pa_errors(torch.from_numpy(pred)[None], torch.from_numpy(gt)[None])[0].item()
 
             # Anh crop (giong luc train) + 2D dau vao. Khong co duong dan anh -> nen den.
             img_bgr = np.zeros((H, W, 3), dtype=np.uint8)
