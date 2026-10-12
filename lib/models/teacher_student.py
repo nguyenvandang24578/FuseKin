@@ -45,6 +45,23 @@ class StudentJointExtractor(nn.Module):
         return self.norm(x)
 
 
+class HintEncoder(nn.Module):
+    """Goi y dac quyen cua Teacher T-hint: [GT, GT - lift] (B,J,3)x2 -> z (B,k) trong [-1, 1].
+    Chi Teacher dung (can GT). Dung luong bi gioi han boi k nho + nhieu tren z (dat o ARTS)."""
+    def __init__(self, num_joint=17, hint_dim=16, hidden=256, res_scale=10.0):
+        super().__init__()
+        self.res_scale = res_scale   # GT - lift ~ vai cm -> nhan 10 cho cung co voi GT (met)
+        self.net = nn.Sequential(
+            nn.Linear(num_joint * 6, hidden), nn.GELU(),
+            nn.Linear(hidden, hidden), nn.GELU(),
+            nn.Linear(hidden, hint_dim),
+        )
+
+    def forward(self, gt_joints, lifted_joints):
+        x = torch.cat([gt_joints, (gt_joints - lifted_joints) * self.res_scale], dim=-1)   # (B, J, 6)
+        return torch.tanh(self.net(x.flatten(1)))
+
+
 class LearnableCoefficient(nn.Module):
     def __init__(self):
         super().__init__()
@@ -197,7 +214,7 @@ class RGBJointFusion(nn.Module):
         )
         self.norm_img_in = nn.LayerNorm(embed_dim)
 
-    def forward(self, joints, img_feats, return_features=False):
+    def forward(self, joints, img_feats, return_features=False, hint_tok=None):
         img_feats = self.img_proj(img_feats)               # (B, C, H, W)
         bs, c, h, w = img_feats.shape
 
@@ -205,6 +222,11 @@ class RGBJointFusion(nn.Module):
             joints_tok = self.projector_student(joints, self.pos_emb_joint)
         else:
             joints_tok = self.norm_joint_proj(self.joint_proj(joints) + self.pos_emb_joint)
+        joints_tok_in = joints_tok                          # token joint TRUOC goi y (feat_joint_in cho KD)
+        if hint_tok is not None:
+            # Goi y cong vao token joint TRUOC cross-attn: anh huong cach moi khop 'tim' trong anh,
+            # khong cho decoder dung thang goi y ma bo qua anh.
+            joints_tok = joints_tok + hint_tok
 
         img_tok = img_feats.flatten(2).transpose(1, 2)     # (B, H*W, C)
 
@@ -228,7 +250,7 @@ class RGBJointFusion(nn.Module):
         return {
             'img_out': img_out,          # (B, H*W, C)
             'joint_out': joint_out,      # (B, J, C)
-            'joint_tok': joints_tok,     # (B, J, C) token joint sau encoder, truoc cross-attn
+            'joint_tok': joints_tok_in,  # (B, J, C) token joint sau encoder, truoc goi y va cross-attn
             'img_tok': img_tok,          # (B, H*W, C) token anh DAU VAO fusion (sau pos_emb + LN), chua nhin thay joint
             'concat_feat': concat_feat,  # (B, 2C)
             'layers': layers,
@@ -262,8 +284,10 @@ class MLP(nn.Module):
 class FusionPose2Mesh(nn.Module):
     def __init__(self, num_joint=17, embed_dim=512, joint_encoder='gt', refiner='hypergcn',
                  vert_anchors=8, horz_anchors=8, depth=3,
-                 smpl_head_hidden_dim=256, smpl_head_depth=3, use_pose_pe=True, use_img_probe=False):
+                 smpl_head_hidden_dim=256, smpl_head_depth=3, use_pose_pe=True, use_img_probe=False,
+                 hint_dim=0, hint_mode='none'):
         super().__init__()
+        assert hint_mode in ('none', 'teacher', 'student'), f"hint_mode khong hop le: {hint_mode}"
         assert refiner in ('hypergcn', 'diffusion'), f"refiner khong hop le: {refiner}"
         self.refiner = refiner
         self.num_joint = num_joint
@@ -341,6 +365,27 @@ class FusionPose2Mesh(nn.Module):
             self.probe_norm = nn.LayerNorm(embed_dim)
             self.probe_head = MLP(embed_dim, smpl_head_hidden_dim, 3, 2)
 
+        # ---- Goi y nen (Privileged Hint, xem PLAN_TEACHER_HINT.md) ----
+        # hint_proj: z (k) -> 1 vector nhac cho MOI khop (J x C), cong vao token joint truoc cross-attn.
+        # Khong bias + khoi tao 0: z = 0 <=> khong goi y (dong gop dung bang 0), luc dau khong xao tron model.
+        self.hint_dim = hint_dim if hint_mode != 'none' else 0
+        self.hint_proj = self.hint_encoder = self.hint_pred = None
+        if self.hint_dim > 0:
+            self.hint_proj = nn.Linear(self.hint_dim, num_joint * embed_dim, bias=False)
+            nn.init.zeros_(self.hint_proj.weight)
+            if hint_mode == 'teacher':
+                # Nen [GT, GT - lift] -> z. ARTS goi encoder (them nhieu / tat goi y) roi truyen hint_z vao forward.
+                self.hint_encoder = HintEncoder(num_joint=num_joint, hint_dim=self.hint_dim)
+            else:
+                # Student tu doan z_hat tu feature toan cuc cua luot fusion KHONG goi y.
+                # Lop cuoi khoi tao 0 -> z_hat = 0 luc dau = Teacher o che do khong goi y.
+                self.hint_pred = nn.Sequential(
+                    nn.Linear(global_dim, smpl_head_hidden_dim), nn.GELU(),
+                    nn.Linear(smpl_head_hidden_dim, self.hint_dim),
+                )
+                nn.init.zeros_(self.hint_pred[-1].weight)
+                nn.init.zeros_(self.hint_pred[-1].bias)
+
         # ---- Diffusion (tuy chon) ----
         if refiner == 'diffusion':
             from models.smpl_hyperdiff import SMPL_HyperDiff
@@ -357,7 +402,7 @@ class FusionPose2Mesh(nn.Module):
     # --------------------------------------------------------
     def forward(self, joints, img_feats, is_train=True,
                 gt_pose_6d=None, kp2d=None, kp_conf=None, pose_valid_mask=None,
-                return_features=False):
+                return_features=False, hint_z=None):
         """
         Args:
             joints   : (B, J, 3) root-relative, don vi met (GT cho teacher, nhieu cho student)
@@ -368,8 +413,19 @@ class FusionPose2Mesh(nn.Module):
         B = img_feats.shape[0]
         device = img_feats.device
 
+        # 0. Goi y nen. Teacher: hint_z do ARTS tinh tu GT. Student (hint_pred): fusion 2 luot -
+        #    luot 1 khong goi y -> feature toan cuc -> z_hat; luot 2 dung z_hat. Luc test cung 2 luot.
+        hint_pred_z = None
+        if self.hint_pred is not None and hint_z is None:
+            fus0 = self.fusion(joints, img_feats, return_features=False)
+            hint_pred_z = torch.tanh(self.hint_pred(fus0['concat_feat']))          # (B, k)
+            hint_z = hint_pred_z
+        hint_tok = None
+        if hint_z is not None and self.hint_proj is not None:
+            hint_tok = self.hint_proj(hint_z).view(B, self.num_joint, self.embed_dim)
+
         # 1. Fusion
-        fus = self.fusion(joints, img_feats, return_features=return_features)
+        fus = self.fusion(joints, img_feats, return_features=return_features, hint_tok=hint_tok)
         joint_out = fus['joint_out']
         global_ft = fus['concat_feat']
 
@@ -453,6 +509,10 @@ class FusionPose2Mesh(nn.Module):
             result['pred_pose_6d_refined'] = pred_x0
         if self.use_img_probe:
             result['img_probe_joints'] = img_probe_joints          # (B, J, 3) chi tu anh
+        if hint_z is not None:
+            result['hint_z'] = hint_z                              # (B, k) goi y THUC SU dung o luot fusion chinh
+        if hint_pred_z is not None:
+            result['hint_pred'] = hint_pred_z                      # (B, k) goi y Student tu doan
 
         # --- dung cho KD ---
         if return_features:

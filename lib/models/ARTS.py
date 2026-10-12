@@ -57,7 +57,14 @@ class ARTS(nn.Module):
 
         # Teacher chi can MotionBERT khi bat (A): tron GT voi joint lift (cfg.MODEL.teacher_lift_alpha_max > 0)
         self.teacher_lift = (self.mode == "teacher" and cfg.MODEL.get('teacher_lift_alpha_max', 0.0) > 0)
-        if self.mode != "teacher" or self.teacher_lift:
+        # Goi y nen (PLAN_TEACHER_HINT.md): T-hint nhan joint MotionBERT GIONG Student + goi y z tu GT;
+        # S-hint = Student tu doan z.
+        self.teacher_hint = (self.mode == "teacher" and bool(cfg.MODEL.get('teacher_hint', False)))
+        self.student_hint = (self.mode == "student" and bool(cfg.MODEL.get('student_hint', False)))
+        self.hint_dim = int(cfg.MODEL.get('hint_dim', 16))
+        self.hint_noise = float(cfg.MODEL.get('hint_noise', 0.1))
+        self.hint_off_prob = float(cfg.MODEL.get('hint_off_prob', 0.3))
+        if self.mode != "teacher" or self.teacher_lift or self.teacher_hint:
             self.pose_lifter = DSTformer(
                 norm_layer=partial(nn.LayerNorm, eps=1e-6),
                 **mb_config,
@@ -66,13 +73,20 @@ class ARTS(nn.Module):
         else:
             self.pose_lifter = None
 
-        if self.mode == "teacher":
+        if self.mode == "teacher" and self.teacher_hint:
+            # Cung kien truc Student (bo ma hoa joint 'noisy') + HintEncoder -> Student khoi tao duoc TOAN BO tu Teacher
+            print(f"Đang gọi mô hình teacher T-hint (k={self.hint_dim}, noise={self.hint_noise}, off={self.hint_off_prob})")
+            self.smpl_model = Student(num_joint=num_joint, embed_dim=embed_dim, depth=3,
+                                      hint_dim=self.hint_dim, hint_mode='teacher')
+        elif self.mode == "teacher":
             print("Đang gọi mô hình teacher")
             self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim, depth=3,
                                       use_img_probe=bool(cfg.MODEL.get('img_probe', False)))
         elif self.mode == "student":
-            print("Đang gọi mô hình student")
-            self.smpl_model = Student(num_joint=num_joint, embed_dim=embed_dim, depth=3)
+            print("Đang gọi mô hình student" + (f" S-hint (k={self.hint_dim})" if self.student_hint else ""))
+            self.smpl_model = Student(num_joint=num_joint, embed_dim=embed_dim, depth=3,
+                                      hint_dim=self.hint_dim if self.student_hint else 0,
+                                      hint_mode='student' if self.student_hint else 'none')
             self.privileged_joint_head = nn.Linear(embed_dim, 3)
         elif self.mode == "ARTS":
             self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim)
@@ -148,7 +162,45 @@ class ARTS(nn.Module):
         # (MB_release, MB_ft_h36m) xuat toa do pixel chuan hoa, KHONG phai met.
         return pose_3d[:, 0]  # (B, 17, 3) mét
 
-    def forward_teacher(self, image, gt_pose_3d, is_train, pose_2d=None, joints_mask=None, lift_alpha=None):
+    def forward_teacher_hint(self, image, gt_pose_3d, is_train, pose_2d, joints_mask=None, hint_on=None):
+        """T-hint: joint vao = MotionBERT lift (GIONG Student); goi y z = HintEncoder([GT, GT - lift]).
+        Luc train: cong nhieu N(0, hint_noise^2) vao z + tat goi y (z = 0) voi xac suat hint_off_prob.
+        hint_on (B,) 1/0 ghi de viec tat/bat (vd danh gia 'khong goi y' = toan 0). Eval mac dinh: bat, khong nhieu."""
+        assert pose_2d is not None, 'T-hint can pose_2d (2D dau vao MotionBERT, giong Student)'
+        with torch.no_grad():
+            feature_map, _ = self.get_image_features(image)
+            lifted = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask)
+            lifted = (lifted - lifted[:, 0:1, :]).to(gt_pose_3d.dtype)      # root-relative, met
+
+        B = image.shape[0]
+        z = self.smpl_model.hint_encoder(gt_pose_3d.float(), lifted.float())   # (B, k), co grad
+        if is_train and self.hint_noise > 0:
+            z = z + torch.randn_like(z) * self.hint_noise                   # gioi han so bit moi chieu
+        if hint_on is None:
+            if is_train and self.hint_off_prob > 0:
+                hint_on = (torch.rand(B, device=z.device) >= self.hint_off_prob).to(z.dtype)
+            else:
+                hint_on = torch.ones(B, device=z.device, dtype=z.dtype)
+        hint_on = hint_on.to(device=z.device, dtype=z.dtype).reshape(B)
+        z = z * hint_on[:, None]
+
+        result = self.smpl_model(
+            joints=lifted,
+            img_feats=feature_map,
+            is_train=is_train,
+            return_features=True,
+            hint_z=z,
+        )
+        result['teacher_input_joints'] = lifted
+        result['lifted_joints_3d'] = lifted
+        result['hint_on'] = hint_on
+        return result
+
+    def forward_teacher(self, image, gt_pose_3d, is_train, pose_2d=None, joints_mask=None, lift_alpha=None,
+                        hint_on=None):
+        if self.teacher_hint:
+            return self.forward_teacher_hint(image, gt_pose_3d, is_train, pose_2d,
+                                             joints_mask=joints_mask, hint_on=hint_on)
         with torch.no_grad():
             feature_map, _ = self.get_image_features(image)
 
@@ -222,10 +274,10 @@ class ARTS(nn.Module):
     def forward(self, image, joints, is_train=True, use_gt_3d=False,
                 gt_pose_6d=None, kp2d=None, kp_conf=None,
                 pose_valid_mask=None, gt_joints_3d=None, alpha=1.0, joints_mask=None,
-                pose_2d=None, lift_alpha=None):
+                pose_2d=None, lift_alpha=None, hint_on=None):
         if self.mode == "teacher":
             return self.forward_teacher(image, joints, is_train, pose_2d=pose_2d,
-                                        joints_mask=joints_mask, lift_alpha=lift_alpha)
+                                        joints_mask=joints_mask, lift_alpha=lift_alpha, hint_on=hint_on)
         if self.mode == "student":
             return self.forward_student(image, joints, is_train, gt_pose_3d=gt_joints_3d, alpha=alpha, joints_mask=joints_mask)
         return self.forward_arts(

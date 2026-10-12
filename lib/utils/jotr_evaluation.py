@@ -2,7 +2,8 @@ import torch
 from tqdm import tqdm
 
 
-def evaluate_3dpw_subset(model, dataset, loader, device='cuda'):
+def evaluate_3dpw_subset(model, dataset, loader, device='cuda', teacher_hint_on=True):
+    """teacher_hint_on: chi cho Teacher T-hint (cfg.MODEL.teacher_hint) - True = co goi y tu GT, False = z = 0."""
     model.eval()
     accumulated = {'mpjpe': [], 'pa_mpjpe': [], 'mpvpe': []}
     sample_index = 0
@@ -69,7 +70,15 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda'):
                 teacher_gt_joints = teacher_gt_joints - teacher_gt_joints[:, 0:1, :]
                 lift_kwargs = {}
                 alpha_max = cfg.MODEL.get('teacher_lift_alpha_max', 0.0)
-                if alpha_max > 0:
+                if cfg.MODEL.get('teacher_hint', False):
+                    # T-hint: joint vao = MotionBERT(2D) nhu Student; GT chi di vao bo nen goi y
+                    lift_kwargs = dict(
+                        pose_2d=model_inputs['joints'].float(),
+                        joints_mask=model_inputs.get('joints_mask'),
+                        hint_on=torch.full((teacher_gt_joints.shape[0],), 1.0 if teacher_hint_on else 0.0,
+                                           device=device),
+                    )
+                elif alpha_max > 0:
                     # Teacher duoc train voi input = (1-a)*GT + a*MotionBERT_lift -> eval cung phai tron, a co dinh.
                     alpha_eval = cfg.MODEL.get('teacher_lift_alpha_eval', None)
                     alpha_eval = alpha_max if alpha_eval is None else float(alpha_eval)

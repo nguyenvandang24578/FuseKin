@@ -1,46 +1,24 @@
 """
-content_ablation_test.py — Anh co mang tin hieu dung duoc khong? (FuseKin, eval-only)
-===========================================================================================
+content_ablation_test.py — Model co DUNG NOI DUNG ANH khong? (FuseKin, eval-only)
+=================================================================================
 
-Muc dich: tra loi CHINH XAC cau hoi "anh co dang dong gop gi vao du doan cuoi cung khong,
-hay fusion/cross-attention da bo qua NOI DUNG anh hoan toan" — tren CHECKPOINT DA TRAIN
-san, khong can retrain (chay trong vai phut).
+Thay feature anh (dau ra backbone) truoc khi vao fusion bang:
+  - blind: torch.randn_like  -> xoa sach noi dung (de soc out-of-distribution, chi tham khao)
+  - mean : trung binh feature ca batch, ap cho moi mau -> van 'hop le' nhung mat thong tin RIENG tung mau
+Con so chinh: (mean - that) = so mm bi te di khi mat thong tin anh rieng -> cang lon = cang dung anh.
+Do ca MPJPE (17 khop H36M, root-rel) va MPVPE (mesh, can theo Pelvis H36M).
 
-Cach lam: thay feature_map that (dau ra backbone) bang torch.randn_like(feature_map) NGAY
-TRUOC khi dua vao RGBJointFusion — dung het cau truc (shape, pos_emb_img, LayerNorm) nhung
-xoa SACH noi dung anh. Giong het code ban da viet de retrain Teacher, chi khac la chay o
-EVAL MODE tren checkpoint co san, khong train lai.
-
-Khac voi shuffle test (da chay o compare_teacher_student.py — tron ANH THAT giua cac mau,
-GT giu nguyen): shuffle chi tra loi "model co phan biet duoc anh CUA MAU NAO khong". Con
-ablation nay tra loi cau hoi manh hon: "model co doc duoc NOI DUNG anh (bat ky anh nao) hay
-khong, hay no dang coi moi token anh nhu nhau bat ke pixel ben trong la gi".
-
-Dieu kien quyet dinh:
-  - Neu MPJPE(blind) ~ MPJPE(that) (gan nhu khong doi) -> nhanh anh dang "CHET VE NOI DUNG":
-    kien truc/gradient khong doc duoc pixel, chi co the dang dua vao pos_emb_img (vi tri)
-    hoac khong dung gi tu token anh ca. KD/retrain downstream se khong giai quyet duoc,
-    phai sua o CHINH nhanh fusion (vd: kiem tra gradient toi img_proj/pos_emb_img, hoac
-    tang trong so loss body_joint_proj — nguon tin hieu DUY NHAT bat buoc phai dung anh).
-  - Neu MPJPE(blind) te hon RO RET -> anh MANG tin hieu dung duoc that, kien truc DOC duoc
-    no. Luc do cau hoi chuyen sang: tai sao shuffle test truoc lai cho thay model khong
-    nhay voi anh? (Co the vi GT-joint da du de thoa man loss, nen model KHONG CAN anh de
-    giam loss, du van "doc" duoc no khi bi ep phai dung — van de o INCENTIVE cua loss, khong
-    phai o kien truc.)
+Ho tro:
+  - Teacher GT cu (input = (1-a)*GT + a*MotionBERT, --teacher_alpha)
+  - Teacher T-hint (PLAN_TEACHER_HINT.md): tu nhan dien tu checkpoint; do 2 dieu kien CO goi y / KHONG goi y
+  - Student thuong va Student S-hint (tu nhan dien; S-hint chay fusion 2 luot nhu luc test)
 
 Cach chay:
-    cd <repo_root>
-    python main/content_ablation_test.py \
-        --cfg <config> \
-        --teacher_ckpt <checkpoint_teacher>.pth.tar \   # mac dinh: cfg.MODEL.TEACHER
-        [--student_ckpt <checkpoint_student>.pth.tar] \ # bo trong -> chi test Teacher
-        [--teacher_alpha 0 0.5 1.0] \                   # input Teacher = (1-a)*GT + a*MotionBERT_lift
-        [--max_batches 30] [--batch_size 16]
-
---teacher_alpha nhan nhieu gia tri: moi gia tri la mot dieu kien test rieng. a=0 la GT sach,
-a=1 la cung input voi Student. Teacher duoc train de dung anh khi joint nhieu thi phai test o a>0;
-o a=0 co the van thay "khong dung anh" vi GT sach da du.
-
+    python main/content_ablation_test.py --cfg <config> \
+        [--teacher_ckpt <ckpt_teacher>]   # mac dinh: cfg.MODEL.TEACHER
+        [--student_ckpt <ckpt_student>]   # bo trong -> chi test Teacher
+        [--teacher_alpha 0 0.5 1.0]       # chi cho Teacher GT cu
+        [--max_batches 200] [--batch_size 16]
 Can CUDA.
 """
 import os, sys
@@ -58,8 +36,8 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-parser = argparse.ArgumentParser(description='Content-ablation test (anh = randn) cho Teacher/Student (FuseKin)')
-parser.add_argument('--cfg', type=str, required=True, help='config yaml (dung config cua Student)')
+parser = argparse.ArgumentParser(description='Content-ablation test (anh = randn / TB batch) cho Teacher/Student (FuseKin)')
+parser.add_argument('--cfg', type=str, required=True, help='config yaml')
 parser.add_argument('--student_ckpt', type=str, default='', help='bo trong -> chi test Teacher')
 parser.add_argument('--teacher_ckpt', type=str, default='', help='mac dinh: cfg.MODEL.TEACHER')
 parser.add_argument('--batch_size', type=int, default=16)
@@ -67,9 +45,9 @@ parser.add_argument('--max_batches', type=int, default=30)
 parser.add_argument('--workers', type=int, default=0)
 parser.add_argument('--seed', type=int, default=0)
 parser.add_argument('--teacher_alpha', type=float, nargs='+', default=[0.0],
-                    help='input Teacher = (1-a)*GT + a*MotionBERT_lift; nhieu gia tri -> moi gia tri 1 dieu kien')
-parser.add_argument('--blind_thresh', type=float, default=3.0,
-                    help='(mm) nguong de ket luan "anh khong dong gop noi dung gi"')
+                    help='(Teacher GT cu) input = (1-a)*GT + a*MotionBERT_lift; nhieu gia tri -> moi gia tri 1 dieu kien')
+parser.add_argument('--use_thresh', type=float, default=3.0,
+                    help='(mm) mean - that duoi nguong nay -> coi nhu KHONG dung thong tin anh rieng tung mau')
 args = parser.parse_args()
 
 from core.config import cfg, update_config
@@ -77,7 +55,7 @@ update_config(args.cfg)
 
 import __init_path  # noqa: F401
 from models.ARTS import ARTS
-from core.base import load_model_weights
+from core.base import load_model_weights, _PickleShim
 from utils.jotr_dataset import get_test_dataset
 
 torch.manual_seed(args.seed)
@@ -97,12 +75,12 @@ def hr(title=''):
         print('=' * 78)
 
 
-def check_ckpt_kind(mode, ckpt_path):
-    """Bao loi ro rang neu checkpoint khong khop loai model (Teacher dung joint_proj, Student dung projector_student)."""
+def inspect_ckpt(mode, ckpt_path):
+    """Doc checkpoint -> (kind, info). kind: 'teacher' | 'student' | 'khong ro'.
+    info: has_probe, hint ('teacher' | 'student' | None), hint_dim."""
     if not os.path.isfile(ckpt_path):
         print(f"[LOI] Khong thay checkpoint {mode}: {ckpt_path}")
         sys.exit(1)
-    from core.base import _PickleShim
     ckpt = torch.load(ckpt_path, map_location='cpu', pickle_module=_PickleShim, weights_only=False)
     state = ckpt
     if isinstance(ckpt, dict):
@@ -111,45 +89,69 @@ def check_ckpt_kind(mode, ckpt_path):
                 state = ckpt[k]
                 break
     keys = list(state.keys())
-    has_student = any('fusion.projector_student.' in k for k in keys)
-    has_teacher = any('fusion.joint_proj.' in k for k in keys)
-    kind = 'student' if has_student else ('teacher' if has_teacher else 'khong ro')
-    has_probe = any('probe_' in k for k in keys)
-    print(f"  [{mode}] {ckpt_path} -> checkpoint loai: {kind}" + (" (co head tham do anh)" if has_probe else ""))
+    has_hint_enc = any('hint_encoder.' in k for k in keys)
+    has_hint_pred = any('hint_pred.' in k for k in keys)
+    hint_dim = 0
+    for k in keys:
+        if k.endswith('hint_proj.weight'):
+            hint_dim = int(state[k].shape[1])
+    if has_hint_enc:
+        kind = 'teacher'          # T-hint: kien truc Student + HintEncoder
+    elif any('fusion.projector_student.' in k for k in keys):
+        kind = 'student'
+    elif any('fusion.joint_proj.' in k for k in keys):
+        kind = 'teacher'
+    else:
+        kind = 'khong ro'
+    info = {'has_probe': any('probe_' in k for k in keys),
+            'hint': 'teacher' if has_hint_enc else ('student' if has_hint_pred else None),
+            'hint_dim': hint_dim}
+    tag = f" (T-hint k={hint_dim})" if has_hint_enc else (f" (S-hint k={hint_dim})" if has_hint_pred else "")
+    print(f"  [{mode}] {ckpt_path} -> loai: {kind}{tag}" + (" (co head tham do anh)" if info['has_probe'] else ""))
     if kind != 'khong ro' and kind != mode:
-        print(f"\n[LOI] Ban dua checkpoint cua {kind.upper()} vao vi tri {mode.upper()}: {ckpt_path}")
-        print(f"      Kiem tra lai --{mode}_ckpt (co the bi dao giua --student_ckpt va --teacher_ckpt).")
+        print(f"\n[LOI] Checkpoint {kind.upper()} dat vao vi tri {mode.upper()}: {ckpt_path}")
         sys.exit(1)
-    return has_probe
+    return info
 
 
 def build_and_load(mode, ckpt_path, need_lift=False):
-    has_probe = check_ckpt_kind(mode, ckpt_path)
-    old_mode = cfg.MODEL.name
-    old_lift, old_probe = cfg.MODEL.get('teacher_lift_alpha_max', 0.0), cfg.MODEL.get('img_probe', False)
+    info = inspect_ckpt(mode, ckpt_path)
+    keys = ('name', 'teacher_lift_alpha_max', 'img_probe', 'teacher_hint', 'student_hint', 'hint_dim')
+    saved = {k: cfg.MODEL[k] for k in keys if k in cfg.MODEL}
     cfg.MODEL.name = mode
     if mode == 'teacher':
-        # need_lift: dung MotionBERT trong Teacher de tao joint nhieu; has_probe: dung dung kien truc da train
-        cfg.MODEL.teacher_lift_alpha_max = 1.0 if need_lift else 0.0
-        cfg.MODEL.img_probe = has_probe
+        cfg.MODEL.teacher_hint = info['hint'] == 'teacher'
+        cfg.MODEL.teacher_lift_alpha_max = 1.0 if (need_lift and not cfg.MODEL.teacher_hint) else 0.0
+        cfg.MODEL.img_probe = info['has_probe']
+    else:
+        cfg.MODEL.student_hint = info['hint'] == 'student'
+    if info['hint_dim'] > 0:
+        cfg.MODEL.hint_dim = info['hint_dim']
     model = ARTS(num_joint=17, embed_dim=cfg.MODEL.hpe_dim)
-    cfg.MODEL.name = old_mode
-    cfg.MODEL.teacher_lift_alpha_max, cfg.MODEL.img_probe = old_lift, old_probe
+    for k in keys:   # tra cfg ve nhu cu (key khong co tu dau thi xoa)
+        if k in saved:
+            cfg.MODEL[k] = saved[k]
+        elif k in cfg.MODEL:
+            del cfg.MODEL[k]
     model = model.to(DEVICE)
     model = load_model_weights(model, ckpt_path)
     model.eval()
     for p in model.parameters():
         p.requires_grad = False
-    return model
+    return model, info
 
 
 def h36m_from_mesh(mesh, regressor):
-    j = torch.einsum('jk,bkc->bjc', regressor, mesh)
-    return j - j[:, 0:1, :]
+    return torch.einsum('jk,bkc->bjc', regressor, mesh)
 
 
-def mpjpe_mm(j_pred, j_gt):
-    return (torch.norm(j_pred - j_gt, dim=-1).mean(-1) * 1000.0)  # (B,)
+def errors_mm(mesh_pred, mesh_gt, reg):
+    """MPJPE (17 khop H36M, root-rel) va MPVPE (mesh can theo Pelvis H36M), mm, theo tung mau."""
+    jp, jg = h36m_from_mesh(mesh_pred, reg), h36m_from_mesh(mesh_gt, reg)
+    rp, rg = jp[:, 0:1], jg[:, 0:1]
+    mpjpe = torch.norm((jp - rp) - (jg - rg), dim=-1).mean(-1) * 1000.0
+    mpvpe = torch.norm((mesh_pred - rp) - (mesh_gt - rg), dim=-1).mean(-1) * 1000.0
+    return mpjpe.cpu(), mpvpe.cpu()
 
 
 def paired(d):
@@ -159,9 +161,22 @@ def paired(d):
     return float(d.mean()), float(1.96 * d.std(ddof=1) / np.sqrt(d.size))
 
 
-def summarize(x):
-    x = np.asarray(x, dtype=np.float64)
-    return f"mean={x.mean():.2f}  median={np.median(x):.2f}  std={x.std():.2f}  n={x.size}"
+def new_cond():
+    return {f: {'j': [], 'v': []} for f in ('real', 'blind', 'mean')}
+
+
+def run_three(net, joints_in, feats, store, reg, gt_mesh, **kw):
+    """Chay net.smpl_model voi feature anh that / randn / TB batch, luu MPJPE + MPVPE."""
+    variants = {
+        'real': feats,
+        'blind': torch.randn_like(feats),
+        'mean': feats.mean(dim=0, keepdim=True).expand_as(feats).contiguous(),
+    }
+    for name, f in variants.items():
+        out = net.smpl_model(joints=joints_in, img_feats=f, is_train=False, return_features=True, **kw)
+        j, v = errors_mm(out['smpl_mesh_cam'], gt_mesh, reg)
+        store[name]['j'].append(j)
+        store[name]['v'].append(v)
 
 
 def main():
@@ -173,143 +188,103 @@ def main():
     print(f"Student ckpt : {args.student_ckpt or '(khong dung - chi test Teacher)'}")
     print(f"Teacher ckpt : {teacher_ckpt}")
     alphas = sorted(set(float(a) for a in args.teacher_alpha))
-    need_lift = any(a > 0 for a in alphas)
-    print(f"Teacher alpha: {alphas}")
 
     hr("Dang build va nap checkpoint...")
-    student = build_and_load('student', args.student_ckpt) if args.student_ckpt else None
-    teacher = build_and_load('teacher', teacher_ckpt, need_lift=need_lift)
+    student = build_and_load('student', args.student_ckpt)[0] if args.student_ckpt else None
+    teacher, t_info = build_and_load('teacher', teacher_ckpt, need_lift=any(a > 0 for a in alphas))
+    t_hint = t_info['hint'] == 'teacher'
 
-    hr("Dang chuan bi tap val (3DPW test split)...")
+    hr("Dang chuan bi tap test...")
     test_name = cfg.DATASET.test_list[0]
     dataset = get_test_dataset(test_name, None)
     gen = torch.Generator().manual_seed(args.seed)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, generator=gen,
-                         num_workers=args.workers, pin_memory=False)
+                        num_workers=args.workers, pin_memory=False)
     print(f"Dataset: {test_name} | so sample: {len(dataset)} | se duyet toi da {args.max_batches} batch")
+    reg = torch.as_tensor(dataset.h36m_joint_regressor, dtype=torch.float32, device=DEVICE)
 
-    h36m_reg = torch.as_tensor(dataset.h36m_joint_regressor, dtype=torch.float32, device=DEVICE)
-
-    s_real, s_blind, s_mean = [], [], []
-    t_res = {a: {'real': [], 'blind': [], 'mean': [], 'input': []} for a in alphas}
+    results = {}       # ten dieu kien -> new_cond()
+    inp_err = {}       # ten dieu kien -> loi joint dau vao (mm)
     n_batches = 0
     with torch.no_grad():
         for inputs, targets, meta in loader:
             if n_batches >= args.max_batches:
                 break
             n_batches += 1
-
             img = inputs['img'].to(DEVICE).float()
             joints2d = inputs['joints'].to(DEVICE).float()
             joints_mask = inputs['joints_mask'].to(DEVICE).float()
             gt_mesh = targets['smpl_mesh_cam'].to(DEVICE).float()
-            gt_h36m = h36m_from_mesh(gt_mesh, h36m_reg)
+            gt_h36m = h36m_from_mesh(gt_mesh, reg)
+            gt_h36m = gt_h36m - gt_h36m[:, 0:1]
 
             # ---------------- Teacher ----------------
-            feat_t_real, _ = teacher.get_image_features(img)
-            feat_t_blind = torch.randn_like(feat_t_real)  # xoa sach noi dung anh, giu nguyen shape
-            # mean-feature: 1 token duy nhat (TB kenh ca batch), ap cho MOI mau -> van "trong
-            # phan phoi" (khong soc OOD nhu randn) nhung xoa sach thong tin RIENG tung mau.
-            feat_t_mean = feat_t_real.mean(dim=0, keepdim=True).expand_as(feat_t_real).contiguous()
-
-            lifted = None
-            if need_lift:
+            feat_t, _ = teacher.get_image_features(img)
+            if t_hint:
                 lifted = teacher.lift_2d_to_3d(joints2d, joints_mask=joints_mask)
-                lifted = (lifted - lifted[:, 0:1, :]).to(gt_h36m.dtype)
-
-            def t_mpjpe(joints_in, feats):
-                out = teacher.smpl_model(joints=joints_in, img_feats=feats, is_train=False, return_features=True)
-                return mpjpe_mm(h36m_from_mesh(out['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu()
-
-            for a in alphas:
-                # input Teacher = (1-a)*GT + a*MotionBERT_lift (cung cong thuc voi luc train)
-                t_in = gt_h36m if a == 0 else (1.0 - a) * gt_h36m + a * lifted
-                t_res[a]['input'].append(mpjpe_mm(t_in, gt_h36m).cpu())
-                t_res[a]['real'].append(t_mpjpe(t_in, feat_t_real))
-                t_res[a]['blind'].append(t_mpjpe(t_in, feat_t_blind))
-                t_res[a]['mean'].append(t_mpjpe(t_in, feat_t_mean))
+                lifted = (lifted - lifted[:, 0:1]).float()
+                z = teacher.smpl_model.hint_encoder(gt_h36m, lifted)
+                for name, zz in (('Teacher T-hint [CO goi y]', z), ('Teacher T-hint [KHONG goi y]', torch.zeros_like(z))):
+                    results.setdefault(name, new_cond())
+                    inp_err.setdefault(name, []).append(
+                        (torch.norm(lifted - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu())
+                    run_three(teacher, lifted, feat_t, results[name], reg, gt_mesh, hint_z=zz)
+            else:
+                lifted = None
+                if any(a > 0 for a in alphas):
+                    lifted = teacher.lift_2d_to_3d(joints2d, joints_mask=joints_mask)
+                    lifted = (lifted - lifted[:, 0:1]).to(gt_h36m.dtype)
+                for a in alphas:
+                    name = f'Teacher a={a} [' + ('GT sach' if a == 0 else f'(1-{a})*GT + {a}*MotionBERT') + ']'
+                    t_in = gt_h36m if a == 0 else (1.0 - a) * gt_h36m + a * lifted
+                    results.setdefault(name, new_cond())
+                    inp_err.setdefault(name, []).append((torch.norm(t_in - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu())
+                    run_three(teacher, t_in, feat_t, results[name], reg, gt_mesh)
 
             # ---------------- Student ----------------
             if student is not None:
-                feat_s_real, _ = student.get_image_features(img)
-                feat_s_blind = torch.randn_like(feat_s_real)
-                feat_s_mean = feat_s_real.mean(dim=0, keepdim=True).expand_as(feat_s_real).contiguous()
+                feat_s, _ = student.get_image_features(img)
                 pose_3d = student.lift_2d_to_3d(joints2d, joints_mask=joints_mask)
-                pose_3d = pose_3d - pose_3d[:, 0:1, :]
-
-                out_s_real = student.smpl_model(joints=pose_3d, img_feats=feat_s_real,
-                                                 is_train=False, return_features=True)
-                out_s_blind = student.smpl_model(joints=pose_3d, img_feats=feat_s_blind,
-                                                  is_train=False, return_features=True)
-                out_s_mean = student.smpl_model(joints=pose_3d, img_feats=feat_s_mean,
-                                                 is_train=False, return_features=True)
-                s_real.append(mpjpe_mm(h36m_from_mesh(out_s_real['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
-                s_blind.append(mpjpe_mm(h36m_from_mesh(out_s_blind['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
-                s_mean.append(mpjpe_mm(h36m_from_mesh(out_s_mean['smpl_mesh_cam'], h36m_reg), gt_h36m).cpu())
+                pose_3d = pose_3d - pose_3d[:, 0:1]
+                name = 'Student' + (' S-hint' if getattr(student, 'student_hint', False) else '') + ' (joint MotionBERT)'
+                results.setdefault(name, new_cond())
+                inp_err.setdefault(name, []).append((torch.norm(pose_3d - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu())
+                run_three(student, pose_3d, feat_s, results[name], reg, gt_mesh)
 
             if n_batches % 5 == 0:
                 print(f"  ... da xu ly {n_batches}/{args.max_batches} batch")
 
-    def report(name, real, blind, mean, inp=None):
-        real, blind, mean = torch.cat(real).numpy(), torch.cat(blind).numpy(), torch.cat(mean).numpy()
-        d, dm = blind - real, mean - real   # duong = mat anh lam te hon = anh co ich
-        d_mean, d_ci = paired(d)
-        dm_mean, dm_ci = paired(dm)
-        print(f"  {name}")
-        if inp is not None:
-            print(f"    input (so voi GT)  : {summarize(torch.cat(inp).numpy())}")
-        print(f"    anh that           : {summarize(real)}")
-        print(f"    blind (randn)      : {summarize(blind)}")
-        print(f"    mean  (TB batch)   : {summarize(mean)}")
-        print(f"    blind - that       : {d_mean:+.2f} +/- {d_ci:.2f} mm (95%, n={len(d)}); "
-              f"{(d > 0).mean():.1%} mau blind te hon")
-        print(f"    mean  - that       : {dm_mean:+.2f} +/- {dm_ci:.2f} mm (95%, n={len(dm)}); "
-              f"{(dm > 0).mean():.1%} mau mean te hon")
-        return d_mean, d_ci, dm_mean, dm_ci
-
-    hr("KET QUA - MPJPE (mm): anh that vs anh = nhieu trang (randn) vs anh = trung binh batch (mean)")
-    verdicts = []
-    if student is not None:
-        verdicts.append(('Student', report('Student (joint MotionBERT)', s_real, s_blind, s_mean)))
-    for a in alphas:
-        tag = 'GT sach' if a == 0 else f'(1-{a})*GT + {a}*MotionBERT'
-        r = t_res[a]
-        verdicts.append((f'Teacher a={a}', report(f'Teacher a={a}  [{tag}]', r['real'], r['blind'], r['mean'],
-                                                  r['input'] if a > 0 else None)))
+    hr("KET QUA (mm): anh that vs anh = nhieu trang (blind) vs anh = TB batch (mean)")
+    summary = []
+    for name, r in results.items():
+        cat = {f: {m: torch.cat(r[f][m]).numpy() for m in ('j', 'v')} for f in r}
+        n = len(cat['real']['j'])
+        print(f"  {name}   (n={n}, loi joint dau vao: {torch.cat(inp_err[name]).mean().item():.1f} mm)")
+        print(f"    {'':14s} {'MPJPE':>8s} {'MPVPE':>8s}")
+        for f, lab in (('real', 'anh that'), ('blind', 'blind (randn)'), ('mean', 'mean (TB)')):
+            print(f"    {lab:14s} {cat[f]['j'].mean():8.2f} {cat[f]['v'].mean():8.2f}")
+        row = {'name': name}
+        for f in ('mean', 'blind'):
+            for m, lab in (('j', 'MPJPE'), ('v', 'MPVPE')):
+                d = cat[f][m] - cat['real'][m]
+                dm, ci = paired(d)
+                row[f'{f}_{m}'] = dm
+                print(f"    {f:5s} - that ({lab}): {dm:+.2f} +/- {ci:.2f} mm; {(d > 0).mean():.1%} mau te hon")
+        row['real_j'] = cat['real']['j'].mean()
+        summary.append(row)
     print("  (khoang tin cay tinh theo mau doc lap -> lac quan voi 3DPW)")
 
-    hr("KET LUAN")
-    def verdict(name, mean, ci, mean_feat_mean, mean_feat_ci, thresh):
-        lo = mean - ci if not np.isnan(ci) else mean
-        if abs(mean) < thresh and (np.isnan(ci) or lo < thresh):
-            print(f"  [{name}] Xoa sach noi dung anh (randn) HAU NHU KHONG doi MPJPE "
-                  f"({mean:+.2f}mm, trong nguong {thresh}mm).")
-            print(f"    -> Nhanh anh cua {name} dang CHET VE NOI DUNG: kien truc khong doc duoc pixel,")
-            print(f"       co the chi dang 'thay' token anh nhu nhung vi tri co dinh (qua pos_emb_img),")
-            print(f"       khong phai nhu nguon thong tin thi giac. KD/retrain downstream se KHONG")
-            print(f"       sua duoc dieu nay — phai kiem tra truc tiep nhanh fusion/img_proj/gradient toi")
-            print(f"       anh, hoac tang trong so loss body_joint_proj (nguon duy nhat bat buoc dung anh).")
-        else:
-            print(f"  [{name}] Xoa noi dung anh (randn) lam MPJPE DOI RO RET ({mean:+.2f} +/- {ci:.2f}mm).")
-            # ---- phan xu: do la OOD-shock hay thuc su can thong tin rieng tung mau? ----
-            lo_m = mean_feat_mean - mean_feat_ci if not np.isnan(mean_feat_ci) else mean_feat_mean
-            if abs(mean_feat_mean) < thresh and (np.isnan(mean_feat_ci) or lo_m < thresh):
-                print(f"    -> NHUNG mean-feature (van trong phan phoi, xoa thong tin RIENG tung mau)")
-                print(f"       chi doi {mean_feat_mean:+.2f}mm — GAN NHU KHONG DOI.")
-                print(f"       => Ket luan: {name} KHONG thuc su can noi dung anh cua TUNG MAU. Cai lam")
-                print(f"       MPJPE xau o randn la SOC OUT-OF-DISTRIBUTION (backbone pretrain tren anh")
-                print(f"       that, nhieu trang pha vo thong ke LayerNorm/attention), KHONG PHAI bang")
-                print(f"       chung cho viec {name} doc va dung noi dung anh mot cach co y nghia.")
-            else:
-                print(f"    -> VA mean-feature cung lam MPJPE xau di ro ret ({mean_feat_mean:+.2f} +/- "
-                      f"{mean_feat_ci:.2f}mm).")
-                print(f"       => Ket luan: {name} THUC SU can thong tin RIENG cua TUNG MAU anh, khong")
-                print(f"       chi can 'co anh hop le'. Day la bang chung that cho viec kien truc doc")
-                print(f"       duoc va dung noi dung anh — neu truoc do shuffle-test cho thay khong")
-                print(f"       nhay voi DOI anh giua cac mau, can xem lai do nhay cua shuffle-test do.")
-
-    for name, (d_mean, d_ci, dm_mean, dm_ci) in verdicts:
-        verdict(name, d_mean, d_ci, dm_mean, dm_ci, args.blind_thresh)
+    hr("TOM TAT: muc dung thong tin anh rieng tung mau = (mean - that)")
+    print(f"  {'dieu kien':46s} {'MPJPE that':>10s} {'dMPJPE':>8s} {'dMPVPE':>8s}  ket luan")
+    for row in summary:
+        uses = row['mean_j'] >= args.use_thresh or row['mean_v'] >= args.use_thresh
+        verdict = 'DUNG anh' if uses else 'gan nhu KHONG dung anh'
+        print(f"  {row['name']:46s} {row['real_j']:10.2f} {row['mean_j']:+8.2f} {row['mean_v']:+8.2f}  {verdict}")
+    if t_hint:
+        on = next(r for r in summary if 'CO goi y' in r['name'])
+        off = next(r for r in summary if 'KHONG goi y' in r['name'])
+        print(f"\n  T-hint: goi y giup {off['real_j'] - on['real_j']:+.2f} mm MPJPE "
+              f"(tieu chi PLAN: >= 10 mm); dung anh khi CO goi y: {on['mean_j']:+.2f} mm (tieu chi: >= 8 mm)")
 
 
 if __name__ == '__main__':

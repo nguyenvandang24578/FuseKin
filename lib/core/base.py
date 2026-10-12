@@ -442,6 +442,15 @@ class Teacher_Trainer:
         smpl30_joints = self.main_dataset.mesh_model.joints_name
         self.h36m_from_smpl30 = [smpl30_joints.index(name) for name in h36m_joints]
 
+        # ---- Goi y nen (T-hint, PLAN_TEACHER_HINT.md): khoi tao tu Teacher GT (tru bo ma hoa joint + nhanh goi y) ----
+        self.teacher_hint = bool(cfg.MODEL.get('teacher_hint', False))
+        if self.teacher_hint:
+            init_from = cfg.MODEL.get('hint_init_from', '')
+            if init_from and not getattr(args, 'resume_training', False):
+                load_partial_weights(self.model, init_from, tag='T-hint <- Teacher GT')
+            print(f"===> Teacher T-hint: k={cfg.MODEL.get('hint_dim', 16)}, noise={cfg.MODEL.get('hint_noise', 0.1)}, "
+                  f"off_prob={cfg.MODEL.get('hint_off_prob', 0.3)} | joint vao = MotionBERT (giong Student)")
+
         self.model = torch.nn.DataParallel(self.model).cuda()
 
         self.jotr_coord_loss = JOTRCoordLoss()
@@ -465,7 +474,8 @@ class Teacher_Trainer:
         # ---- (A) tron GT voi joint MotionBERT lift, (C) head tham do anh ----
         self.lift_alpha_max = float(cfg.MODEL.get('teacher_lift_alpha_max', 0.0))
         self.lift_clean_prob = float(cfg.MODEL.get('teacher_lift_clean_prob', 0.0))
-        self.img_probe = bool(cfg.MODEL.get('img_probe', False))
+        # T-hint dung kien truc Student (khong co head tham do anh) -> tat img_probe
+        self.img_probe = bool(cfg.MODEL.get('img_probe', False)) and not bool(cfg.MODEL.get('teacher_hint', False))
         self.img_probe_w = float(cfg.MODEL.get('img_probe_w', 0.1))
         if self.lift_alpha_max > 0:
             print(f'===> Teacher (A) tron GT voi MotionBERT lift: alpha ~ U(0, {self.lift_alpha_max}), '
@@ -556,6 +566,11 @@ class Teacher_Trainer:
                 fwd_kwargs = dict(pose_2d=inputs['joints'].cuda().float(),
                                   joints_mask=inputs['joints_mask'].cuda().float(),
                                   lift_alpha=lift_alpha)
+            if self.teacher_hint:
+                # T-hint: joint vao = MotionBERT(2D) nhu Student, GT (sach) chi di vao bo nen goi y
+                teacher_model_input = teacher_gt_pose3d
+                fwd_kwargs = dict(pose_2d=inputs['joints'].cuda().float(),
+                                  joints_mask=inputs['joints_mask'].cuda().float())
             model_output = self.model(input_image, teacher_model_input, is_train=True, **fwd_kwargs)
 
             pred_mesh = model_output['smpl_mesh_cam']
@@ -618,10 +633,16 @@ class Teacher_Trainer:
                     extra_stats['probe_loss'] = probe_loss.item()
                     extra_stats['probe_mpjpe_mm'] = (((probe_pred - teacher_gt_pose3d).norm(dim=-1) * 1000.0)
                                                      * valid_joint).sum().item() / n_valid_tot.item()
-            if self.lift_alpha_max > 0:
+            if self.lift_alpha_max > 0 or self.teacher_hint:
                 with torch.no_grad():
                     in_err = (model_output['teacher_input_joints'] - teacher_gt_pose3d).norm(dim=-1) * 1000.0
                     extra_stats['input_err_mm'] = (in_err * valid_joint).sum().item() / n_valid_tot.item()
+            if self.teacher_hint:
+                with torch.no_grad():
+                    extra_stats['hint_on'] = model_output['hint_on'].float().mean().item()     # ~ 1 - off_prob
+                    on = model_output['hint_on'].float()
+                    z_abs = model_output['hint_z'].abs().mean(-1)                           # (B,)
+                    extra_stats['z_abs'] = ((z_abs * on).sum() / on.sum().clamp_min(1.0)).item()
             for k_, v_ in extra_stats.items():
                 run_extra[k_] = run_extra.get(k_, 0.0) + v_
             if extra_stats and cfg.TRAIN.wandb:
@@ -671,6 +692,7 @@ class Teacher_Tester:
             self.model = torch.nn.DataParallel(self.model).cuda()
         self.surface_error = 9999.9
         self.joint_error = 9999.9
+        self.teacher_hint = bool(cfg.MODEL.get('teacher_hint', False))
 
     def test(self, epoch, current_model=None):
         if current_model:
@@ -684,8 +706,21 @@ class Teacher_Tester:
             print(
                 f'{dataset_name}: MPJPE={metrics["mpjpe"]:.2f}, '
                 f'PA-MPJPE={metrics["pa_mpjpe"]:.2f}, '
-                f'MPVPE={metrics["mpvpe"]:.2f}'
+                f'MPVPE={metrics["mpvpe"]:.2f}' + (' [co goi y]' if self.teacher_hint else '')
             )
+            if self.teacher_hint:
+                # T-hint: do them KHONG goi y (z = 0) = hoan canh Student. Chon best van theo ban CO goi y.
+                m0 = evaluate_3dpw_subset(self.model, dataset, loader, teacher_hint_on=False)
+                print(
+                    f'{dataset_name}: MPJPE={m0["mpjpe"]:.2f}, '
+                    f'PA-MPJPE={m0["pa_mpjpe"]:.2f}, '
+                    f'MPVPE={m0["mpvpe"]:.2f} [KHONG goi y] | goi y giup: '
+                    f'{m0["mpjpe"] - metrics["mpjpe"]:+.2f} mm MPJPE'
+                )
+                if cfg.TRAIN.wandb and wandb.run is not None:
+                    wandb.log({f'test_nohint/{dataset_name}_mpjpe': m0['mpjpe'],
+                               f'test_nohint/{dataset_name}_pa_mpjpe': m0['pa_mpjpe'],
+                               f'test_nohint/{dataset_name}_mpvpe': m0['mpvpe']})
 
         if results:
             self.joint_error = sum(item['mpjpe'] for item in results.values()) / len(results)
@@ -773,6 +808,33 @@ def load_model_weights(model, ckpt_path, skip_prefixes=('pose_lifter.',)):
     assert not missing_core, \
         f'Checkpoint {ckpt_path} chưa nạp đủ smpl_model/backbone{hint} Thiếu (5 đầu): {missing_core[:5]}'
     return model
+
+
+def load_partial_weights(model, ckpt_path, skip_prefixes=('pose_lifter.',), tag='partial'):
+    """Nap moi tensor TRUNG TEN va TRUNG SHAPE tu checkpoint (khong assert thieu key).
+    Dung de khoi tao T-hint tu Teacher GT: bo ma hoa joint khac ten (joint_proj <-> projector_student),
+    nhanh goi y (hint_*) moi -> giu khoi tao ban dau."""
+    ckpt = torch.load(ckpt_path, map_location='cpu', pickle_module=_PickleShim, weights_only=False)
+    state = ckpt
+    if isinstance(ckpt, dict):
+        for k in ('model_state_dict', 'state_dict', 'model'):
+            if k in ckpt:
+                state = ckpt[k]
+                break
+    state = {(k[7:] if k.startswith('module.') else k): v for k, v in state.items()}
+    own = model.state_dict()
+    filtered = {k: v for k, v in state.items()
+                if not k.startswith(skip_prefixes) and k in own and own[k].shape == v.shape}
+    missing, unexpected = model.load_state_dict(filtered, strict=False)
+    missing = [k for k in missing if not k.startswith(skip_prefixes)]
+    print(f'===> [{tag}] nap {len(filtered)} tensor tu {ckpt_path} | thieu {len(missing)} | bo qua '
+          f'{len(state) - len(filtered)} (khac ten/shape hoac pose_lifter)')
+    groups = sorted({'.'.join(k.split('.')[:3]) for k in missing})
+    if groups:
+        print(f'     thieu (nhom): {groups[:12]}')
+    return model
+
+
 class Student_Trainer:
     def __init__(self, args, load_dir):
         self.batch_generator, self.dataset_list, self.model, self.loss, self.optimizer, self.lr_scheduler, self.loss_history, self.error_history\
@@ -840,6 +902,17 @@ class Student_Trainer:
         # Muc tieu Teacher phai dat duoc qua DUONG ANH (v1 lam nguoc lai: joint encoder tu 'lam sach', fusion bot dung anh).
         self.kd_res_mode = str(cfg.MODEL.get('kd_res_mode', 'v1'))
         assert self.kd_res_mode in ('v1', 'v2'), f'kd_res_mode khong hop le: {self.kd_res_mode}'
+        # Goi y nen (S-hint, PLAN_TEACHER_HINT.md), kd_mode = 'hint':
+        #   loss = kd_hard_w*hard + kd_lambda*(kd_hint_w*MSE(z_hat, z_T) + kd_hint_feat_w*KD_feat_truc_tiep) + priv
+        self.teacher_is_hint = bool(cfg.MODEL.get('teacher_hint', False))
+        self.student_hint = bool(cfg.MODEL.get('student_hint', False))
+        self.kd_hint_w = float(cfg.MODEL.get('kd_hint_w', 1.0))
+        self.kd_hint_feat_w = float(cfg.MODEL.get('kd_hint_feat_w', 0.0))
+        if self.use_kd and self.kd_mode == 'hint':
+            assert self.student_hint and self.teacher_is_hint, \
+                "kd_mode 'hint' can student_hint: True va teacher_hint: True (TEACHER phai la checkpoint T-hint)"
+            print(f'===> KD mode = hint | k={cfg.MODEL.get("hint_dim", 16)} | kd_hint_w={self.kd_hint_w} | '
+                  f'kd_hint_feat_w={self.kd_hint_feat_w} | lambda={self.kd_lambda} | hard_w={self.kd_hard_w}')
         # Nhieu 2D luc train (truoc MotionBERT) - chi Student, chi luc train. 0 = tat.
         self.s2d_prob = float(cfg.MODEL.get('s2d_noise_prob', 0.0))
         self.s2d_jitter = float(cfg.MODEL.get('s2d_noise_jitter', 0.02))
@@ -1042,15 +1115,23 @@ class Student_Trainer:
             # Khi khong dung KD: t_out rong -> moi so hang KD = 0 (cac nhanh .get() ben duoi tu bo qua)
             if self.use_kd:
                 with torch.no_grad():
-                    t_out = self.teacher(input_image, gt_pose_input, is_train=False)
+                    if self.teacher_is_hint:
+                        # T-hint: cung joint MotionBERT voi Student (cung 2D, cung mask), goi y tu GT, eval = khong nhieu
+                        t_out = self.teacher(input_image, gt_pose_input, is_train=False,
+                                             pose_2d=input_pose2d, joints_mask=joints_mask)
+                    else:
+                        t_out = self.teacher(input_image, gt_pose_input, is_train=False)
             else:
                 t_out = {}
 
             # ---------- KD: 3 điểm nối ----------
             zeros_b = torch.zeros(input_image.shape[0], device=input_image.device)
             feat_mode = self.use_kd and self.kd_mode == 'feat'
+            hint_mode = self.use_kd and self.kd_mode == 'hint'
             kd_nce = zeros_b.sum()
             kd_res_ps = zeros_b
+            kd_hint_ps = zeros_b
+            kd_hfeat_ps = zeros_b
             noise_w_mean = 1.0
             # loi joint dau vao Student (MotionBERT) so voi GT, mm - de kiem tra muc nhieu
             with torch.no_grad():
@@ -1096,6 +1177,16 @@ class Student_Trainer:
                 if self.kd_nce_w > 0:
                     kd_nce = (self._info_nce('joint', kd_src['feat_joint'], t_out['feat_joint'], mask=valid_joint)
                               + self._info_nce('global', kd_src['feat_global'], t_out['feat_global']))
+            elif hint_mode:
+                # S-hint: (1) tu doan goi y z_hat ~ z_Teacher; (2) KD feature TRUC TIEP (cung kien truc, cung khong gian
+                # -> khong can projector). (2) luon tinh de log J/G, chi vao loss khi kd_hint_feat_w > 0.
+                kd_hint_ps = ((model_output['hint_pred'] - t_out['hint_z'].detach()) ** 2).mean(-1)   # (B,)
+                _ln = lambda x: F.layer_norm(x, x.shape[-1:])
+                kd_joint_ps = (((_ln(model_output['feat_joint']) - _ln(t_out['feat_joint'].detach())) ** 2).mean(-1)
+                               * valid_joint).sum(-1) / n_valid
+                kd_global_ps = ((_ln(model_output['feat_global']) - _ln(t_out['feat_global'].detach())) ** 2).mean(-1)
+                kd_hfeat_ps = kd_joint_ps + kd_global_ps
+                kd_proj_ps = zeros_b
             elif self.use_kd:
                 kd_proj_ps = (_cos_dist(model_output['feat_joint_in'], t_out['feat_joint_in'])
                               * valid_joint).sum(-1) / n_valid                              # (B,)
@@ -1107,19 +1198,19 @@ class Student_Trainer:
 
             # ---------- KD: sâu hơn (GCN / Transformer pose) ----------
             kd_hyper_ps = 0.0
-            if not feat_mode and model_output.get('feat_hyper') is not None and t_out.get('feat_hyper') is not None:
+            if not (feat_mode or hint_mode) and model_output.get('feat_hyper') is not None and t_out.get('feat_hyper') is not None:
                 kd_hyper_ps = (_cos_dist(model_output['feat_hyper'], t_out['feat_hyper']) * valid_joint).sum(-1) / n_valid
             
             kd_pose_ps = 0.0
-            if not feat_mode and model_output.get('feat_pose') is not None and t_out.get('feat_pose') is not None:
+            if not (feat_mode or hint_mode) and model_output.get('feat_pose') is not None and t_out.get('feat_pose') is not None:
                 kd_pose_ps = _cos_dist(model_output['feat_pose'], t_out['feat_pose']).mean(-1)
             
             kd_root_ps = 0.0
-            if not feat_mode and model_output.get('root_pose_6d') is not None and t_out.get('root_pose_6d') is not None:
+            if not (feat_mode or hint_mode) and model_output.get('root_pose_6d') is not None and t_out.get('root_pose_6d') is not None:
                 kd_root_ps = F.l1_loss(model_output['root_pose_6d'], t_out['root_pose_6d'].detach(), reduction='none').mean(-1)
                 
             kd_latent_ps = 0.0
-            if not feat_mode and model_output.get('pose_latent') is not None and t_out.get('pose_latent') is not None:
+            if not (feat_mode or hint_mode) and model_output.get('pose_latent') is not None and t_out.get('pose_latent') is not None:
                 kd_latent_ps = F.l1_loss(model_output['pose_latent'], t_out['pose_latent'].detach(), reduction='none').mean(-1)
 
             kd_per_sample = (w_proj * kd_proj_ps + w_joint * kd_joint_ps + w_global * kd_global_ps 
@@ -1148,6 +1239,9 @@ class Student_Trainer:
                 # E1: trong so co dinh, khong adaptive (adaptive chi de log = 1)
                 adaptive_weight = torch.ones_like(adaptive_weight)
                 kd_loss = (kd_per_sample + self.kd_res_w * kd_res_ps).mean() + self.kd_nce_w * kd_nce
+            elif hint_mode:
+                adaptive_weight = torch.ones_like(adaptive_weight)
+                kd_loss = (self.kd_hint_w * kd_hint_ps + self.kd_hint_feat_w * kd_hfeat_ps).mean()
             else:
                 kd_loss = (adaptive_weight * kd_per_sample).mean()
             privileged_loss = privileged_per_sample.mean()
@@ -1190,7 +1284,7 @@ class Student_Trainer:
                 loss_dict['smpl_shape'] = loss_dict['smpl_shape'] * self.shape_loss_w
             loss_dict = self.awl(loss_dict)
             hard_loss = sum(loss_dict.values())
-            if feat_mode:
+            if feat_mode or hint_mode:
                 loss = self.kd_hard_w * hard_loss + self.kd_lambda * kd_loss + privileged_loss
             else:
                 loss = 0.5 * hard_loss + 0.5 * kd_loss + privileged_loss
@@ -1224,6 +1318,10 @@ class Student_Trainer:
                 'kd_noise_w': noise_w_mean,
                 'kd_res': kd_res_ps.mean().item(),
                 'lift_err_mm': lift_err_mm,
+                'kd_hint': kd_hint_ps.mean().item(),
+                'kd_hfeat': kd_hfeat_ps.mean().item(),
+                'hint_abs': (model_output['hint_pred'].detach().abs().mean().item()
+                             if model_output.get('hint_pred') is not None else 0.0),
             }
             for k, v in step_stats.items():
                 running[k] = running.get(k, 0.0) + v
@@ -1249,6 +1347,9 @@ class Student_Trainer:
                         'train_loss/kd_noise_w': step_stats['kd_noise_w'],
                         'train_loss/kd_res': step_stats['kd_res'],
                         'train_loss/lift_err_mm': step_stats['lift_err_mm'],
+                        'train_loss/kd_hint': step_stats['kd_hint'],
+                        'train_loss/kd_hfeat': step_stats['kd_hfeat'],
+                        'train_loss/hint_abs': step_stats['hint_abs'],
                         'train_loss/hard_total': hard_loss.item(),
                         'train_loss/total': loss.item(),
                     }
@@ -1263,7 +1364,8 @@ class Student_Trainer:
                     f'proj2d: {loss_body_joint_proj.item():.3f} '
                     f'kd: {kd_loss.item():.3f} '
                     f'[P {step_stats["kd_proj"]:.3f} J {step_stats["kd_joint"]:.3f} G {step_stats["kd_global"]:.3f} '
-                    f'N {step_stats["kd_nce"]:.3f} R {step_stats["kd_res"]:.3f} nw {step_stats["kd_noise_w"]:.2f}] '
+                    f'N {step_stats["kd_nce"]:.3f} R {step_stats["kd_res"]:.3f} nw {step_stats["kd_noise_w"]:.2f} '
+                    f'H {step_stats["kd_hint"]:.3f} |z| {step_stats["hint_abs"]:.2f}] '
                     f'lift: {step_stats["lift_err_mm"]:.0f}mm '
                     f'priv: {step_stats["privileged_3d"]:.3f} '
                     f'w: {step_stats["adaptive_kd_weight"]:.2f} '
@@ -1279,6 +1381,9 @@ class Student_Trainer:
               f'InfoNCE: {avg["kd_nce"]:.4f} | noise w: {avg["kd_noise_w"]:.3f}')
         print(f'  Residual (joint-only -> Teacher): {avg["kd_res"]:.4f} | KD fused (J): {avg["kd_joint"]:.4f} | '
               f'loi joint dau vao (MotionBERT): {avg["lift_err_mm"]:.1f} mm')
+        if self.use_kd and self.kd_mode == 'hint':
+            print(f'  Goi y: MSE(z_hat, z_T) {avg["kd_hint"]:.4f} | |z_hat| {avg["hint_abs"]:.3f} | '
+                  f'KD feat truc tiep (J+G) {avg["kd_hfeat"]:.4f}')
 
         if cfg.TRAIN.wandb:
             wandb.log({f'epoch_metric/{k}': v for k, v in avg.items()})

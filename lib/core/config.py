@@ -226,6 +226,20 @@ cfg.MODEL.kd_res_w = 0.0
 #   'v2' = KD feature (joint/global/InfoNCE) tinh tren 1 luot fusion phu voi token joint DA DETACH
 #          -> gradient KD khong vao bo ma hoa joint, chi vao fusion (duong anh). Hard loss van train tat ca.
 cfg.MODEL.kd_res_mode = 'v1'
+# ---- Goi y nen (Privileged Hint), xem PLAN_TEACHER_HINT.md ----
+# Teacher T-hint: anh + joint MotionBERT (GIONG Student) + goi y z (hint_dim so) nen tu [GT, GT - lift].
+#   Dung luong goi y bi gioi han: hint_dim nho + nhieu N(0, hint_noise^2) tren z luc train
+#   + tat goi y (z = 0) voi xac suat hint_off_prob -> Teacher buoc phai tu fuse anh + joint nhieu.
+cfg.MODEL.teacher_hint = False
+cfg.MODEL.hint_dim = 16
+cfg.MODEL.hint_noise = 0.1
+cfg.MODEL.hint_off_prob = 0.3
+# Khoi tao T-hint tu checkpoint Teacher GT (moi phan trung ten/shape; bo ma hoa joint khac nen bo qua). '' = khong.
+cfg.MODEL.hint_init_from = ''
+# Student S-hint: cung kien truc T-hint, tu doan goi y z_hat (fusion 2 luot). Dung voi kd_mode: 'hint'.
+cfg.MODEL.student_hint = False
+cfg.MODEL.kd_hint_w = 1.0        # MSE(z_hat, z_Teacher)
+cfg.MODEL.kd_hint_feat_w = 0.0   # MSE(LN(feat Student), LN(feat Teacher co goi y)), khong projector
 # Nhieu 2D luc train cho Student (truoc MotionBERT). Toa do [-1,1] (1.0 ~ 128 px trong crop 256). 0 = tat.
 cfg.MODEL.s2d_noise_prob = 0.0        # ti le mau bi lam nhieu
 cfg.MODEL.s2d_noise_jitter = 0.02     # std lech nho moi khop (~2.5 px)
