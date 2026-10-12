@@ -33,9 +33,12 @@ class Human36M17Dataset(Dataset):
     LIFT_TARGET_KEYS_TRAIN = {'orig_joint_img', 'orig_joint_cam'}
     LIFT_TARGET_KEYS_EVAL = {'smpl_mesh_cam', 'orig_joint_cam'}   # 3DPW: mesh; Human36M test: joint mocap
     LIFT_META_KEYS = {'orig_joint_valid', 'orig_joint_trunc', 'is_3D'}
+    # Them khi keep_vis_info=True (ve hinh trong finetune_motionbert.py, lay tung mau, khong qua collate)
+    VIS_META_KEYS = {'img_path', 'img2bb_trans'}
 
     def __init__(self, dataset):
         self.dataset = dataset
+        self.keep_vis_info = False
         self.joint_num = len(HUMAN36M_JOINTS)
         self.joints_name = HUMAN36M_JOINTS
         self.joint_regressor_human36 = dataset.h36m_joint_regressor
@@ -114,7 +117,8 @@ class Human36M17Dataset(Dataset):
             target_keys = self.LIFT_TARGET_KEYS_TRAIN if is_train else self.LIFT_TARGET_KEYS_EVAL
             inputs = {k: v for k, v in inputs.items() if k in self.LIFT_INPUT_KEYS}
             targets = {k: v for k, v in targets.items() if k in target_keys}
-            meta = {k: v for k, v in meta.items() if k in self.LIFT_META_KEYS}
+            meta_keys = self.LIFT_META_KEYS | (self.VIS_META_KEYS if self.keep_vis_info else set())
+            meta = {k: v for k, v in meta.items() if k in meta_keys}
         return inputs, targets, meta
 
 
@@ -134,7 +138,7 @@ def get_train_dataset(name, args):
 
 
 def get_test_dataset(name, args):
-    # name: '3dpw' | '3dpw-pc' | '3dpw-oc' | '3dpw-crowd' | '3dpw-val' | 'Human36M'
+    # name: '3dpw' | '3dpw-pc' | '3dpw-oc' | '3dpw-crowd' | '3dpw-val' | '3dpw-train-noaug' | 'Human36M'
     if name == 'Human36M':
         # Split test cua H36M (S9, S11, camera 4). Hien chi ho tro khi cfg.DATASET.lift_only=True.
         if not cfg.DATASET.lift_only:

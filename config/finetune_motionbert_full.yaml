@@ -7,7 +7,8 @@
 
 DATASET:
     train_list: ['Human36M', 'MuCo', '3dpw-train']
-    test_list: ['3dpw', 'Human36M']   # chi test 1 lan cuoi voi best ckpt
+    # chi test 1 lan cuoi voi best ckpt. '3dpw-train-noaug' = do loi tren chinh 3DPW-train (kiem tra hoc thuoc)
+    test_list: ['3dpw', 'Human36M', '3dpw-train-noaug']
     input_joint_set: 'human36'
     target_joint_set: 'human36'
     workers: 8

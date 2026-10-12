@@ -318,7 +318,8 @@ class MuCo(torch.utils.data.Dataset):
             h36m_trunc = transform_joint_to_other_db(muco_joint_trunc, src_names, self.h36m_joints_name)
             inputs = {'img': img, 'joints': h36m_input[:, :2].astype(np.float32), 'joints_mask': h36m_trunc.astype(np.float32)}
             targets = {'orig_joint_img': h36m_img.astype(np.float32), 'orig_joint_cam': h36m_cam.astype(np.float32)}
-            meta_info = {'orig_joint_valid': h36m_valid.astype(np.float32), 'orig_joint_trunc': h36m_trunc.astype(np.float32), 'is_3D': float(True)}
+            meta_info = {'orig_joint_valid': h36m_valid.astype(np.float32), 'orig_joint_trunc': h36m_trunc.astype(np.float32), 'is_3D': float(True),
+                         'img_path': img_path, 'img2bb_trans': img2bb_trans.astype(np.float32)}  # de ve hinh
             return inputs, targets, meta_info
 
         input_muco_joint_img = transform_joint_to_other_db(input_muco_joint_img, self.muco_joints_name, self.joints_name)

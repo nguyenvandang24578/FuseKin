@@ -1,0 +1,69 @@
+# GIONG train_student_kd_res.yml nhung NHIEU 2D NHE HON.
+# Ban res (nhieu manh) cho loi joint dau vao TB ~78 mm tren train (mau sach ~9 mm -> mau nhieu ~150 mm),
+# con nang hon ca test (~75 mm). Ban nay nham TB ~35-45 mm (mau nhieu ~60-80 mm, gan muc loi that tren test).
+# Xem dong 'loi joint dau vao (MotionBERT)' moi epoch de kiem tra.
+DATASET:
+  train_list: ['3dpw-train']
+  test_list: ['3dpw']
+  input_joint_set: 'human36'
+  target_joint_set: 'human36'
+  workers: 8
+  use_gt_input: False
+  seqlen: 1
+  stride: 1
+
+MODEL:
+  name: 'student'
+  resnet_type: 50
+  freeze_backbone: True
+  hpe_dim: 512
+  hpe_dep: 5
+  motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
+  motionbert_2d_rootrel: False
+  backbone_pretrained: 'spin'
+  TEACHER: './experiment/exp_10-10_18_35/checkpoint/best.pth.tar'
+  student_use_kd: True
+  init_student_from_teacher: True
+
+  # ---- KD feature (giong E1) ----
+  kd_mode: 'feat'
+  kd_feat_dist: 'mse'
+  kd_hard_w: 1.0
+  kd_lambda: 1.0
+  kd_w_proj: 0.0
+  kd_w_joint: 1.0
+  kd_w_global: 1.0
+  kd_noise_weight: False
+  kd_nce_w: 0.0
+
+  # ---- Distill phan du (v1) ----
+  kd_res_w: 1.0
+
+  # ---- Nhieu 2D luc train: NHE HON ban res ----
+  s2d_noise_prob: 0.5
+  s2d_noise_jitter: 0.015    # ~2 px
+  s2d_noise_big_prob: 0.1    # 10% khop lech lon (cu 15%)
+  s2d_noise_big_std: 0.1     # ~13 px (cu ~25 px)
+  s2d_noise_swap_prob: 0.05  # doi trai/phai hiem hon (cu 20%) - loi nay day loi 3D rat lon
+  s2d_noise_drop_prob: 0.03
+
+TRAIN:
+  print_freq: 20
+  batch_size: 32
+  shuffle: True
+  begin_epoch: 1
+  end_epoch: 50
+  curriculum_epochs: 15
+  scheduler: 'step'
+  backbone_lr_scale: 0.1
+  lr: 0.0001
+  lr_step: [25, 35, 45]
+  lr_factor: 0.5
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 32
+  shuffle: False

@@ -303,7 +303,8 @@ class Human36M(torch.utils.data.Dataset):
 
             inputs = {'img': img, 'joints': input_img[:, :2].astype(np.float32), 'joints_mask': joint_trunc}
             targets = {'orig_joint_cam': (h36m_joint_cam / 1000).astype(np.float32)}  # milimeter to meter
-            meta_info = {'orig_joint_valid': h36m_joint_valid}
+            meta_info = {'orig_joint_valid': h36m_joint_valid,
+                         'img_path': img_path, 'img2bb_trans': img2bb_trans.astype(np.float32)}  # de ve hinh
             return inputs, targets, meta_info
 
         if self.data_split == 'train':
@@ -378,7 +379,8 @@ class Human36M(torch.utils.data.Dataset):
                 h36m_joint_cam = np.dot(rot_aug_mat, h36m_joint_cam.transpose(1,0)).transpose(1,0) / 1000 # milimeter to meter
                 inputs = {'img': img, 'joints': input_h36m_joint_img[:, :2].astype(np.float32), 'joints_mask': joint_mask.astype(np.float32)}
                 targets = {'orig_joint_img': h36m_joint_img.astype(np.float32), 'orig_joint_cam': h36m_joint_cam.astype(np.float32)}
-                meta_info = {'orig_joint_valid': h36m_joint_valid.astype(np.float32), 'orig_joint_trunc': h36m_joint_trunc.astype(np.float32), 'is_3D': float(True)}
+                meta_info = {'orig_joint_valid': h36m_joint_valid.astype(np.float32), 'orig_joint_trunc': h36m_joint_trunc.astype(np.float32), 'is_3D': float(True),
+                             'img_path': img_path, 'img2bb_trans': img2bb_trans.astype(np.float32)}  # de ve hinh
                 return inputs, targets, meta_info
 
             input_h36m_joint_img = transform_joint_to_other_db(input_h36m_joint_img, self.h36m_joints_name, self.joints_name)

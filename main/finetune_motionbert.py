@@ -39,6 +39,8 @@ def parse_args():
                         help='Khong train, chi danh gia checkpoint tren val_set + test_list cua yml')
     parser.add_argument('--ckpt', type=str, default='',
                         help='Checkpoint de danh gia khi --eval_only. Mac dinh: <save_dir>/best_epoch.bin')
+    parser.add_argument('--num_vis', type=int, default=10,
+                        help='So mau ve hinh cho MOI tap test (0 = tat). Luu o <cfg.vis_dir>/<ten tap>/')
     opts = parser.parse_args()
     return opts
 
@@ -276,7 +278,8 @@ def main():
         ckpt = torch.load(ckpt_path, map_location=lambda storage, loc: storage)
         model.load_state_dict(ckpt['model_pos'], strict=True)
         log(f"===== EVAL ONLY: {ckpt_path} (epoch {ckpt.get('epoch', '?')}) =====")
-        run_tests(model, [mb_cfg.val_set] + list(cfg.DATASET.test_list), mb_cfg, device, rootrel, drop_idx, log)
+        run_tests(model, [mb_cfg.val_set] + list(cfg.DATASET.test_list), mb_cfg, device, rootrel, drop_idx, log,
+                  num_vis=opts.num_vis)
         return
 
     # ---------------- Data ----------------
@@ -379,7 +382,8 @@ def main():
         best = torch.load(best_path, map_location=lambda storage, loc: storage)
         model.load_state_dict(best['model_pos'], strict=True)
         log(f"===== Test voi best checkpoint (epoch {best['epoch']}) =====")
-        run_tests(model, list(cfg.DATASET.test_list), mb_cfg, device, rootrel, drop_idx, log)
+        run_tests(model, list(cfg.DATASET.test_list), mb_cfg, device, rootrel, drop_idx, log,
+                  num_vis=opts.num_vis)
 
     print("Finetuning completed.")
 
@@ -406,8 +410,9 @@ def build_model(mb_cfg):
     return model
 
 
-def run_tests(model, names, mb_cfg, device, rootrel, drop_idx, log):
-    """Danh gia lan luot tung tap. Mot tap loi (vd thieu file annotation) thi ghi loi va chay tiep tap sau."""
+def run_tests(model, names, mb_cfg, device, rootrel, drop_idx, log, num_vis=0):
+    """Danh gia lan luot tung tap (+ ve num_vis mau moi tap).
+    Mot tap loi (vd thieu file annotation) thi ghi loi va chay tiep tap sau."""
     for name in names:
         try:
             test_dataset, test_loader = make_eval_loader(name, mb_cfg)
@@ -416,6 +421,116 @@ def run_tests(model, names, mb_cfg, device, rootrel, drop_idx, log):
             log(f"[Test {name}] MPJPE: {res['mpjpe']:.2f} mm | PA-MPJPE: {res['pa_mpjpe']:.2f} mm | n={res['n']}")
         except Exception as e:
             log(f"[Test {name}] LOI: {type(e).__name__}: {e}")
+            continue
+        if num_vis > 0:
+            try:
+                out_dir = os.path.join(cfg.vis_dir, name)
+                visualize_samples(model, test_dataset, name, num_vis, out_dir, device, rootrel, drop_idx)
+                log(f"[Vis {name}] {num_vis} anh -> {out_dir}")
+            except Exception as e:
+                log(f"[Vis {name}] LOI: {type(e).__name__}: {e}")
+
+
+# ============================================================
+# Ve hinh (gop tu main/debug_motionbert.py, dung DUNG dau vao nhu luc train/eval:
+# make_mb_input -> F=1, rootrel theo cfg, xoa khop theo cfg.MODEL.motionbert_drop_joints)
+# ============================================================
+H36M_SKELETON = [
+    (0, 1), (1, 2), (2, 3),           # chan phai
+    (0, 4), (4, 5), (5, 6),           # chan trai
+    (0, 7), (7, 8), (8, 9), (9, 10),  # cot song, dau
+    (8, 14), (14, 15), (15, 16),      # tay phai
+    (8, 11), (11, 12), (12, 13),      # tay trai
+]
+
+
+def _draw_2d(img_bgr, joints_px, used):
+    """Chi ve khop thuc su dua vao MotionBERT (used[j] = 1). Khop bi xoa co toa do 0 nen khong ve."""
+    import cv2
+    for p1, p2 in H36M_SKELETON:
+        if used[p1] and used[p2]:
+            cv2.line(img_bgr, tuple(int(v) for v in joints_px[p1]), tuple(int(v) for v in joints_px[p2]), (255, 255, 0), 2)
+    for j, (x, y) in enumerate(joints_px):
+        if used[j]:
+            cv2.circle(img_bgr, (int(x), int(y)), 4, (0, 255, 0), -1)
+            cv2.putText(img_bgr, str(j), (int(x) + 5, int(y) + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+    return img_bgr
+
+
+def _draw_3d(ax, joint_3d, color_joint, color_bone, title=None, set_limits=True):
+    x, y, z = joint_3d[:, 0], -joint_3d[:, 1], joint_3d[:, 2]   # lat Y (anh Y huong xuong -> 3D Y huong len)
+    ax.scatter(x, z, y, c=color_joint, marker='o', s=20)
+    for p1, p2 in H36M_SKELETON:
+        ax.plot([x[p1], x[p2]], [z[p1], z[p2]], [y[p1], y[p2]], c=color_bone)
+    if set_limits:
+        r = 1.0   # met, du cho nguoi dung (root-relative)
+        ax.set_xlim(-r, r); ax.set_ylim(-r, r); ax.set_zlim(-r, r)
+        ax.set_xlabel('X'); ax.set_ylabel('Z (sau)'); ax.set_zlabel('Y')
+    if title:
+        ax.set_title(title, fontsize=10)
+
+
+def visualize_samples(model, dataset, name, num, out_dir, device, rootrel, drop_idx):
+    """Ve `num` mau trai deu trong tap, moi mau 1 anh 4 o:
+    [Anh crop + 2D dau vao] | [GT 3D] | [Pred 3D] | [Chong GT (xanh) + Pred (do)]."""
+    import cv2
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    os.makedirs(out_dir, exist_ok=True)
+    model.eval()
+    reg = dataset.dataset.h36m_joint_regressor
+    W, H = cfg.input_img_shape[1], cfg.input_img_shape[0]
+    dataset.keep_vis_info = True
+    try:
+        idxs = np.linspace(0, len(dataset) - 1, num).astype(int)
+        for k, idx in enumerate(idxs):
+            inputs, targets, meta = dataset[int(idx)]
+            xy = torch.as_tensor(np.asarray(inputs['joints'])[:, :2], dtype=torch.float32)[None].to(device)
+            conf = torch.as_tensor(np.asarray(inputs['joints_mask']), dtype=torch.float32).reshape(1, -1, 1).to(device)
+            mb_input = make_mb_input(xy, conf, rootrel, drop_idx)
+            with torch.no_grad():
+                pred = model(mb_input)[0, 0].cpu().numpy()
+            used = (mb_input[0, 0, :, 2].cpu().numpy() > 0).astype(int)   # khop thuc su dua vao model
+
+            if 'orig_joint_cam' in targets:
+                gt = np.asarray(targets['orig_joint_cam'], dtype=np.float32)
+            else:
+                gt = np.dot(reg, np.asarray(targets['smpl_mesh_cam'], dtype=np.float32))
+            gt = gt - gt[0:1]
+            pred = pred - pred[0:1]
+            err = np.linalg.norm(pred - gt, axis=-1)
+            pa = batch_pa_errors(torch.as_tensor(pred)[None], torch.as_tensor(gt)[None])[0].item()
+
+            # Anh crop (giong luc train) + 2D dau vao. Khong co duong dan anh -> nen den.
+            img_bgr = np.zeros((H, W, 3), dtype=np.uint8)
+            img_path = meta.get('img_path', None)
+            if img_path is not None and os.path.isfile(img_path):
+                raw = cv2.imread(img_path)
+                if raw is not None:
+                    img_bgr = cv2.warpAffine(raw, np.asarray(meta['img2bb_trans'], dtype=np.float32), (W, H),
+                                             flags=cv2.INTER_LINEAR)
+            joints_px = (np.asarray(inputs['joints'])[:, :2] + 1) / 2.0 * np.array([W, H])
+            img_bgr = _draw_2d(img_bgr.copy(), joints_px, used)
+
+            fig = plt.figure(figsize=(24, 6))
+            ax1 = fig.add_subplot(141)
+            ax1.imshow(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)); ax1.axis('off')
+            ax1.set_title(f'Input 2D ({used.sum()}/17 khop dua vao model; khop bi xoa khong ve)', fontsize=10)
+            _draw_3d(fig.add_subplot(142, projection='3d'), gt, 'green', 'blue', 'GT 3D (root-rel)')
+            _draw_3d(fig.add_subplot(143, projection='3d'), pred, 'red', 'orange', 'Pred 3D (root-rel)')
+            ax4 = fig.add_subplot(144, projection='3d')
+            _draw_3d(ax4, gt, 'green', 'blue')
+            _draw_3d(ax4, pred, 'red', 'orange', 'Chong: GT xanh / Pred cam', set_limits=False)
+            worst = int(err.argmax())
+            plt.suptitle(f'{name} | idx {int(idx)} | MPJPE {err.mean()*1000:.1f} mm | PA {pa*1000:.1f} mm | '
+                         f'khop sai nhat: {worst} ({err[worst]*1000:.0f} mm)', fontsize=12, y=1.02)
+            plt.tight_layout()
+            plt.savefig(os.path.join(out_dir, f'{name}_{k:02d}_idx{int(idx)}.jpg'), dpi=100, bbox_inches='tight')
+            plt.close(fig)
+    finally:
+        dataset.keep_vis_info = False
 
 
 if __name__ == '__main__':
