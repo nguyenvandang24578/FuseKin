@@ -21,6 +21,8 @@ parser = argparse.ArgumentParser(description='Kiem tra nhanh Student v2')
 parser.add_argument('--cfg', type=str, required=True)
 parser.add_argument('--gpu', type=str, default='0')
 parser.add_argument('--batch_size', type=int, default=4)
+parser.add_argument('--skip_data', action='store_true',
+                    help='bo qua buoc nap du lieu that tu DATASET.test_list (vd 3dpw-val, 3dpw)')
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
