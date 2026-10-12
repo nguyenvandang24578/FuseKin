@@ -40,6 +40,21 @@ def h36m_joint_indices(names):
     return idx
 
 
+def halpe26_to_human36m(k):
+    """Halpe-26 (26, 3) [x, y, score] -> H36M-17 (17, 3), GIONG halpe2h36m cua MotionBERT
+    (MotionBERT/lib/data/dataset_wild.py). Halpe-26: 0 Nose .. 16 RAnkle (nhu COCO), 17 Head (dinh dau),
+    18 Neck, 19 Hip (giua hong). Torso = trung diem Neck-Hip, score = min cua 2 khop."""
+    k = np.asarray(k, dtype=np.float32)
+    y = np.zeros((len(HUMAN36M_JOINTS), 3), dtype=np.float32)
+    src = {0: 19, 1: 12, 2: 14, 3: 16, 4: 11, 5: 13, 6: 15, 8: 18, 9: 0, 10: 17,
+           11: 5, 12: 7, 13: 9, 14: 6, 15: 8, 16: 10}
+    for dst, s in src.items():
+        y[dst] = k[s]
+    y[7, :2] = (k[18, :2] + k[19, :2]) * 0.5
+    y[7, 2] = min(k[18, 2], k[19, 2])
+    return y
+
+
 def drop_joints_2d(xy, conf, drop_idx):
     """Xoa cac khop drop_idx khoi dau vao MotionBERT: toa do = 0, confidence = 0.
     xy: (..., 17, 2) tensor, conf: (..., 17, 1) tensor. Tra ve ban sao, khong sua tai cho."""

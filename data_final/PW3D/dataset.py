@@ -12,6 +12,7 @@ import lmdb
 from utils.smpl import SMPL
 from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch_image, augmentation, load_img_from_lmdb, augmentation_noimg
 from utils.transforms import cam2pixel, pixel2cam, rigid_align, transform_joint_to_other_db, denorm_joints, convert_crop_cam_to_orig_img
+from utils.h36m_adapter import halpe26_to_human36m
 # from utils.vis import save_obj, vis_keypoints_with_skeleton, vis_bbox, render_mesh
 
 
@@ -134,6 +135,19 @@ class PW3D(torch.utils.data.Dataset):
         else:
             print("Load OpenPose input")
 
+        # Nguon 2D Halpe-26 (cfg.DATASET.pw3d_2d_source = 'halpe26'), khong ap dung cho 3dpw-crowd (Higher-HRNet)
+        self.use_halpe26 = (cfg.DATASET.pw3d_2d_source == 'halpe26') and not cfg.crowd
+        halpe26 = None
+        if self.use_halpe26:
+            halpe_path = osp.join(self.data_path, f'3DPW_{self.data_split}_halpe26.json')
+            if not osp.isfile(halpe_path):
+                raise FileNotFoundError(f"{halpe_path} khong ton tai. Chay tools/extract_halpe26_3dpw.py --splits {self.data_split}")
+            with open(halpe_path) as f:
+                halpe26 = json.load(f)
+            print(f"Load Halpe-26 input: {halpe_path} ({len(halpe26)} nguoi)")
+        elif cfg.DATASET.pw3d_2d_source != 'openpose':
+            raise ValueError(f"cfg.DATASET.pw3d_2d_source khong hop le: {cfg.DATASET.pw3d_2d_source}")
+
         hhrnet_count = 0
         datalist = []
 
@@ -182,7 +196,14 @@ class PW3D(torch.utils.data.Dataset):
                     hhrnetpose = openpose
                     hhrnetpose = transform_joint_to_other_db(hhrnetpose, self.openpose_joints_name, self.coco_joints_name)
             
+            halpe_h36m = None
+            if halpe26 is not None:
+                if str(aid) not in halpe26:
+                    raise KeyError(f"ann_id {aid} khong co trong file Halpe-26 cua split {self.data_split}")
+                halpe_h36m = halpe26_to_human36m(halpe26[str(aid)])   # (17, 3) pixel anh goc + score
+
             datalist.append({
+                'halpe_h36m': halpe_h36m,
                 'ann_id': aid,
                 'img_path': img_path,
                 'img_shape': (img_height, img_width),
@@ -256,21 +277,30 @@ class PW3D(torch.utils.data.Dataset):
         joint_coord_img = smpl_coord_img
         joint_valid = np.ones_like(joint_coord_img[:, :1], dtype=np.float32)
 
-        if cfg.crowd and self.data_split == 'validation':
+        if data['halpe_h36m'] is not None:
+            # Halpe-26 da doi san sang H36M-17 (17, 3): wrapper Human36M17Dataset de nguyen 17 khop
+            joint_coord_img = data['halpe_h36m'].copy()
+            joint_valid = np.ones((len(joint_coord_img), 1), dtype=np.float32)
+            pose_thr = cfg.DATASET.halpe26_conf_thr
+        elif cfg.crowd and self.data_split == 'validation':
             # get input joint img from higher hrnet
             joint_coord_img = data['hhrnetpose']
             joint_coord_img = transform_joint_to_other_db(joint_coord_img, self.coco_joints_name, self.joints_name)
+            pose_thr = data['pose_score_thr']
         else:
             # get input joint img from openpose
             joint_coord_img = data['openpose']
             joint_coord_img = transform_joint_to_other_db(joint_coord_img, self.openpose_joints_name, self.joints_name)
-        pose_thr = data['pose_score_thr']
+            pose_thr = data['pose_score_thr']
         joint_valid[joint_coord_img[:, 2] <= pose_thr] = 0
 
-        # get bbox from joints
-        bbox = get_bbox(joint_coord_img, joint_valid[:, 0])
+        # get bbox from joints (it hon 2 khop hop le -> dung bbox annotation, tranh loi min() tren mang rong)
         img_height, img_width = data['img_shape']
-        bbox = process_bbox(bbox.copy(), img_width, img_height, is_3dpw_test=True)
+        if joint_valid[:, 0].sum() >= 2:
+            bbox = get_bbox(joint_coord_img, joint_valid[:, 0])
+            bbox = process_bbox(bbox.copy(), img_width, img_height, is_3dpw_test=True)
+        else:
+            bbox = None
         bbox = data['bbox'] if bbox is None else bbox
 
         # img
