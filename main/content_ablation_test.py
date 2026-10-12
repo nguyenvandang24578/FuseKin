@@ -27,6 +27,8 @@ sys.path.append('./')
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"  # cho Apple Accelerate/vecLib
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import argparse
 import warnings
@@ -103,10 +105,23 @@ def inspect_ckpt(mode, ckpt_path):
         kind = 'teacher'
     else:
         kind = 'khong ro'
+    # Kien truc v2 (PLAN_STUDENT_V2.md): nhan dien tu ten key -> dung lai dung kien truc, khong phu thuoc yml
+    pe2d_key = next((k for k in keys if k.endswith('fusion.pe2d.proj.weight')), None)
+    arch = {
+        'joint_pe2d': pe2d_key is not None,
+        'pe2d_num_freq': int(state[pe2d_key].shape[1]) // 4 if pe2d_key else 6,
+        'fusion_joint_self_attn': any('.joint_sa.' in k for k in keys),
+        'pose_head_mode': 'per_joint' if any('per_joint_head.' in k for k in keys) else 'vposer',
+        'pose_query_bone': any('bone_proj.' in k for k in keys),
+        'shape_attn_mode': 'tokens' if any('fuse_shape_tok.' in k for k in keys) else 'global',
+    }
     info = {'has_probe': any('probe_' in k for k in keys),
             'hint': 'teacher' if has_hint_enc else ('student' if has_hint_pred else None),
-            'hint_dim': hint_dim}
+            'hint_dim': hint_dim, 'arch': arch}
     tag = f" (T-hint k={hint_dim})" if has_hint_enc else (f" (S-hint k={hint_dim})" if has_hint_pred else "")
+    v2 = {k: v for k, v in arch.items() if v not in (False, 'vposer', 'global') and k != 'pe2d_num_freq'}
+    if v2:
+        tag += f" (v2: {v2})"
     print(f"  [{mode}] {ckpt_path} -> loai: {kind}{tag}" + (" (co head tham do anh)" if info['has_probe'] else ""))
     if kind != 'khong ro' and kind != mode:
         print(f"\n[LOI] Checkpoint {kind.upper()} dat vao vi tri {mode.upper()}: {ckpt_path}")
@@ -116,9 +131,12 @@ def inspect_ckpt(mode, ckpt_path):
 
 def build_and_load(mode, ckpt_path, need_lift=False):
     info = inspect_ckpt(mode, ckpt_path)
-    keys = ('name', 'teacher_lift_alpha_max', 'img_probe', 'teacher_hint', 'student_hint', 'hint_dim')
+    keys = ('name', 'teacher_lift_alpha_max', 'img_probe', 'teacher_hint', 'student_hint', 'hint_dim') \
+        + tuple(info['arch'].keys())
     saved = {k: cfg.MODEL[k] for k in keys if k in cfg.MODEL}
     cfg.MODEL.name = mode
+    for k, v in info['arch'].items():   # kien truc v2 lay tu checkpoint (Teacher cu va Student v2 khac nhau)
+        cfg.MODEL[k] = v
     if mode == 'teacher':
         cfg.MODEL.teacher_hint = info['hint'] == 'teacher'
         cfg.MODEL.teacher_lift_alpha_max = 1.0 if (need_lift and not cfg.MODEL.teacher_hint) else 0.0
@@ -180,19 +198,23 @@ def run_three(net, joints_in, feats, store, reg, gt_mesh, **kw):
 
 
 def main():
+    # Student scratch (vd Student v2) khong co Teacher: cho phep chi test Student khi co --student_ckpt
+    # va khong dat --teacher_ckpt (yml scratch khong co MODEL.TEACHER).
     teacher_ckpt = args.teacher_ckpt or cfg.MODEL.get('TEACHER', '')
-    if not teacher_ckpt:
-        print("[LOI] Thieu teacher checkpoint: dung --teacher_ckpt hoac dat cfg.MODEL.TEACHER")
+    if not teacher_ckpt and not args.student_ckpt:
+        print("[LOI] Can it nhat --teacher_ckpt (hoac cfg.MODEL.TEACHER) hoac --student_ckpt")
         sys.exit(1)
 
     print(f"Student ckpt : {args.student_ckpt or '(khong dung - chi test Teacher)'}")
-    print(f"Teacher ckpt : {teacher_ckpt}")
+    print(f"Teacher ckpt : {teacher_ckpt or '(khong dung - chi test Student)'}")
     alphas = sorted(set(float(a) for a in args.teacher_alpha))
 
     hr("Dang build va nap checkpoint...")
     student = build_and_load('student', args.student_ckpt)[0] if args.student_ckpt else None
-    teacher, t_info = build_and_load('teacher', teacher_ckpt, need_lift=any(a > 0 for a in alphas))
-    t_hint = t_info['hint'] == 'teacher'
+    teacher, t_hint = None, False
+    if teacher_ckpt:
+        teacher, t_info = build_and_load('teacher', teacher_ckpt, need_lift=any(a > 0 for a in alphas))
+        t_hint = t_info['hint'] == 'teacher'
 
     hr("Dang chuan bi tap test...")
     test_name = cfg.DATASET.test_list[0]
@@ -219,8 +241,10 @@ def main():
             gt_h36m = gt_h36m - gt_h36m[:, 0:1]
 
             # ---------------- Teacher ----------------
-            feat_t, _ = teacher.get_image_features(img)
-            if t_hint:
+            if teacher is None:
+                pass
+            elif t_hint:
+                feat_t, _ = teacher.get_image_features(img)
                 lifted = teacher.lift_2d_to_3d(joints2d, joints_mask=joints_mask)
                 lifted = (lifted - lifted[:, 0:1]).float()
                 z = teacher.smpl_model.hint_encoder(gt_h36m, lifted)
@@ -228,8 +252,10 @@ def main():
                     results.setdefault(name, new_cond())
                     inp_err.setdefault(name, []).append(
                         (torch.norm(lifted - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu())
-                    run_three(teacher, lifted, feat_t, results[name], reg, gt_mesh, hint_z=zz)
+                    run_three(teacher, lifted, feat_t, results[name], reg, gt_mesh, hint_z=zz,
+                              **teacher._pe2d_kwargs(joints2d, joints_mask))
             else:
+                feat_t, _ = teacher.get_image_features(img)
                 lifted = None
                 if any(a > 0 for a in alphas):
                     lifted = teacher.lift_2d_to_3d(joints2d, joints_mask=joints_mask)
@@ -249,7 +275,9 @@ def main():
                 name = 'Student' + (' S-hint' if getattr(student, 'student_hint', False) else '') + ' (joint MotionBERT)'
                 results.setdefault(name, new_cond())
                 inp_err.setdefault(name, []).append((torch.norm(pose_3d - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu())
-                run_three(student, pose_3d, feat_s, results[name], reg, gt_mesh)
+                # Student v2 (joint_pe2d): truyen CUNG 2D dua vao MotionBERT cho PE vi tri trong fusion
+                run_three(student, pose_3d, feat_s, results[name], reg, gt_mesh,
+                          **student._pe2d_kwargs(joints2d, joints_mask))
 
             if n_batches % 5 == 0:
                 print(f"  ... da xu ly {n_batches}/{args.max_batches} batch")

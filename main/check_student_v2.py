@@ -8,13 +8,21 @@ Kiem tra:
   4. Noi day PE2D: dat trong so PE ngau nhien -> doi toa do 2D cua 1 khop thi dau ra phai doi;
      khop co mask = 0 thi doi toa do KHONG lam doi dau ra.
   5. So tham so: tong / trong so moi.
+  6. Du lieu that: nap tung dataset trong DATASET.test_list (vd 3dpw-val, 3dpw), forward 1 batch (--skip_data de bo qua).
 
 Chay:
     python main/check_student_v2.py --cfg ./config/train_student_v2.yml [--gpu 0]
+    python main/check_student_v2.py --cfg ./config/train_student_scratch_val.yml   # baseline: chi kiem tra 1, 5, 6
 """
 import os, sys
 sys.path.append('./lib')
 sys.path.append('./')
+# Gioi han luong BLAS / OpenMP: dat TRUOC khi import numpy / torch de server chay duoc nhieu worker
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"  # cho Apple Accelerate/vecLib
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import argparse
 
 parser = argparse.ArgumentParser(description='Kiem tra nhanh Student v2')
@@ -139,6 +147,32 @@ def main():
             o_d = sm(joints=p3, img_feats=feat, is_train=False, joints_2d=j2[..., :2], joints_2d_mask=m0)
             all_ok &= ok((o_d['smpl_mesh_cam'] - o_c['smpl_mesh_cam']).abs().max().item() < 1e-6,
                          'khop mask = 0: doi toa do 2D KHONG lam doi dau ra')
+
+    # ---- 6. Du lieu that: nap tung dataset trong test_list (3dpw-val lan dau dung cho Student) + forward 1 batch ----
+    if not args.skip_data:
+        from torch.utils.data import DataLoader
+        from utils.jotr_dataset import get_test_dataset
+        sel = cfg.TEST.get('select_dataset', '')
+        all_ok &= ok(not sel or sel in cfg.DATASET.test_list,
+                     f"TEST.select_dataset='{sel}' nam trong test_list {list(cfg.DATASET.test_list)}")
+        # Model sach (trong so khoi tao lai) de forward du lieu that
+        model = ARTS(num_joint=17, embed_dim=cfg.MODEL.hpe_dim).to(DEVICE).eval()
+        for name in cfg.DATASET.test_list:
+            try:
+                ds = get_test_dataset(name, None)
+                loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
+                inputs, targets, meta = next(iter(loader))
+                img = inputs['img'].to(DEVICE).float()
+                j2 = inputs['joints'].to(DEVICE).float()
+                jm = inputs['joints_mask'].to(DEVICE).float()
+                with torch.no_grad():
+                    o = model(img, j2, is_train=False, joints_mask=jm)
+                fin = torch.isfinite(o['smpl_mesh_cam']).all().item()
+                rng = (j2[..., :2].min().item(), j2[..., :2].max().item())
+                all_ok &= ok(fin, f"{name}: {len(ds)} mau | joints {tuple(j2.shape)}, mask {tuple(jm.shape)} "
+                                  f"(ti le hop le {jm.mean().item():.2f}) | 2D trong [{rng[0]:.2f}, {rng[1]:.2f}] | forward OK")
+            except Exception as e:   # bao loi ro rang thay vi dung ca script
+                all_ok &= ok(False, f'{name}: nap / forward loi -> {type(e).__name__}: {e}')
 
     print('\n' + ('TAT CA DEU OK' if all_ok else 'CO LOI - xem cac dong [LOI] o tren'))
 
