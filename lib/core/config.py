@@ -105,6 +105,13 @@ cfg.DATASET.noise = 0
 #   KHONG tinh SMPL (H36M, MuCo), tra thang H36M-17 (khong di vong qua SMPL 29 nen khong mat khop).
 #   False (mac dinh): hanh vi cu.
 cfg.DATASET.lift_only = False
+# Nguon 2D dau vao cua 3DPW:
+#   'openpose' (mac dinh, hanh vi cu): truong openpose_result trong annotation, thieu Torso/Head_top.
+#   'halpe26': file <PW3D>/3DPW_{split}_halpe26.json do tools/extract_halpe26_3dpw.py sinh ra (RTMPose Halpe-26),
+#              doi sang H36M-17 du 17 khop (Head_top = dinh dau detector, Torso = trung diem Neck-Hip).
+cfg.DATASET.pw3d_2d_source = 'openpose'
+# Nguong score de coi 1 khop Halpe-26 la hop le (mask = 1)
+cfg.DATASET.halpe26_conf_thr = 0.3
 cfg.DATASET.jotr_data_root = os.environ.get(
     'JOTR_DATA_ROOT',
     osp.abspath(osp.join(cfg.root_dir, 'data_final')),
@@ -215,6 +222,10 @@ cfg.MODEL.kd_nce_w = 0.0
 cfg.MODEL.kd_nce_temp = 0.1
 # Distill phan du (v1): feat_joint_in (bo ma hoa joint, TRUOC fusion) -> feat_joint SAU fusion cua Teacher. 0 = tat.
 cfg.MODEL.kd_res_w = 0.0
+# Che do distill phan du: 'v1' = nhu tren (dung kd_res_w);
+#   'v2' = KD feature (joint/global/InfoNCE) tinh tren 1 luot fusion phu voi token joint DA DETACH
+#          -> gradient KD khong vao bo ma hoa joint, chi vao fusion (duong anh). Hard loss van train tat ca.
+cfg.MODEL.kd_res_mode = 'v1'
 # Nhieu 2D luc train cho Student (truoc MotionBERT). Toa do [-1,1] (1.0 ~ 128 px trong crop 256). 0 = tat.
 cfg.MODEL.s2d_noise_prob = 0.0        # ti le mau bi lam nhieu
 cfg.MODEL.s2d_noise_jitter = 0.02     # std lech nho moi khop (~2.5 px)

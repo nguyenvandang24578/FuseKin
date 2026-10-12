@@ -1,0 +1,66 @@
+# ======================================================
+# FuseKin — Finetune MotionBERT tren H36M + MuCo + 3DPW-train, 2D cua 3DPW = Halpe-26 (RTMPose)
+# Truoc khi chay: tools/extract_halpe26_3dpw.py --splits train validation test (moi truong pose2d)
+# Khac ban OpenPose (finetune_motionbert_full.yaml) DUNG 3 cho: pw3d_2d_source, motionbert_drop_joints, save_dir
+# Chon ckpt tren 3DPW-val. Test 1 lan cuoi tren 3DPW-test va H36M-test (S9, S11).
+# MuCo khong co split test.
+# Chay: python main/finetune_motionbert.py --cfg config/finetune_motionbert_halpe26.yaml --gpu 0,1
+# ======================================================
+
+DATASET:
+    train_list: ['Human36M', 'MuCo', '3dpw-train']
+    # chi test 1 lan cuoi voi best ckpt. '3dpw-train-noaug' = do loi tren chinh 3DPW-train (kiem tra hoc thuoc)
+    test_list: ['3dpw', 'Human36M', '3dpw-train-noaug']
+    input_joint_set: 'human36'
+    target_joint_set: 'human36'
+    workers: 8
+    use_gt_input: False
+    seqlen: 1
+    stride: 1
+    noise: 0
+    lift_only: True              # khong doc anh, khong tinh SMPL, tra thang H36M-17
+    pw3d_2d_source: 'halpe26'    # 2D cua 3DPW lay tu 3DPW_{split}_halpe26.json (du 17 khop)
+    halpe26_conf_thr: 0.3        # score <= nguong -> khop khong hop le (mask 0)
+
+MODEL:
+    motionbert_2d_rootrel: False
+    # Halpe-26 co du 17 khop (Head_top that, Torso = trung diem Neck-Hip) -> KHONG xoa khop nao.
+    # NHO: yml Teacher/Student dung ckpt nay cung phai dat motionbert_drop_joints: [] va pw3d_2d_source: 'halpe26'.
+    motionbert_drop_joints: []
+
+MOTIONBERT:
+    pretrained: './experiment/pretrained/full/best_epoch.bin'   # --pretrained tren dong lenh se ghi de
+    save_dir: 'experiment/finetune_motionbert_halpe26'
+    val_set: '3dpw-val'
+    iters_per_epoch: 0           # 0 = moi epoch duyet het du lieu
+    balance_datasets: False      # khong lap lai bo nho, moi mau dung 1 lan / epoch
+    gt2d_prob: 0.5               # 50% mau dung GT 2D sach (cho Teacher GT 2D), 50% 2D + nhieu PoseFix
+    joint_drop_prob: 0.1         # gia lap detector bo sot khop
+
+    # Training
+    finetune: True
+    epochs: 60
+    checkpoint_frequency: 10
+    batch_size: 64
+    dropout: 0.0
+    learning_rate: 0.0002
+    weight_decay: 0.01
+    lr_decay: 0.97               # sau 60 epoch lr con ~16% ban dau (0.9 thi con ~0.2%, qua nho)
+
+    # Model (DSTformer) - phai khop ARTS (hpe_dim 512, mlp_ratio 2, depth 5)
+    maxlen: 243
+    dim_feat: 512
+    mlp_ratio: 2
+    depth: 5
+    dim_rep: 512
+    num_heads: 8
+    att_fuse: True
+    num_joints: 17
+
+    # Loss weights (velocity = 0 khi F=1)
+    lambda_3d_velocity: 20.0
+    lambda_scale: 0.5
+    lambda_lv: 0.0
+    lambda_lg: 0.0
+    lambda_a: 0.0
+    lambda_av: 0.0

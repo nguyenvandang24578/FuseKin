@@ -460,6 +460,7 @@ class FusionPose2Mesh(nn.Module):
                 'feat_joint': joint_out,               # (B, J, dim)
                 'feat_img': fus['img_out'],            # (B, H*W, dim)
                 'feat_joint_in': fus['joint_tok'],     # (B, J, dim)
+                'feat_img_in': fus['img_tok'],         # (B, H*W, dim) token anh DAU VAO fusion (cho KD v2: chay lai fusion voi joint detach)
                 'feat_global': global_ft,              # (B, 2*dim)
                 'feat_layers': fus['layers'],          # list dict: img, joint, attn_joint_to_img, attn_img_to_joint
                 'feat_hyper': hyper_ctx,               # (B, J, dim) hoac None

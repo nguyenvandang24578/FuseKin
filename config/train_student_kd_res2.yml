@@ -1,0 +1,67 @@
+# Distill phan du v2 = E3 + kd_res_mode 'v2', 30 epoch.
+# v2: KD (joint/global/InfoNCE) tinh tren 1 luot fusion PHU voi token joint DA DETACH
+#     -> gradient KD KHONG vao bo ma hoa joint, chi vao fusion (cross-attn toi anh, img_proj, FFN).
+#     Muc tieu Teacher phai dat qua DUONG ANH. Hard loss van train toan bo nhu cu.
+# Ly do: v1 (kd_res_w) lam Student BOT dung anh (content_ablation mean-that: 8.6 mm so voi E3 12.8 mm).
+# So sanh CONG BANG voi train_student_kd_e3_30ep.yml (cung lich 30 epoch), khong so voi E3 50 epoch.
+# Ky vong: MPJPE < E3_30ep va content_ablation mean-that > E3 (12.8 mm).
+DATASET:
+  train_list: ['3dpw-train']
+  test_list: ['3dpw']
+  input_joint_set: 'human36'
+  target_joint_set: 'human36'
+  workers: 8
+  use_gt_input: False
+  seqlen: 1
+  stride: 1
+
+MODEL:
+  name: 'student'
+  resnet_type: 50
+  freeze_backbone: True
+  hpe_dim: 512
+  hpe_dep: 5
+  motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
+  motionbert_2d_rootrel: False
+  backbone_pretrained: 'spin'
+  TEACHER: './experiment/teacher/checkpoint/best.pth.tar'
+  student_use_kd: True
+  init_student_from_teacher: True
+
+  # ---- KD feature (giong E3) ----
+  kd_mode: 'feat'
+  kd_feat_dist: 'mse'
+  kd_hard_w: 1.0
+  kd_lambda: 1.0
+  kd_w_proj: 0.0          # PHAI = 0 voi v2 (diem noi nay dua gradient KD vao bo ma hoa joint)
+  kd_w_joint: 1.0
+  kd_w_global: 1.0
+  kd_noise_weight: False
+  kd_nce_w: 0.1
+  kd_nce_temp: 0.1
+
+  # ---- Distill phan du v2 ----
+  kd_res_mode: 'v2'
+  kd_res_w: 0.0           # tat v1
+  s2d_noise_prob: 0.0     # khong nhieu 2D
+
+TRAIN:
+  print_freq: 20
+  batch_size: 32
+  shuffle: True
+  begin_epoch: 1
+  end_epoch: 30
+  curriculum_epochs: 9
+  scheduler: 'step'
+  backbone_lr_scale: 0.1
+  lr: 0.0001
+  lr_step: [15, 22, 27]   # 50 ep cu: [25, 35, 45] -> thu nho theo ti le 30/50
+  lr_factor: 0.5
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 32
+  shuffle: False

@@ -1,0 +1,61 @@
+# Moc so sanh cho train_student_kd_res2.yml: E3 y het, chi rut con 30 epoch (cung lich lr voi res2).
+# Chi khac res2 o kd_res_mode ('v1' mac dinh, kd_res_w = 0 -> khong co distill phan du).
+DATASET:
+  train_list: ['3dpw-train']
+  test_list: ['3dpw']
+  input_joint_set: 'human36'
+  target_joint_set: 'human36'
+  workers: 8
+  use_gt_input: False
+  seqlen: 1
+  stride: 1
+
+MODEL:
+  name: 'student'
+  resnet_type: 50
+  freeze_backbone: True
+  hpe_dim: 512
+  hpe_dep: 5
+  motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
+  motionbert_2d_rootrel: False
+  backbone_pretrained: 'spin'
+  TEACHER: './experiment/teacher/checkpoint/best.pth.tar'
+  student_use_kd: True
+  init_student_from_teacher: True
+
+  # ---- KD feature (giong E3) ----
+  kd_mode: 'feat'
+  kd_feat_dist: 'mse'
+  kd_hard_w: 1.0
+  kd_lambda: 1.0
+  kd_w_proj: 0.0
+  kd_w_joint: 1.0
+  kd_w_global: 1.0
+  kd_noise_weight: False
+  kd_nce_w: 0.1
+  kd_nce_temp: 0.1
+
+  kd_res_mode: 'v1'
+  kd_res_w: 0.0
+  s2d_noise_prob: 0.0
+
+TRAIN:
+  print_freq: 20
+  batch_size: 32
+  shuffle: True
+  begin_epoch: 1
+  end_epoch: 30
+  curriculum_epochs: 9
+  scheduler: 'step'
+  backbone_lr_scale: 0.1
+  lr: 0.0001
+  lr_step: [15, 22, 27]
+  lr_factor: 0.5
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 32
+  shuffle: False

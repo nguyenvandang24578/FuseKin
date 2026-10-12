@@ -835,6 +835,11 @@ class Student_Trainer:
         # Distill phan du (v1): bo ma hoa joint (TRUOC fusion) phai tu xap xi feat_joint SAU fusion cua Teacher;
         # phan con thieu do fusion (anh) bu -> anh bi ep sua loi do joint nhieu. 0 = tat.
         self.kd_res_w = float(cfg.MODEL.get('kd_res_w', 0.0))
+        # Distill phan du (v2): KD feature tinh tren 1 luot fusion PHU voi token joint DA DETACH ->
+        # gradient KD chi vao fusion (cross-attn toi anh, img_proj, FFN), KHONG vao bo ma hoa joint.
+        # Muc tieu Teacher phai dat duoc qua DUONG ANH (v1 lam nguoc lai: joint encoder tu 'lam sach', fusion bot dung anh).
+        self.kd_res_mode = str(cfg.MODEL.get('kd_res_mode', 'v1'))
+        assert self.kd_res_mode in ('v1', 'v2'), f'kd_res_mode khong hop le: {self.kd_res_mode}'
         # Nhieu 2D luc train (truoc MotionBERT) - chi Student, chi luc train. 0 = tat.
         self.s2d_prob = float(cfg.MODEL.get('s2d_noise_prob', 0.0))
         self.s2d_jitter = float(cfg.MODEL.get('s2d_noise_jitter', 0.02))
@@ -845,6 +850,9 @@ class Student_Trainer:
         if self.s2d_prob > 0:
             print(f'===> Nhieu 2D luc train: prob={self.s2d_prob} jitter={self.s2d_jitter} '
                   f'big(p={self.s2d_big_prob}, std={self.s2d_big_std}) swap={self.s2d_swap_prob} drop={self.s2d_drop_prob}')
+        if self.use_kd and self.kd_mode == 'feat' and self.kd_res_mode == 'v2':
+            print('===> Distill phan du (v2): KD joint/global/InfoNCE tinh voi token joint DETACH '
+                  '(gradient KD chi vao fusion / duong anh)')
         if self.use_kd and self.kd_mode == 'feat' and self.kd_res_w > 0:
             print(f'===> Distill phan du (v1): kd_res_w={self.kd_res_w} '
                   f'(feat_joint_in -> feat_joint SAU fusion cua Teacher)')
@@ -1069,17 +1077,25 @@ class Student_Trainer:
 
                 kd_proj_ps = (self._kd_dist('proj', model_output['feat_joint_in'], t_out['feat_joint_in'])
                               * jw_valid).sum(-1) / n_valid
-                kd_joint_ps = (self._kd_dist('joint', model_output['feat_joint'], t_out['feat_joint'])
+                # Nguon feature cho KD: v1 = output fusion binh thuong; v2 = luot fusion phu voi joint DETACH
+                kd_src = model_output
+                if self.kd_res_mode == 'v2':
+                    _net = self.model.module if hasattr(self.model, 'module') else self.model
+                    img_o, jnt_o = _net.smpl_model.fusion.cfcer(model_output['feat_img_in'],
+                                                               model_output['feat_joint_in'].detach())
+                    kd_src = {'feat_joint': jnt_o,
+                              'feat_global': torch.cat([img_o.mean(dim=1), jnt_o.mean(dim=1)], dim=1)}
+                kd_joint_ps = (self._kd_dist('joint', kd_src['feat_joint'], t_out['feat_joint'])
                                * jw_valid).sum(-1) / n_valid
-                kd_global_ps = self._kd_dist('global', model_output['feat_global'], t_out['feat_global']) * sw
+                kd_global_ps = self._kd_dist('global', kd_src['feat_global'], t_out['feat_global']) * sw
                 # Distill phan du (v1): joint-only (truoc fusion) -> feat_joint SAU fusion cua Teacher
                 if self.kd_res_w > 0:
                     kd_res_ps = (self._kd_dist('res', model_output['feat_joint_in'], t_out['feat_joint'])
                                  * jw_valid).sum(-1) / n_valid
                 # E3: InfoNCE tren token khop sau fusion va feature toan cuc
                 if self.kd_nce_w > 0:
-                    kd_nce = (self._info_nce('joint', model_output['feat_joint'], t_out['feat_joint'], mask=valid_joint)
-                              + self._info_nce('global', model_output['feat_global'], t_out['feat_global']))
+                    kd_nce = (self._info_nce('joint', kd_src['feat_joint'], t_out['feat_joint'], mask=valid_joint)
+                              + self._info_nce('global', kd_src['feat_global'], t_out['feat_global']))
             elif self.use_kd:
                 kd_proj_ps = (_cos_dist(model_output['feat_joint_in'], t_out['feat_joint_in'])
                               * valid_joint).sum(-1) / n_valid                              # (B,)
