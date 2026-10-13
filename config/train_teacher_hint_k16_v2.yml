@@ -9,7 +9,7 @@
 # Chay:          python main/train.py --cfg ./config/train_teacher_hint_k16_v2.yml --exp_name teacher_hint_k16_v2_halpe --gpu 0
 DATASET:
   train_list: ['3dpw-train']
-  test_list: ['3dpw-val']        # moi epoch CHI danh gia val; test 1 lan cuoi tu dong (TEST.final_test_list)
+  test_list: ['3dpw']        # moi epoch CHI danh gia val; test 1 lan cuoi tu dong (TEST.final_test_list)
   input_joint_set: 'human36'
   target_joint_set: 'human36'
   workers: 16
