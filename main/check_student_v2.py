@@ -14,7 +14,6 @@ Kiem tra:
 
 Chay:
     python main/check_student_v2.py --cfg ./config/train_student_v2.yml [--gpu 0]
-    python main/check_student_v2.py --cfg ./config/train_student_scratch_val.yml   # baseline: chi kiem tra 1, 5, 6
     python main/check_student_v2.py --cfg ./config/train_teacher_hint_k16_v2.yml   # Teacher T-hint v2
 """
 import os, sys
