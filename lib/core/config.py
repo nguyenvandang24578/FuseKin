@@ -247,18 +247,21 @@ cfg.MODEL.s2d_noise_big_prob = 0.15   # xac suat 1 khop bi lech lon
 cfg.MODEL.s2d_noise_big_std = 0.2     # std lech lon (~25 px)
 cfg.MODEL.s2d_noise_swap_prob = 0.2   # xac suat doi trai/phai 1 cap khop
 cfg.MODEL.s2d_noise_drop_prob = 0.05  # xac suat mat 1 khop (mask = 0)
-# ---- Kien truc v2 (PLAN_STUDENT_V2.md). Mac dinh TAT -> checkpoint / yml cu chay y nhu truoc ----
+# ---- Kien truc v2 (PLAN_STUDENT_V2.md) - DA CHOT 2026-10-13, MAC DINH BAT ----
+# Kien truc cu (config/archive/*.yml) can dat lai: joint_pe2d False, fusion_joint_self_attn False,
+# pose_head_mode 'vposer', pose_query_bone False, shape_attn_mode 'global' (checkpoint cu cung vay).
+# Luu y: Teacher GT (teacher_hint False) KHONG ho tro joint_pe2d -> phai tat khi chay lai Teacher GT cu.
 # PE vi tri 2D Fourier DUNG CHUNG cho token khop (theo 2D detect, nhan joints_mask) va o anh (theo tam o).
-cfg.MODEL.joint_pe2d = False
+cfg.MODEL.joint_pe2d = True
 cfg.MODEL.pe2d_num_freq = 6
 # Self-attn giua 17 token khop trong moi block fusion (truoc cross-attn).
-cfg.MODEL.fusion_joint_self_attn = False
-# 'vposer': trung binh 24 token -> z (32) -> VPoser (nhu cu) | 'per_joint': moi token -> delta 6D cua khop do + mean pose.
-cfg.MODEL.pose_head_mode = 'vposer'
+cfg.MODEL.fusion_joint_self_attn = True
+# 'per_joint': moi token -> delta 6D cua khop do + mean pose (v2) | 'vposer': trung binh 24 token -> z (32) -> VPoser (cu).
+cfg.MODEL.pose_head_mode = 'per_joint'
 # Neo query pose vao xuong: query_j += Linear(concat(ctx[cha_j], ctx[con_j])). Chi dung voi 'per_joint'.
-cfg.MODEL.pose_query_bone = False
-# 'global': shape token cross-attn 1 key global_ft (nhu cu) | 'tokens': cross-attn [ctx 17 khop, token anh].
-cfg.MODEL.shape_attn_mode = 'global'
+cfg.MODEL.pose_query_bone = True
+# 'tokens': shape token cross-attn [ctx 17 khop, token anh] (v2) | 'global': cross-attn 1 key global_ft (cu).
+cfg.MODEL.shape_attn_mode = 'tokens'
 """ Train Detail """
 cfg.TRAIN = edict()
 cfg.TRAIN.print_freq = 20

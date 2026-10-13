@@ -73,9 +73,9 @@ class ARTS(nn.Module):
         else:
             self.pose_lifter = None
 
-        # ---- Co kien truc v2 (PLAN_STUDENT_V2.md), mac dinh TAT -> giong het ban cu ----
-        # CHU Y KD: Teacher dung cho KD duoc dung tu CUNG cfg -> se nhan cung cac co nay. Khi ap KD voi Teacher cu
-        # can tach co rieng cho Teacher (chua lam, hien chi ap cho Student scratch).
+        # ---- Co kien truc v2 (PLAN_STUDENT_V2.md), DA CHOT 2026-10-13: mac dinh BAT trong config.py ----
+        # CHU Y KD: Teacher dung cho KD duoc dung tu CUNG cfg -> nhan cung cac co nay. T-hint v2 + S-hint v2 -> khop.
+        # Neu dung lai Teacher kien truc cu thi phai tat cac co v2 (checkpoint cu khong co cac module moi).
         self.joint_pe2d = bool(cfg.MODEL.get('joint_pe2d', False))
         arch_kw = dict(
             joint_pe2d=self.joint_pe2d,

@@ -2,7 +2,7 @@
 #   (1) PE vi tri 2D dung chung cho token khop + o anh   (2) self-attn giua 17 khop trong fusion
 #   (3) head goc xoay theo tung khop (local, bo trung binh + VPoser)   (4) neo query pose vao xuong
 #   (5) shape token doc ctx + token anh
-# Chon checkpoint tren 3dpw-val, test van chay va in moi epoch. So sanh voi train_student_scratch_val.yml (cung lich).
+# Chon checkpoint tren 3dpw-val, test van chay va in moi epoch. Kien truc v2 DA CHOT (2026-10-13), yml cu o config/archive/.
 # Chay: python main/train.py --cfg ./config/train_student_v2.yml --exp_name student_v2 --gpu 0
 DATASET:
   train_list: ['3dpw-train']

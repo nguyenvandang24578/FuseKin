@@ -1,0 +1,29 @@
+# Cau hinh cho cac script DANH GIA tren 3DPW test (vd main/content_ablation_test.py). KHONG dung de train.
+# content_ablation_test.py tu doc kien truc (v2 / cu, T-hint / Student) tu checkpoint -> yml nay chi can dataset + MotionBERT.
+# Vd:
+#   python main/content_ablation_test.py --cfg ./config/eval_3dpw_test.yml \
+#       --teacher_ckpt ./experiment/teacher_hint_k16_v2/checkpoint/best.pth.tar --max_batches 200
+#   python main/content_ablation_test.py --cfg ./config/eval_3dpw_test.yml \
+#       --student_ckpt ./experiment/student_v2/checkpoint/best.pth.tar --max_batches 200
+DATASET:
+  train_list: ['3dpw-train']
+  test_list: ['3dpw']
+  input_joint_set: 'human36'
+  target_joint_set: 'human36'
+  workers: 8
+  use_gt_input: False
+  seqlen: 1
+  stride: 1
+
+MODEL:
+  name: 'student'             # script tu dat lai theo checkpoint
+  resnet_type: 50
+  hpe_dim: 512
+  hpe_dep: 5
+  motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
+  motionbert_2d_rootrel: False
+  backbone_pretrained: 'spin'
+
+TEST:
+  batch_size: 32
+  shuffle: False
