@@ -714,6 +714,9 @@ class Teacher_Tester:
         self.surface_error = 9999.9
         self.joint_error = 9999.9
         self.teacher_hint = bool(cfg.MODEL.get('teacher_hint', False))
+        # T-hint: moi epoch chi danh gia dong CO goi y (dong chon best) tru khi TEST.hint_eval_nohint = True.
+        # Test cuoi trong main/train.py dat eval_nohint = True de in ca 2 dong.
+        self.eval_nohint = bool(cfg.TEST.get('hint_eval_nohint', False))
 
     def test(self, epoch, current_model=None):
         if current_model:
@@ -729,7 +732,7 @@ class Teacher_Tester:
                 f'PA-MPJPE={metrics["pa_mpjpe"]:.2f}, '
                 f'MPVPE={metrics["mpvpe"]:.2f}' + (' [co goi y]' if self.teacher_hint else '')
             )
-            if self.teacher_hint:
+            if self.teacher_hint and self.eval_nohint:
                 # T-hint: do them KHONG goi y (z = 0) = hoan canh Student. Chon best van theo ban CO goi y.
                 m0 = evaluate_3dpw_subset(self.model, dataset, loader, teacher_hint_on=False)
                 print(

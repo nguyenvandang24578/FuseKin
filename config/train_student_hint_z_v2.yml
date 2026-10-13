@@ -1,0 +1,73 @@
+# Student S-hint V2 (PLAN_TEACHER_HINT.md + kien truc v2) - S-hint-z
+# KD bang goi y: chi MSE(z_hat, z_T).
+# Teacher = T-hint v2 (train_teacher_hint_k16_v2.yml, best: co goi y ~53.9 / khong goi y ~83.0 mm tren 3DPW test;
+#   content ablation co goi y +9.4 mm). Student cung kien truc v2, khoi tao TOAN BO tu T-hint (tru bo nen goi y,
+#   hint_pred khoi tao 0 -> luc dau Student = Teacher o che do KHONG goi y), tu doan goi y z_hat (fusion 2 luot).
+# Bo 3 run: hint_z_v2 (KD z) | hint_zf_v2 (KD z + feature) | hint_init_v2 (DOI CHUNG: chi khoi tao, khong KD).
+# Chay: python main/train.py --cfg ./config/train_student_hint_z_v2.yml --exp_name student_hint_z_v2 --gpu 0
+DATASET:
+  train_list: ['3dpw-train']
+  test_list: ['3dpw-val']        # moi epoch CHI danh gia val; test 1 lan cuoi tu dong (TEST.final_test_list)
+  input_joint_set: 'human36'
+  target_joint_set: 'human36'
+  workers: 16
+  use_gt_input: False
+  seqlen: 1
+  stride: 1
+
+MODEL:
+  name: 'student'
+  resnet_type: 50
+  freeze_backbone: True
+  hpe_dim: 512
+  hpe_dep: 5
+  motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'      # PHAI giong T-hint v2
+  motionbert_2d_rootrel: False
+  backbone_pretrained: 'spin'
+  TEACHER: './experiment/teacher_hint_k16_v2/checkpoint/best.pth.tar'          # checkpoint T-hint v2
+  student_use_kd: True
+  init_student_from_teacher: True
+
+  # ---- Kien truc v2 (mac dinh trong config.py, ghi ro cho de doc; Teacher dung tu CUNG cfg -> khop T-hint v2) ----
+  joint_pe2d: True
+  pe2d_num_freq: 6
+  fusion_joint_self_attn: True
+  pose_head_mode: 'per_joint'
+  pose_query_bone: True
+  shape_attn_mode: 'tokens'
+
+  # ---- Goi y nen ----
+  teacher_hint: True          # de dung Teacher dung kien truc T-hint
+  student_hint: True
+  hint_dim: 16                # PHAI giong T-hint v2
+
+  # ---- KD ----
+  kd_mode: 'hint'
+  kd_hard_w: 1.0
+  kd_lambda: 1.0
+  kd_hint_w: 1.0             # MSE(z_hat, z_Teacher)
+  kd_hint_feat_w: 0.0        # MSE(LN(feat Student luot 2), LN(feat Teacher co goi y)), khong projector
+  kd_nce_w: 0.0
+  kd_res_w: 0.0
+  s2d_noise_prob: 0.0
+
+TRAIN:
+  print_freq: 20
+  batch_size: 32
+  shuffle: True
+  begin_epoch: 1
+  end_epoch: 30
+  scheduler: 'step'
+  lr: 0.0001
+  lr_step: [15, 22, 27]
+  lr_factor: 0.5
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 32
+  shuffle: False
+  select_dataset: '3dpw-val'
+  final_test_list: ['3dpw']     # train xong: nap best.pth.tar, test 1 lan

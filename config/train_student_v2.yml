@@ -2,11 +2,11 @@
 #   (1) PE vi tri 2D dung chung cho token khop + o anh   (2) self-attn giua 17 khop trong fusion
 #   (3) head goc xoay theo tung khop (local, bo trung binh + VPoser)   (4) neo query pose vao xuong
 #   (5) shape token doc ctx + token anh
-# Chon checkpoint tren 3dpw-val, test van chay va in moi epoch. Kien truc v2 DA CHOT (2026-10-13), yml cu o config/archive/.
+# Moi epoch: 1 luot train + 1 luot val (3dpw-val), luu best theo val. Train xong: tu nap best.pth.tar, test 1 lan tren 3dpw. Kien truc v2 DA CHOT (2026-10-13), yml cu o config/archive/.
 # Chay: python main/train.py --cfg ./config/train_student_v2.yml --exp_name student_v2 --gpu 0
 DATASET:
   train_list: ['3dpw-train']
-  test_list: ['3dpw-val', '3dpw']
+  test_list: ['3dpw-val']        # moi epoch CHI danh gia val; test 1 lan cuoi tu dong (TEST.final_test_list)
   input_joint_set: 'human36'
   target_joint_set: 'human36'
   workers: 8
@@ -54,3 +54,4 @@ TEST:
   batch_size: 32
   shuffle: False
   select_dataset: '3dpw-val'
+  final_test_list: ['3dpw']     # train xong: nap best.pth.tar, test 1 lan

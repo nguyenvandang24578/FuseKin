@@ -7,8 +7,9 @@ Dung dung Teacher_Tester / Student_Tester trong core/base.py (tuy cfg.MODEL.name
 In ra dong '3dpw: MPJPE=..., PA-MPJPE=..., MPVPE=...' giong log train.
 
 Cach chay (tu thu muc goc repo, can CUDA):
-    python main/test_ckpt.py --cfg ./config/train_student_kd_e1.yml \
-        --ckpt experiment/student_kd_e1/checkpoint/best.pth.tar [--gpu 0] [--test_list 3dpw 3dpw-oc 3dpw-pc]
+    python main/test_ckpt.py --cfg ./config/train_student_v2.yml \
+        --ckpt experiment/student_v2/checkpoint/best.pth.tar --test_list 3dpw [--gpu 0]
+  (yml train chi danh gia 3dpw-val moi epoch -> test cuoi dung --test_list 3dpw; T-hint in ca co / khong goi y)
 
 - --cfg: config DA DUNG de train checkpoint do (dung kien truc, MotionBERT, chuan hoa anh...).
   Teacher -> config teacher; Student -> config student.
@@ -19,6 +20,8 @@ sys.path.append('./')
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"  # cho Apple Accelerate/vecLib
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import argparse
 import warnings
@@ -47,6 +50,9 @@ if not os.path.isfile(args.ckpt):
     sys.exit(1)
 if args.test_list:
     cfg.DATASET.test_list = list(args.test_list)
+    # yml train dat TEST.select_dataset = '3dpw-val'; khi test tap khac thi bo de khong bi assert trong _select_errors
+    if cfg.TEST.get('select_dataset', '') and cfg.TEST.select_dataset not in cfg.DATASET.test_list:
+        cfg.TEST.select_dataset = ''
 if args.batch_size > 0:
     cfg.TEST.batch_size = args.batch_size
 
@@ -72,5 +78,7 @@ if ckpt_epoch is not None:
     print(f"Epoch luu trong checkpoint: {ckpt_epoch}")
 
 tester = TESTERS[cfg.MODEL.name](args, load_dir=args.ckpt)
+if hasattr(tester, 'eval_nohint'):
+    tester.eval_nohint = True      # T-hint: test tay luon in ca CO va KHONG goi y
 with torch.no_grad():
     tester.test(epoch=ckpt_epoch or 0)

@@ -117,3 +117,22 @@ for epoch in range(cfg.TRAIN.begin_epoch, cfg.TRAIN.end_epoch + 1):
     save_checkpoint(ckpt, epoch, is_best)
 
 print('Training Finished! All logs were saved in ', cfg.checkpoint_dir)
+
+# ---- Test 1 LAN sau khi train: nap best.pth.tar (chon theo val) roi danh gia tren cfg.TEST.final_test_list ----
+final_list = list(cfg.TEST.get('final_test_list', []) or [])
+if final_list and cfg.MODEL.name in ('teacher', 'student'):
+    best_path = os.path.join(cfg.checkpoint_dir, 'best.pth.tar')
+    best_ck = torch.load(best_path, map_location='cpu', weights_only=False)
+    net = trainer.model.module if hasattr(trainer.model, 'module') else trainer.model
+    missing, unexpected = net.load_state_dict(best_ck['model_state_dict'], strict=False)
+    print(f"\n===> TEST CUOI tren {final_list} | {best_path} (epoch {best_ck.get('epoch')}) "
+          f"| thieu {len(missing)} / thua {len(unexpected)} key")
+    del best_ck
+    cfg.DATASET.test_list = final_list
+    if cfg.TEST.get('select_dataset', '') not in final_list:
+        cfg.TEST.select_dataset = ''          # tranh assert trong _select_errors (select dat cho val)
+    final_tester = Teacher_Tester(args) if cfg.MODEL.name == 'teacher' else Student_Tester(args)
+    if hasattr(final_tester, 'eval_nohint'):
+        final_tester.eval_nohint = True       # T-hint: test cuoi in ca CO va KHONG goi y
+    with torch.no_grad():
+        final_tester.test(epoch=0, current_model=trainer.model)

@@ -385,6 +385,12 @@ cfg.TEST.weight_path = './experiment/pretrained/mesh_3dpw.pth.tar'
 # Dataset dung de chon checkpoint best. '' = trung binh moi DATASET.test_list (nhu cu).
 # Vd '3dpw-val' voi test_list ['3dpw-val', '3dpw']: chon tren val, test van chay va in ra moi epoch.
 cfg.TEST.select_dataset = ''
+# Test 1 LAN sau khi train xong (main/train.py nap best.pth.tar roi danh gia tren cac tap nay). [] = khong test cuoi.
+# Vd test_list ['3dpw-val'] (moi epoch chi val) + final_test_list ['3dpw'].
+cfg.TEST.final_test_list = []
+# Teacher T-hint: moi epoch co danh gia them dong KHONG goi y (z = 0) khong. False = chi dong CO goi y (dong chon best).
+# Test cuoi luon in ca 2 dong.
+cfg.TEST.hint_eval_nohint = False
 
 
 def _update_dict(cfg_sub, v, prefix=''):

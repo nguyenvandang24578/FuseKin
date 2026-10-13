@@ -3,12 +3,12 @@
 #   + 5 thay doi kien truc v2 (PE2D, self-attn khop, goc xoay theo khop, neo xuong, shape doc token).
 # Train TU DAU (hint_init_from = ''), cung lich 50 epoch voi train_student_v2.yml
 #   -> dong [KHONG goi y] so truc tiep duoc voi student_v2 (cung kien truc, cung lich, cung cach chon ckpt).
-# Chon checkpoint tren 3dpw-val theo dong [CO goi y]; moi epoch danh gia val + test x (co / khong goi y) = 4 luot.
+# Moi epoch: 1 luot val (3dpw-val, dong CO goi y = dong chon best). Train xong: tu nap best.pth.tar, test 1 lan tren 3dpw (co + khong goi y).
 # Kiem tra truoc: python main/check_student_v2.py --cfg ./config/train_teacher_hint_k16_v2.yml --gpu 0
 # Chay:          python main/train.py --cfg ./config/train_teacher_hint_k16_v2.yml --exp_name teacher_hint_k16_v2 --gpu 0
 DATASET:
   train_list: ['3dpw-train']
-  test_list: ['3dpw-val', '3dpw']
+  test_list: ['3dpw-val']        # moi epoch CHI danh gia val; test 1 lan cuoi tu dong (TEST.final_test_list)
   input_joint_set: 'human36'
   target_joint_set: 'human36'
   workers: 16
@@ -64,3 +64,4 @@ TEST:
   batch_size: 32
   shuffle: False
   select_dataset: '3dpw-val'
+  final_test_list: ['3dpw']     # train xong: nap best.pth.tar, test 1 lan
