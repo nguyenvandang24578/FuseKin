@@ -26,7 +26,7 @@ MODEL:
   hpe_dim: 512
   hpe_dep: 5
   # MotionBERT finetune Halpe-26 -> SUA duong dan neu ckpt moi luu o cho khac
-  motionbert_pretrained: './experiment/finetune_motionbert_halpe26_full/best_epoch.bin'
+  motionbert_pretrained: './experiment/finetune_motionbert_halpe26_3dpw/best_epoch.bin'
   motionbert_2d_rootrel: False
   motionbert_drop_joints: []     # Halpe-26 du 17 khop -> khong xoa khop nao (giong luc finetune)
   backbone_pretrained: 'spin'
