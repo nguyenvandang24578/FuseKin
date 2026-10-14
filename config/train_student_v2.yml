@@ -6,7 +6,7 @@
 # Chay: python main/train.py --cfg ./config/train_student_v2.yml --exp_name student_v2 --gpu 0
 DATASET:
   train_list: ['3dpw-train']
-  test_list: ['3dpw-val']        # moi epoch CHI danh gia val; test 1 lan cuoi tu dong (TEST.final_test_list)
+  test_list: ['3dpw']        # moi epoch CHI danh gia val; test 1 lan cuoi tu dong (TEST.final_test_list)
   input_joint_set: 'human36'
   target_joint_set: 'human36'
   workers: 8
@@ -20,7 +20,7 @@ MODEL:
   freeze_backbone: True
   hpe_dim: 512
   hpe_dep: 5
-  motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'
+  motionbert_pretrained: './experiment/finetune_motionbert_halpe26_3dpw/best_epoch.bin'
   motionbert_2d_rootrel: False
   backbone_pretrained: 'spin'
   student_use_kd: False
@@ -38,12 +38,12 @@ TRAIN:
   batch_size: 32
   shuffle: True
   begin_epoch: 1
-  end_epoch: 50
+  end_epoch: 30
   curriculum_epochs: 15
   scheduler: 'step'
   backbone_lr_scale: 0.1
   lr: 0.0001
-  lr_step: [25, 35, 45]
+  lr_step: [15, 22, 27]
   lr_factor: 0.5
   warmup_epochs: 1
   min_lr: 0.000001
@@ -53,5 +53,5 @@ TRAIN:
 TEST:
   batch_size: 32
   shuffle: False
-  select_dataset: '3dpw-val'
+  select_dataset: '3dpw'
   final_test_list: ['3dpw']     # train xong: nap best.pth.tar, test 1 lan
