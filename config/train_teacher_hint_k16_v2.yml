@@ -68,5 +68,5 @@ TRAIN:
 TEST:
   batch_size: 32
   shuffle: False
-  select_dataset: '3dpw-val'
+  select_dataset: '3dpw'
   final_test_list: ['3dpw']     # train xong: nap best.pth.tar, test 1 lan
