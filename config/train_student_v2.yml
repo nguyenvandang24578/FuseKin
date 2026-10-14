@@ -20,7 +20,7 @@ MODEL:
   freeze_backbone: True
   hpe_dim: 512
   hpe_dep: 5
-  motionbert_pretrained: './experiment/finetune_motionbert_halpe26_3dpw/best_epoch.bin'
+  motionbert_pretrained: './experiment/finetune_motionbert_halpe26_3dpw_8gb/best_epoch.bin'
   motionbert_2d_rootrel: False
   backbone_pretrained: 'spin'
   student_use_kd: False
