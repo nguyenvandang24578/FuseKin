@@ -21,7 +21,7 @@ MODEL:
   freeze_backbone: True
   hpe_dim: 512
   hpe_dep: 5
-  motionbert_pretrained: './experiment/finetune_motionbert/best_epoch.bin'      # PHAI giong T-hint v2
+  motionbert_pretrained: './experiment/finetune_motionbert_halpe26_3dpw/best_epoch.bin'
   motionbert_2d_rootrel: False
   backbone_pretrained: 'spin'
   TEACHER: './experiment/teacher_hint_k16_v2_halpe/checkpoint/best.pth.tar'          # checkpoint T-hint v2
