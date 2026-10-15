@@ -556,6 +556,10 @@ class Teacher_Trainer:
             # nen model buoc phai doc anh de bu lai phan khop bi che.
             teacher_model_input = self._corrupt_joints(teacher_gt_pose3d, epoch)
             fwd_kwargs = {}
+            if cfg.MODEL.get('joint_pe2d', False):
+                # Teacher GT + PE2D: PE vi tri khop lay tu 2D Halpe (nhieu), cung nguon voi Student
+                fwd_kwargs = dict(pose_2d=inputs['joints'].cuda().float(),
+                                  joints_mask=inputs['joints_mask'].cuda().float())
             if self.lift_alpha_max > 0:
                 # (A) input = (1-a)*GT + a*MotionBERT_lift, a ~ U(0, alpha_max) rieng tung mau
                 lift_alpha = torch.rand(input_image.shape[0], device=input_image.device) * self.lift_alpha_max
@@ -1144,7 +1148,9 @@ class Student_Trainer:
                         t_out = self.teacher(input_image, gt_pose_input, is_train=False,
                                              pose_2d=input_pose2d, joints_mask=joints_mask)
                     else:
-                        t_out = self.teacher(input_image, gt_pose_input, is_train=False)
+                        t_kw = (dict(pose_2d=input_pose2d, joints_mask=joints_mask)
+                                if cfg.MODEL.get('joint_pe2d', False) else {})
+                        t_out = self.teacher(input_image, gt_pose_input, is_train=False, **t_kw)
             else:
                 t_out = {}
 

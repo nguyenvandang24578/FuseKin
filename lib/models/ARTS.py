@@ -97,7 +97,7 @@ class ARTS(nn.Module):
                                       hint_dim=self.hint_dim, hint_mode='teacher', **arch_kw)
         elif self.mode == "teacher":
             if self.joint_pe2d:
-                raise NotImplementedError('joint_pe2d cho Teacher GT can GT 2D (PLAN_TEACHER_GT2D.md), chua ho tro.')
+                print('===> Teacher GT + joint_pe2d: PE vi tri khop lay tu 2D Halpe (nhieu), truyen qua pose_2d')
             print("Đang gọi mô hình teacher")
             self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim, depth=3,
                                       use_img_probe=bool(cfg.MODEL.get('img_probe', False)), **arch_kw)
@@ -249,11 +249,14 @@ class ARTS(nn.Module):
                 a = a.reshape(-1, 1, 1) if a.dim() > 0 else a.reshape(1, 1, 1)
                 joints_in = (1.0 - a) * gt_pose_3d + a * lifted
 
+        if self.joint_pe2d:
+            assert pose_2d is not None, 'Teacher GT + joint_pe2d can pose_2d (2D Halpe): truyen pose_2d, joints_mask'
         result = self.smpl_model(
             joints=joints_in,
             img_feats=feature_map,
             is_train=is_train,
             return_features=True,
+            **self._pe2d_kwargs(pose_2d, joints_mask),
         )
         result['teacher_input_joints'] = joints_in      # (B, 17, 3) input thuc su dua vao Teacher
         if lifted is not None:
