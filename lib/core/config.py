@@ -192,7 +192,7 @@ cfg.MODEL.img_probe_w = 0.1
 cfg.MODEL.teacher_joint_corrupt_prob = 0.0
 cfg.MODEL.teacher_joint_corrupt_mode = 'zero'          # 'zero' | 'noise'
 cfg.MODEL.teacher_joint_corrupt_noise_std = 0.15
-cfg.MODEL.teacher_joint_corrupt_warmup_epochs = 0
+cfg.MODEL.teacher_joint_corrupt_warmup_epochs = 5
 # Trong so loss tham so shape (beta) trong Teacher_Trainer. Beta GT cua 3DPW thuoc SMPL theo gioi tinh,
 # model dung SMPL neutral -> beta GT co the day sai kich thuoc co the. 1.0 = nhu cu; 0 = tat han.
 cfg.MODEL.shape_param_loss_w = 1.0

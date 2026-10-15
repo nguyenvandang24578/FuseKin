@@ -567,6 +567,7 @@ class Teacher_Trainer:
                                   joints_mask=inputs['joints_mask'].cuda().float(),
                                   lift_alpha=lift_alpha)
             if self.teacher_hint:
+                print("ĐANG SỬ DỤNG HINT CHO TEACHER")
                 # T-hint: joint vao = MotionBERT(2D) nhu Student, GT (sach) chi di vao bo nen goi y
                 teacher_model_input = teacher_gt_pose3d
                 fwd_kwargs = dict(pose_2d=inputs['joints'].cuda().float(),

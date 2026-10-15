@@ -513,6 +513,7 @@ class FusionPose2Mesh(nn.Module):
         self.hint_dim = hint_dim if hint_mode != 'none' else 0
         self.hint_proj = self.hint_encoder = self.hint_pred = None
         if self.hint_dim > 0:
+            print("Đang chạy hint trong teacher_student.py")
             self.hint_proj = nn.Linear(self.hint_dim, num_joint * embed_dim, bias=False)
             nn.init.zeros_(self.hint_proj.weight)
             if hint_mode == 'teacher':

@@ -1,0 +1,71 @@
+# Teacher GT TREN KIEN TRUC V2 (teacher_hint: False, GT 3D thuan):
+#   anh + GT 3D (khong goi y, khong MotionBERT lift) + che khop ngau nhien (joint_corrupt 30%)
+#   + 5 thay doi kien truc v2 (PE2D, self-attn khop, goc xoay theo khop, neo xuong, shape doc token).
+#   + head tham do anh (img_probe) de chan doan Teacher co dung anh khong.
+# Train TU DAU, 50 epoch.
+# Kiem tra truoc: python main/check_student_v2.py --cfg ./config/train_teacher_k16_v2.yml --gpu 0
+# Chay:          python main/train.py --cfg ./config/train_teacher_k16_v2.yml --exp_name teacher_gt_corrupt_v2 --gpu 0
+DATASET:
+  train_list: ['3dpw-train']
+  test_list: ['3dpw']        # moi epoch CHI danh gia val; test 1 lan cuoi tu dong (TEST.final_test_list)
+  input_joint_set: 'human36'
+  target_joint_set: 'human36'
+  workers: 16
+  use_gt_input: False
+  seqlen: 1
+  stride: 1
+  # 2D 3DPW = Halpe-26 (RTMPose), du 17 khop. Can 3DPW_{train,validation,test}_halpe26.json trong thu muc PW3D.
+  pw3d_2d_source: 'halpe26'
+  halpe26_conf_thr: 0.3          # PHAI giong luc finetune MotionBERT
+
+MODEL:
+  name: 'teacher'
+  resnet_type: 50
+  hpe_dim: 512
+  hpe_dep: 5
+  # MotionBERT finetune Halpe-26 -> SUA duong dan neu ckpt moi luu o cho khac
+  motionbert_pretrained: './experiment/finetune_motionbert_halpe26_3dpw/best_epoch.bin'
+  motionbert_2d_rootrel: False
+  motionbert_drop_joints: []     # Halpe-26 du 17 khop -> khong xoa khop nao (giong luc finetune)
+  backbone_pretrained: 'spin'
+
+  teacher_hint: False
+  teacher_lift_alpha_max: 0.0
+
+  # ---- Che khop GT de ep Teacher dung anh ----
+  teacher_joint_corrupt_prob: 0.3        # 30% moi khop bi che ve (0,0,0)
+  teacher_joint_corrupt_mode: 'zero'
+  teacher_joint_corrupt_warmup_epochs: 5 # tang dan tu epoch 1->5
+
+  # ---- Head tham do anh: chan doan Teacher co dung anh khong (log probe_mpjpe_mm) ----
+  img_probe: True
+  img_probe_w: 0.1
+
+  # ---- Kien truc v2 (giong train_student_v2.yml) ----
+  joint_pe2d: True
+  pe2d_num_freq: 6
+  fusion_joint_self_attn: True
+  pose_head_mode: 'per_joint'
+  pose_query_bone: True
+  shape_attn_mode: 'tokens'
+
+TRAIN:
+  print_freq: 20
+  batch_size: 32
+  shuffle: True
+  begin_epoch: 1
+  end_epoch: 50
+  scheduler: 'step'
+  lr: 0.0001
+  lr_step: [10, 15, 25]
+  lr_factor: 0.5
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 32
+  shuffle: False
+  select_dataset: '3dpw'
+  final_test_list: ['3dpw']     # train xong: nap best.pth.tar, test 1 lan
