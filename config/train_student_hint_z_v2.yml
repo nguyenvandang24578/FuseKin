@@ -14,6 +14,9 @@ DATASET:
   use_gt_input: False
   seqlen: 1
   stride: 1
+  # 2D 3DPW = Halpe-26 (RTMPose), PHAI giong T-hint v2 (mac dinh config.py la 'openpose')
+  pw3d_2d_source: 'halpe26'
+  halpe26_conf_thr: 0.3
 
 MODEL:
   name: 'student'
@@ -21,8 +24,9 @@ MODEL:
   freeze_backbone: True
   hpe_dim: 512
   hpe_dep: 5
-  motionbert_pretrained: './experiment/finetune_motionbert_halpe26_3dpw/best_epoch.bin'
+  motionbert_pretrained: './experiment/finetune_motionbert_halpe26_3dpw_8gb/best_epoch.bin'
   motionbert_2d_rootrel: False
+  motionbert_drop_joints: []     # Halpe-26 du 17 khop, giong luc finetune
   backbone_pretrained: 'spin'
   TEACHER: './experiment/teacher_hint_k16_v2_halpe/checkpoint/best.pth.tar'          # checkpoint T-hint v2
   student_use_kd: True
