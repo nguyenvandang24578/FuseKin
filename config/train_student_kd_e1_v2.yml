@@ -1,0 +1,73 @@
+# E1 tren KIEN TRUC V2: KD CHI o feature (kd_mode 'feat'), khong KD output, khong adaptive. Hard loss trong so 1.0.
+# Port tu config/archive/train_student_kd_e1.yml. Khac ban cu: kien truc v2, 2D Halpe-26, chon best tren 3dpw-val.
+# Teacher = Teacher GT v2 (train_teacher_k16_v2.yml, --exp_name teacher_gt_v2) -> train XONG Teacher truoc.
+# Teacher GT v2 va Student PHAI cung co kien truc v2 (joint_pe2d ... shape_attn_mode) vi Student khoi tao tu Teacher.
+# Mo so sanh: Student scratch v2 (train_student_v2.yml) cung 2D Halpe, cung MotionBERT, cung lich train.
+# Chay: python main/train.py --cfg ./config/train_student_kd_e1_v2.yml --exp_name student_kd_e1_v2 --gpu 0
+DATASET:
+  train_list: ['3dpw-train']
+  test_list: ['3dpw']        # moi epoch CHI danh gia val; test 1 lan cuoi tu dong (TEST.final_test_list)
+  input_joint_set: 'human36'
+  target_joint_set: 'human36'
+  workers: 8
+  use_gt_input: False
+  seqlen: 1
+  stride: 1
+  # 2D 3DPW = Halpe-26 (RTMPose), PHAI giong Teacher / T-hint v2 (mac dinh config.py la 'openpose')
+  pw3d_2d_source: 'halpe26'
+  halpe26_conf_thr: 0.3
+
+MODEL:
+  name: 'student'
+  resnet_type: 50
+  freeze_backbone: True
+  hpe_dim: 512
+  hpe_dep: 5
+  motionbert_pretrained: './experiment/finetune_motionbert_halpe26_3dpw/best_epoch.bin'   # PHAI giong scratch v2 / T-hint v2
+  motionbert_2d_rootrel: False
+  motionbert_drop_joints: []     # Halpe-26 du 17 khop, giong luc finetune
+  backbone_pretrained: 'spin'
+  TEACHER: './experiment/teacher_gt_v2/checkpoint/best.pth.tar'                          # checkpoint Teacher GT v2
+  student_use_kd: True
+  init_student_from_teacher: True
+
+  # ---- Kien truc v2 (PHAI giong train_teacher_k16_v2.yml) ----
+  joint_pe2d: True
+  pe2d_num_freq: 6
+  fusion_joint_self_attn: True
+  pose_head_mode: 'per_joint'
+  pose_query_bone: True
+  shape_attn_mode: 'tokens'
+
+  # ---- KD feature (E1) ----
+  kd_mode: 'feat'
+  kd_feat_dist: 'mse'     # MSE(Linear(LN(student)), LN(teacher)) qua projector
+  kd_hard_w: 1.0
+  kd_lambda: 1.0
+  kd_w_proj: 0.0          # bo diem noi bo ma hoa joint
+  kd_w_joint: 1.0         # token khop sau fusion
+  kd_w_global: 1.0        # feature toan cuc sau fusion
+  kd_noise_weight: False
+  kd_nce_w: 0.0
+  s2d_noise_prob: 0.0
+
+TRAIN:
+  print_freq: 20
+  batch_size: 32
+  shuffle: True
+  begin_epoch: 1
+  end_epoch: 30
+  scheduler: 'step'
+  lr: 0.0001
+  lr_step: [15, 22, 27]
+  lr_factor: 0.5
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 32
+  shuffle: False
+  select_dataset: '3dpw'
+  final_test_list: ['3dpw']     # train xong: nap best.pth.tar, test 1 lan
