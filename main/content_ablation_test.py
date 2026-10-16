@@ -265,7 +265,8 @@ def main():
                     t_in = gt_h36m if a == 0 else (1.0 - a) * gt_h36m + a * lifted
                     results.setdefault(name, new_cond())
                     inp_err.setdefault(name, []).append((torch.norm(t_in - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu())
-                    run_three(teacher, t_in, feat_t, results[name], reg, gt_mesh)
+                    run_three(teacher, t_in, feat_t, results[name], reg, gt_mesh,
+                              **teacher._pe2d_kwargs(joints2d, joints_mask))
 
             # ---------------- Student ----------------
             if student is not None:

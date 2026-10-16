@@ -345,7 +345,9 @@ def main():
         if args.teacher_alpha > 0:
             a = torch.full((img_.shape[0],), float(args.teacher_alpha), device=DEVICE)
             return teacher(img_, joints3d_, is_train=False, pose_2d=joints2d_, joints_mask=jmask_, lift_alpha=a)
-        return teacher(img_, joints3d_, is_train=False)
+        # Teacher GT v2 co joint_pe2d: PE vi tri khop lay tu 2D Halpe (giong luc train)
+        kw = dict(pose_2d=joints2d_, joints_mask=jmask_) if cfg.MODEL.get('joint_pe2d', False) else {}
+        return teacher(img_, joints3d_, is_train=False, **kw)
 
     n_batches, n_blocks = 0, 0
     with torch.no_grad():
