@@ -1,0 +1,50 @@
+# ======================================================
+# FuseKin — Train PMCE (GraphormerNet) TU DAU (khoi tao ngau nhien) voi 2D Halpe-26 + dac trung SPIN tinh san.
+# Cung DATASET + dac trung voi finetune_pmce_halpe26.yaml -> so sanh truc tiep train-tu-dau vs finetune.
+# Dung chung cho: tools/extract_img_feat.py (trich dac trung) va main/finetune_pmce.py (finetune / danh gia).
+#   -> 2 buoc PHAI dung cung file nay (thu tu / so mau phu thuoc nguon 2D).
+# Tap train / val / test: muc PMCE. Co 3dpw-train = Setting 2 (bao rieng, ro ri sang 3DPW-OC/PC).
+#   Setting 1 (giao thuc JOTR): train_sets: ['h36m-train', 'muco-train'].
+# 1) Trich dac trung (4 GPU song song):
+#   CUDA_VISIBLE_DEVICES=0 python tools/extract_img_feat.py --cfg ./config/finetune_pmce_halpe26.yaml --names h36m-train &
+#   CUDA_VISIBLE_DEVICES=1 python tools/extract_img_feat.py --cfg ./config/finetune_pmce_halpe26.yaml --names muco-train &
+#   CUDA_VISIBLE_DEVICES=2 python tools/extract_img_feat.py --cfg ./config/finetune_pmce_halpe26.yaml --names 3dpw-train 3dpw-val &
+#   CUDA_VISIBLE_DEVICES=3 python tools/extract_img_feat.py --cfg ./config/finetune_pmce_halpe26.yaml --names 3dpw-test h36m-test &
+#   wait
+# 2) Train tu dau (moi sieu tham so o muc PMCE ben duoi):
+#   python main/finetune_pmce.py --cfg ./config/pmce_scratch_halpe26.yaml --gpu 0,1,2,3
+# ======================================================
+
+DATASET:
+    input_joint_set: 'human36'
+    target_joint_set: 'human36'
+    workers: 16
+    use_gt_input: False
+    seqlen: 1
+    stride: 1
+    lift_only: True
+    pw3d_2d_source: 'halpe26'    # 3DPW_{split}_halpe26.json
+    h36m_2d_source: 'halpe26'    # Human36M_{split}_halpe26.npz
+    muco_2d_source: 'halpe26'    # MuCo_train_halpe26.npz
+    halpe26_conf_thr: 0.3
+
+MODEL:
+    hpe_dim: 256                 # PMCE GraphormerNet (checkpoint Human36M: 256 / 3)
+    hpe_dep: 3
+
+PMCE:
+    pmce_ckpt: ''
+    from_scratch: True                    # khoi tao ngau nhien
+    train_sets: ['h36m-train', 'muco-train', '3dpw-train']
+    val_sets: ['3dpw-val']
+    test_sets: ['3dpw-test', 'h36m-test']
+    test_every: 5
+    feat_dir: 'data_final/feat_cache'     # dung lai dac trung da trich
+    save_dir: 'experiment/pmce_scratch_halpe26'   # KHAC thu muc finetune
+    epochs: 40
+    lr: 0.0001                            # PMCE goc 5e-5 / 60 epoch (chi H36M); du lieu lon hon -> 1e-4. Dao dong manh thi ve 5e-5
+    lr_decay: 0.95                        # sau 40 epoch lr con ~13%
+    weight_decay: 0.0
+    batch_size: 128
+    workers: 16
+    final_ckpt: 'latest'

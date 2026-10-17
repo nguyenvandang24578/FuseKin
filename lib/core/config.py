@@ -345,6 +345,24 @@ cfg.MOTIONBERT.joint_drop_prob = 0.0
 # dung khi val_set la tap khong duoc phep dung de chon model, vd 3dpw-val vi 3DPW-Crowd lay tu split validation)
 cfg.MOTIONBERT.final_ckpt = 'best'
 
+""" PMCE (GraphormerNet lifter, main/finetune_pmce.py + tools/extract_img_feat.py) """
+cfg.PMCE = edict()
+cfg.PMCE.pmce_ckpt = ''            # checkpoint khoi tao (finetune); '' + from_scratch = train tu dau
+cfg.PMCE.from_scratch = False      # True: khoi tao ngau nhien, bo qua pmce_ckpt
+cfg.PMCE.train_sets = ['h36m-train', 'muco-train', '3dpw-train']   # ten trong utils/pmce_data.FEAT_SETS
+cfg.PMCE.val_sets = ['3dpw-val']   # danh gia moi epoch; val_sets[0] dung chon best
+cfg.PMCE.test_sets = ['3dpw-test', 'h36m-test']
+cfg.PMCE.test_every = 1            # danh gia test_sets moi N epoch (epoch cuoi luon test)
+cfg.PMCE.feat_dir = 'data_final/feat_cache'   # dac trung anh tinh san (tools/extract_img_feat.py)
+cfg.PMCE.save_dir = 'experiment/finetune_pmce_halpe26'
+cfg.PMCE.epochs = 15
+cfg.PMCE.lr = 0.00005
+cfg.PMCE.lr_decay = 0.95           # nhan lr moi epoch
+cfg.PMCE.weight_decay = 0.0
+cfg.PMCE.batch_size = 128
+cfg.PMCE.workers = 16
+cfg.PMCE.final_ckpt = 'latest'     # test cuoi: 'latest' (epoch cuoi) | 'best' (theo val_sets[0])
+
 """ Diffusion (SMPL_HyperDiff) """
 cfg.DIFF = edict()
 cfg.DIFF.num_timesteps = 1000

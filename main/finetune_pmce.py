@@ -7,11 +7,13 @@ Giong PMCE goc (PMCE/base.py LiftTrainer + train_pose_h36m.yml): khoi tao tu che
   dac trung anh tinh san (tools/extract_img_feat.py, SPIN ResNet-50 crop 256), KHONG augment.
 Chi so danh gia: MPJPE / PA-MPJPE 17 khop H36M root-relative (mm), giong main/compare_pmce_lift.py.
 
+Moi sieu tham so nam trong muc PMCE cua yml (mac dinh o lib/core/config.py, cfg.PMCE).
 Chay (moi truong FuseKin, tu thu muc goc repo; can da trich dac trung cho moi tap dung o duoi):
-  python main/finetune_pmce.py --cfg ./config/finetune_pmce_halpe26.yaml \
-      --pmce_ckpt /path/to/pmce_human36m.pth.tar --gpu 0,1,2,3
-  # chi danh gia 1 checkpoint:
-  python main/finetune_pmce.py --cfg ./config/finetune_pmce_halpe26.yaml --pmce_ckpt <ckpt> --eval_only
+  python main/finetune_pmce.py --cfg ./config/finetune_pmce_halpe26.yaml --gpu 0,1,2,3     # finetune
+  python main/finetune_pmce.py --cfg ./config/pmce_scratch_halpe26.yaml --gpu 0,1,2,3      # train tu dau
+  # chi danh gia 1 checkpoint (ghi de pmce_ckpt / save_dir / val_sets / test_sets cua yml bang dong lenh):
+  python main/finetune_pmce.py --cfg ./config/finetune_pmce_halpe26.yaml --eval_only --pmce_ckpt <ckpt> \
+      --save_dir <thu muc> --val_sets h36m-train muco-train --test_sets h36m-test
 """
 import os, sys, json, time
 sys.path.append('./lib')
@@ -31,31 +33,46 @@ JOINTS = ['Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 
           'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist']
 
 
+PMCE_KEYS = ('pmce_ckpt', 'from_scratch', 'train_sets', 'val_sets', 'test_sets', 'test_every', 'feat_dir', 'save_dir',
+             'epochs', 'lr', 'lr_decay', 'weight_decay', 'batch_size', 'workers', 'final_ckpt')
+
+
 def parse_args():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--cfg', required=True, help='yml co DATASET.* (nguon 2D Halpe-26), MODEL.hpe_dim/hpe_dep')
-    ap.add_argument('--pmce_ckpt', required=True, help='checkpoint PMCE khoi tao (model_state_dict) hoac ckpt finetune')
-    ap.add_argument('--train_sets', nargs='+', default=['h36m-train', 'muco-train', '3dpw-train'], choices=FEAT_SETS)
-    ap.add_argument('--val_sets', nargs='+', default=['3dpw-val'], choices=FEAT_SETS)
-    ap.add_argument('--test_sets', nargs='+', default=['3dpw-test', 'h36m-test'], choices=FEAT_SETS)
-    ap.add_argument('--feat_dir', default='data_final/feat_cache')
-    ap.add_argument('--save_dir', default='experiment/finetune_pmce_halpe26')
-    ap.add_argument('--epochs', type=int, default=15)
-    ap.add_argument('--lr', type=float, default=5e-5)
-    ap.add_argument('--lr_decay', type=float, default=0.95, help='nhan lr moi epoch')
-    ap.add_argument('--weight_decay', type=float, default=0.0)
-    ap.add_argument('--batch_size', type=int, default=128)
-    ap.add_argument('--workers', type=int, default=16)
-    ap.add_argument('--final_ckpt', default='latest', choices=['latest', 'best'],
-                    help="test cuoi: 'latest' (epoch cuoi) | 'best' (theo val_sets[0])")
-    ap.add_argument('--eval_only', action='store_true', help='Chi danh gia --pmce_ckpt tren val_sets + test_sets')
+    ap.add_argument('--cfg', required=True, help='yml: DATASET.* (nguon 2D Halpe-26), MODEL.hpe_dim/hpe_dep, PMCE.*')
     ap.add_argument('--gpu', default='0')
+    ap.add_argument('--eval_only', action='store_true', help='Chi danh gia pmce_ckpt tren val_sets + test_sets')
+    # Ghi de tuy chon (None = lay theo yml), tien cho --eval_only
+    ap.add_argument('--pmce_ckpt', default=None)
+    ap.add_argument('--save_dir', default=None)
+    ap.add_argument('--val_sets', nargs='+', default=None, choices=FEAT_SETS)
+    ap.add_argument('--test_sets', nargs='+', default=None, choices=FEAT_SETS)
     return ap.parse_args()
+
+
+def merge_cfg(args):
+    """Lay sieu tham so tu cfg.PMCE (yml), dong lenh (neu co) ghi de."""
+    for k in PMCE_KEYS:
+        if getattr(args, k, None) is None:
+            v = cfg.PMCE[k]
+            setattr(args, k, list(v) if isinstance(v, (list, tuple)) else v)
+    for k in ('train_sets', 'val_sets', 'test_sets'):
+        bad = [n for n in getattr(args, k) if n not in FEAT_SETS]
+        if bad:
+            raise ValueError(f'PMCE.{k} co ten khong hop le {bad}; chon trong {FEAT_SETS}')
+    if args.final_ckpt not in ('latest', 'best'):
+        raise ValueError(f"PMCE.final_ckpt khong hop le: {args.final_ckpt}")
+    args.lr, args.lr_decay, args.weight_decay = float(args.lr), float(args.lr_decay), float(args.weight_decay)
+    return args
 
 
 def load_pmce(path, device, n_gpu):
     from models.PoseEstimation import get_model
     model = get_model(num_joint=len(JOINTS), embed_dim=cfg.MODEL.hpe_dim, depth=cfg.MODEL.hpe_dep, pretrained=False)
+    if not path:   # train tu dau: giu khoi tao mac dinh cua GraphormerNet
+        print('[ckpt] KHONG nap checkpoint -> khoi tao ngau nhien (train tu dau)')
+        model = model.to(device)
+        return nn.DataParallel(model) if n_gpu > 1 else model
     ck = torch.load(path, map_location='cpu')
     sd = ck.get('model_state_dict', ck)
     sd = {(k[7:] if k.startswith('module.') else k): v for k, v in sd.items()}
@@ -96,6 +113,11 @@ def main():
     args = parse_args()
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
     update_config(args.cfg)
+    args = merge_cfg(args)
+    if args.from_scratch and not args.eval_only:
+        args.pmce_ckpt = ''
+    elif not args.pmce_ckpt:
+        raise SystemExit('Can PMCE.pmce_ckpt (finetune / eval_only) hoac PMCE.from_scratch: True (train tu dau)')
     torch.manual_seed(0)
     np.random.seed(0)
     device = torch.device('cuda')
@@ -121,9 +143,11 @@ def main():
     model = load_pmce(args.pmce_ckpt, device, n_gpu)
     eval_loaders = {n: make_loader([n], False) for n in dict.fromkeys(args.val_sets + args.test_sets)}
 
-    def run_eval(tag):
+    def run_eval(tag, names=None):
         out = {}
         for n, ld in eval_loaders.items():
+            if names is not None and n not in names:
+                continue
             r = evaluate(model, ld, device, f'{tag} {n}')
             out[n] = r
             log(f'[{tag} {n}] MPJPE: {r["mpjpe"]:.2f} mm | PA-MPJPE: {r["pa_mpjpe"]:.2f} mm | n={r["n"]}')
@@ -137,7 +161,8 @@ def main():
 
     train_loader = make_loader(args.train_sets, True)
     log(f'# train: {len(train_loader.dataset)} mau ({args.train_sets}) | {len(train_loader)} iter/epoch | GPU={n_gpu}')
-    run_eval('Epoch 0')   # truoc finetune (diem xuat phat)
+    if not args.from_scratch:
+        run_eval('Epoch 0')   # truoc finetune (diem xuat phat); train tu dau thi bo qua (vo nghia)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     raw_model = model.module if isinstance(model, nn.DataParallel) else model
@@ -145,7 +170,8 @@ def main():
 
     def save(path, epoch):
         torch.save({'epoch': epoch, 'model_state_dict': raw_model.state_dict(),
-                    'fusekin_meta': {'train_sets': args.train_sets, 'lr': args.lr, 'init': args.pmce_ckpt}}, path)
+                    'fusekin_meta': {'train_sets': args.train_sets, 'lr': args.lr,
+                                     'init': args.pmce_ckpt or 'scratch'}}, path)
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -170,7 +196,8 @@ def main():
         lr_now = optimizer.param_groups[0]['lr']
         log(f'[Epoch {epoch}/{args.epochs}] {(time.time() - t0) / 60:.1f}m | lr {lr_now:.2e} | '
             f'train L1 {run_loss / nb:.2f} mm | train MPJPE {run_err / nb:.2f} mm')
-        res = run_eval(f'Epoch {epoch}')
+        do_test = (epoch % max(args.test_every, 1) == 0) or epoch == args.epochs
+        res = run_eval(f'Epoch {epoch}', None if do_test else set(args.val_sets))
         save(os.path.join(args.save_dir, 'latest_epoch.bin'), epoch)
         save(os.path.join(args.save_dir, f'epoch_{epoch}.bin'), epoch)
         v = res[args.val_sets[0]]['mpjpe']
