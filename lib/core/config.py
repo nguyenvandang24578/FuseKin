@@ -112,6 +112,9 @@ cfg.DATASET.lift_only = False
 cfg.DATASET.pw3d_2d_source = 'openpose'
 # Nguong score de coi 1 khop Halpe-26 la hop le (mask = 1)
 cfg.DATASET.halpe26_conf_thr = 0.3
+# 3DPW test: tra them GT 2D (targets['orig_joint_img'] H36M-17, khung output_hm_shape) + meta orig_joint_valid/trunc.
+# Chi de phan tich sai so 2D dau vao; evaluate() khong dung. Mac dinh TAT = hanh vi cu.
+cfg.DATASET.pw3d_test_gt2d = False
 cfg.DATASET.jotr_data_root = os.environ.get(
     'JOTR_DATA_ROOT',
     osp.abspath(osp.join(cfg.root_dir, 'data_final')),

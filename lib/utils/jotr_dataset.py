@@ -31,7 +31,9 @@ class Human36M17Dataset(Dataset):
     # Cac key giu lai khi cfg.DATASET.lift_only (train/eval MotionBERT)
     LIFT_INPUT_KEYS = {'img', 'joints', 'joints_mask'}
     LIFT_TARGET_KEYS_TRAIN = {'orig_joint_img', 'orig_joint_cam'}
-    LIFT_TARGET_KEYS_EVAL = {'smpl_mesh_cam', 'orig_joint_cam'}   # 3DPW: mesh; Human36M test: joint mocap
+    # 3DPW: mesh (+ orig_joint_img neu cfg.DATASET.pw3d_test_gt2d); Human36M test: joint mocap.
+    # Moi tap test co loader rieng -> giu them key khong lam hong collate.
+    LIFT_TARGET_KEYS_EVAL = {'smpl_mesh_cam', 'orig_joint_cam', 'orig_joint_img'}
     LIFT_META_KEYS = {'orig_joint_valid', 'orig_joint_trunc', 'is_3D'}
     # Them khi keep_vis_info=True (ve hinh trong finetune_motionbert.py, lay tung mau, khong qua collate)
     VIS_META_KEYS = {'img_path', 'img2bb_trans'}

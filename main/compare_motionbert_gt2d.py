@@ -11,7 +11,8 @@ Chay (tu thu muc goc repo):
       --split 3dpw-train-noaug --max_samples 4000
 
 Luu y:
-  * GT 2D chi co o tap train cua 3DPW (val/test khong tra orig_joint_img) -> dung --split 3dpw-train-noaug.
+  * GT 2D: tap train cua 3DPW tra san; val/test tra khi cfg.DATASET.pw3d_test_gt2d = True (script tu bat).
+    Vd test: --split 3dpw | 3dpw-oc | 3dpw-pc. (3dpw-crowd + halpe26 hien bi loi ValueError, xem PLAN_FULL_DATA V3)
   * GT 2D la phep chieu CHINH XAC cua 3D dich -> day la can tren (oracle), khong phai kich ban thuc.
   * Neu checkpoint da finetune tren 3dpw-train thi ca hai dong deu da thay mau nay. Chay them voi checkpoint
     chua finetune (MB_release.bin / MB_ft_h36m.bin) de co so sanh khong bi hoc thuoc.
@@ -52,6 +53,7 @@ def main():
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
     update_config(args.cfg)
     cfg.DATASET.workers = args.workers
+    cfg.DATASET.pw3d_test_gt2d = True   # val/test cua 3DPW tra them GT 2D (targets['orig_joint_img'])
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = torch.device('cuda')
@@ -102,7 +104,7 @@ def main():
                 need_m = [k for k in ('orig_joint_valid', 'orig_joint_trunc') if k not in meta]
                 if need_t or need_m:
                     raise SystemExit(f'Tap {args.split} khong tra GT 2D (thieu targets{need_t} meta{need_m}). '
-                                     f'targets keys: {list(targets.keys())}. Dung --split 3dpw-train-noaug.')
+                                     f'targets keys: {list(targets.keys())}. Kiem tra cfg.DATASET.pw3d_test_gt2d / PW3D dataset.')
             xy_h = inputs['joints'][..., :2].to(device).float()
             conf_h = inputs['joints_mask'].to(device).float()
             gt_xy = normalize_hm_xy(targets['orig_joint_img'][..., :2].to(device).float())
