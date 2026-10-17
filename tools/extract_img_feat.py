@@ -52,7 +52,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--cfg', required=True, help='yml co DATASET.* (cung voi luc finetune PMCE)')
     ap.add_argument('--names', nargs='+', required=True, choices=FEAT_SETS)
-    ap.add_argument('--feat_dir', default='data_final/feat_cache')
+    ap.add_argument('--feat_dir', default=None, help="mac dinh = PMCE.feat_dir cua yml ('data_final/feat_cache')")
     ap.add_argument('--spin_ckpt', default='data_final/base_data/spin_model_checkpoint.pth.tar')
     ap.add_argument('--batch_size', type=int, default=128)
     ap.add_argument('--workers', type=int, default=16)
@@ -60,6 +60,7 @@ def main():
     args = ap.parse_args()
 
     update_config(args.cfg)
+    args.feat_dir = args.feat_dir or cfg.PMCE.feat_dir
     os.makedirs(args.feat_dir, exist_ok=True)
     device = torch.device('cuda')
 

@@ -360,6 +360,11 @@ class PW3D(torch.utils.data.Dataset):
 
         # Luu lai 2D truoc khi doi vao khung crop - dung de so sanh voi PMCE (normalize theo anh goc, xem main/compare_pmce_lift.py)
         raw_joint_coord_img = joint_coord_img.copy()  # (17,3) pixel ANH GOC (x, y, conf/depth)
+        # 2D cho lifter PMCE: pixel ANH GOC chuan hoa kieu PMCE (X/w*2 - [1, h/w]), KHONG tru root.
+        _ih, _iw = data['img_shape']
+        joints_raw_pmce = raw_joint_coord_img[:, :2].copy().astype(np.float32)
+        joints_raw_pmce[:, 0] = joints_raw_pmce[:, 0] / _iw * 2.0 - 1.0
+        joints_raw_pmce[:, 1] = joints_raw_pmce[:, 1] / _iw * 2.0 - float(_ih) / _iw
 
         # x,y affine transform, root-relative depth
         joint_coord_img_xy1 = np.concatenate((joint_coord_img[:, :2], np.ones_like(joint_coord_img[:, 0:1])), 1)
@@ -465,7 +470,7 @@ class PW3D(torch.utils.data.Dataset):
 
             # Keep the 2D input pose 3-column (x, y, conf) to match the test
             # branch so the model receives the same input format in both phases.
-            inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc}
+            inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc, 'joints_raw': joints_raw_pmce}
             targets = {'orig_joint_img': orig_joint_img, 'orig_joint_cam': orig_joint_cam, 'fit_joint_cam': fit_joint_cam, 'pose_param': smpl_pose, 'shape_param': smpl_shape, 'smpl_mesh_cam': smpl_mesh_cam}
             meta_info = {
                 'img_path': img_path, 'img2bb_trans': img2bb_trans.astype(np.float32),  # de ve hinh
@@ -479,7 +484,7 @@ class PW3D(torch.utils.data.Dataset):
             }
             return inputs, targets, meta_info
         else:
-            inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc}
+            inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc, 'joints_raw': joints_raw_pmce}
             targets = {'smpl_mesh_cam': smpl_mesh_cam}
             meta_info = {'bb2img_trans': bb2img_trans, 'img2bb_trans': img2bb_trans, 'bbox': bbox, 'tight_bbox': data['tight_bbox'], 'aid': aid, 'idx': idx, 'img_path':img_path,
                          'img_shape': data['img_shape'], 'raw_joint_coord_img': raw_joint_coord_img}

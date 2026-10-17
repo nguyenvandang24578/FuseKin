@@ -64,13 +64,16 @@ def make_batch(B):
     return img, joints, mask, gt3d
 
 
-def fwd(model, img, joints, mask, is_train, gt3d=None, hint_on=None):
+def fwd(model, img, joints, mask, is_train, gt3d=None, hint_on=None, raw=None):
     """Goi model dung nhu Trainer / Tester: Student nhan 2D; T-hint nhan GT 3D + 2D (+ hint_on)."""
     if IS_THINT:
         if hint_on is not None:
             hint_on = torch.full((img.shape[0],), float(hint_on), device=img.device)
         return model(img, gt3d, is_train=is_train, pose_2d=joints, joints_mask=mask, hint_on=hint_on)
-    return model(img, joints, is_train=is_train, joints_mask=mask)
+    # lifter PMCE can joints_raw; chua truyen thi dung tam joints (chi de smoke-test shape/finite)
+    if getattr(model, 'use_pmce', False) and raw is None:
+        raw = joints
+    return model(img, joints, is_train=is_train, joints_mask=mask, pose_2d_raw=raw)
 
 
 def main():
@@ -153,7 +156,7 @@ def main():
             o_on = fwd(model, img, joints, mask, False, gt3d, hint_on=1.0)['smpl_mesh_cam']
             o_off = fwd(model, img, joints, mask, False, gt3d, hint_on=0.0)['smpl_mesh_cam']
             all_ok &= ok((o_on - o_off).abs().max().item() > 0, 'T-hint: CO goi y va KHONG goi y cho dau ra khac nhau')
-        if cfg.MODEL.joint_pe2d:
+        if cfg.MODEL.joint_pe2d and not getattr(model, 'use_pmce', False):
             torch.nn.init.normal_(sm.fusion.pe2d.proj.weight, std=0.5)     # chi de kiem tra, model khong luu
             base = fwd(model, img, joints, mask, False, gt3d, hint_on=0.0)['smpl_mesh_cam']
             # Doi toa do 2D cua khop 13 (L_Wrist). Doi 2D cung doi joint 3D (MotionBERT nhan 2D) ->
@@ -193,6 +196,7 @@ def main():
                 img = inputs['img'].to(DEVICE).float()
                 j2 = inputs['joints'].to(DEVICE).float()
                 jm = inputs['joints_mask'].to(DEVICE).float()
+                jraw = inputs['joints_raw'].to(DEVICE).float() if 'joints_raw' in inputs else None
                 gt = None
                 if IS_THINT:
                     # GT 3D giong jotr_evaluation: H36M-17 regress tu GT mesh, root-relative, met
@@ -201,7 +205,7 @@ def main():
                     gt = torch.einsum('jk,bkc->bjc', reg, mesh)
                     gt = gt - gt[:, 0:1]
                 with torch.no_grad():
-                    outs = [fwd(model, img, j2, jm, False, gt, hint_on=h) for h in ((1.0, 0.0) if IS_THINT else (None,))]
+                    outs = [fwd(model, img, j2, jm, False, gt, hint_on=h, raw=jraw) for h in ((1.0, 0.0) if IS_THINT else (None,))]
                 fin = all(torch.isfinite(o['smpl_mesh_cam']).all().item() for o in outs)
                 rng = (j2[..., :2].min().item(), j2[..., :2].max().item())
                 tag = ' (CO + KHONG goi y)' if IS_THINT else ''

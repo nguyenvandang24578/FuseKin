@@ -124,6 +124,8 @@ def get_aug_config(exclude_flip):
     scale = np.clip(np.random.randn(), -1.0, 1.0) * scale_factor + 1.0
     rot = np.clip(np.random.randn(), -2.0,
                   2.0) * rot_factor if random.random() <= 0.6 else 0
+    if cfg.DATASET.get('no_rot_aug', False):
+        rot = 0   # PMCE lifter: 2D anh goc khong xoay -> tat xoay de 3D GT khong lech
     c_up = 1.0 + color_factor
     c_low = 1.0 - color_factor
     color_scale = np.array([random.uniform(c_low, c_up), random.uniform(c_low, c_up), random.uniform(c_low, c_up)])

@@ -115,6 +115,8 @@ cfg.DATASET.halpe26_conf_thr = 0.3
 # 3DPW test: tra them GT 2D (targets['orig_joint_img'] H36M-17, khung output_hm_shape) + meta orig_joint_valid/trunc.
 # Chi de phan tich sai so 2D dau vao; evaluate() khong dung. Mac dinh TAT = hanh vi cu.
 cfg.DATASET.pw3d_test_gt2d = False
+# Tat augmentation xoay (giu scale/flip). Bat khi lifter = PMCE (2D anh goc khong xoay) de khop 3D GT.
+cfg.DATASET.no_rot_aug = False
 # Nguon 2D dau vao cua Human36M (train + test):
 #   'gt_posefix' (mac dinh, giong JOTR): train = GT 2D + nhieu PoseFix, test = GT 2D sach
 #   'halpe26'   : Human36M_{split}_halpe26.npz tu tools/extract_halpe26_h36m.py (nguong = halpe26_conf_thr)
@@ -190,6 +192,14 @@ cfg.MODEL.motionbert_2d_rootrel = False
 # H36M/MuCo can xoa 2 khop nay de dau vao giong 3DPW. Giong motionbert_2d_rootrel: PHAI khop voi checkpoint.
 # [] (mac dinh): khong xoa gi (hanh vi cu).
 cfg.MODEL.motionbert_drop_joints = []
+
+# Bo lift 2D->3D cho Student: 'motionbert' (mac dinh) | 'pmce' (GraphormerNet, co dac trung anh SPIN global).
+# PMCE nhan 2D pixel ANH GOC chuan hoa X/w*2-[1,h/w] (inputs['joints_raw']) + dac trung anh; tra 3D (mm->m).
+# PMCE 2D KHONG xoay theo augmentation -> khi dung pmce PHAI dat DATASET.no_rot_aug: True de 3D GT khong xoay.
+cfg.MODEL.pose_lifter = 'motionbert'
+cfg.MODEL.pmce_checkpoint = ''   # checkpoint PMCE (model_state_dict / epoch_*.bin cua finetune_pmce.py)
+cfg.MODEL.pmce_dim = 256   # embed_dim cua PMCE GraphormerNet (TACH khoi hpe_dim cua fusion)
+cfg.MODEL.pmce_dep = 3
 
 # ---- Teacher: ep Teacher phai dung anh ----
 # (A) Tron GT voi joint MotionBERT lift tu 2D: input = (1-a)*GT + a*lift, a ~ U(0, alpha_max) moi mau luc train.

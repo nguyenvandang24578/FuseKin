@@ -102,11 +102,13 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda', teacher_hint_on=
                     joints_mask=model_inputs.get('joints_mask'),
                 )
             else:
+                _jr = model_inputs.get('joints_raw')
                 outputs = model(
                     model_inputs['img'], model_inputs['joints'],
                     is_train=False,
                     kp2d=kp2d_eval, kp_conf=kp_conf_eval,
                     joints_mask=model_inputs.get('joints_mask'),
+                    pose_2d_raw=_jr.float() if _jr is not None else None,
                 )
 
             pred_mesh = outputs['smpl_mesh_cam'].detach().cpu().numpy()
