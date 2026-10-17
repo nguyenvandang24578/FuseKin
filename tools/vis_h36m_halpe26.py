@@ -53,7 +53,7 @@ def get_sample(ds, idx, source):
     base = ds.dataset
     old = base.h36m_2d_source
     base.h36m_2d_source = source
-    seed_all(100003 * idx + 7)
+    seed_all((100003 * idx + 7) % (2 ** 32 - 1))   # numpy chi nhan seed < 2^32
     try:
         return ds[idx]
     finally:
