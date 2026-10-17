@@ -12,7 +12,8 @@ Split ho tro:
 Cach dua 2D vao tung model (chung 1 nguon 2D, chi khac cach chuan hoa):
   * MotionBERT: inputs['joints'] (chuan hoa [-1, 1] theo khung crop, wrapper) + joints_mask -- giong
     finetune_motionbert.py / compare_motionbert_gt2d.py.
-  * PMCE      : 2D pixel ANH GOC -> normalize_screen_coordinates(X, w, h) = X/w*2 - [1, h/w], tru root,
+  * PMCE      : 2D pixel ANH GOC -> normalize_screen_coordinates(X, w, h) = X/w*2 - [1, h/w], KHONG tru root
+    (dung nhu PMCE/Human36M/dataset.py get_single_item; ban cu tru root la SAI -> --pmce_2d_rootrel de tai hien),
     lap 16 frame (fallback goc cua PMCE khi chi co 1 anh). 2D detector lay tu meta['raw_joint_coord_img'];
     GT 2D lay bang nghich dao phep affine crop (img2bb_trans) cua targets['orig_joint_img'].
   * PMCE them dac trung anh SPIN ResNet-50 (global-average-pool, 2048-d); crop 256 (PMCE goc 224) -> xap xi.
@@ -75,6 +76,8 @@ def main():
     ap.add_argument('--mb_ckpt', default='',
                     help="(Tuy chon) checkpoint MotionBERT (khoa 'model_pos') -> chay tren CUNG mau, CUNG 2D voi PMCE")
     ap.add_argument('--gt2d', action='store_true', help='Them dong GT 2D sach (oracle) cho ca 2 model')
+    ap.add_argument('--pmce_2d_rootrel', action='store_true',
+                    help='(Chi de tai hien ban cu) tru root 2D truoc khi dua vao PMCE. PMCE goc KHONG tru root.')
     ap.add_argument('--spin_ckpt', default='data_final/base_data/spin_model_checkpoint.pth.tar',
                     help='Checkpoint SPIN ResNet-50 dung de trich dac trung anh (giong backbone chinh cua FuseKin)')
     ap.add_argument('--split', default='3dpw', help="'3dpw' | '3dpw-oc' | '3dpw-pc' | 'Human36M'")
@@ -181,7 +184,8 @@ def main():
         xy_norm = np.empty_like(raw_xy)
         for b in range(B):
             xy_norm[b] = normalize_screen_coordinates_np(raw_xy[b], img_h[b], img_w[b])
-        xy_norm = xy_norm - xy_norm[:, 0:1, :]          # root-relative, giong PMCE/Human36M/dataset.py
+        if args.pmce_2d_rootrel:
+            xy_norm = xy_norm - xy_norm[:, 0:1, :]      # ban cu (sai so voi PMCE goc)
         xy_norm = xy_norm * (mask[..., 0:1] > 0)         # khop khong hop le -> 0
         x = torch.from_numpy(xy_norm).to(device).float().unsqueeze(1).repeat(1, SEQLEN, 1, 1)   # (B, T, 17, 2)
         pred = pmce(x, img_feat)
