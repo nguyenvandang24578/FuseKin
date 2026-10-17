@@ -479,6 +479,23 @@ class PW3D(torch.utils.data.Dataset):
             inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc}
             targets = {'smpl_mesh_cam': smpl_mesh_cam}
             meta_info = {'bb2img_trans': bb2img_trans, 'img2bb_trans': img2bb_trans, 'bbox': bbox, 'tight_bbox': data['tight_bbox'], 'aid': aid, 'idx': idx, 'img_path':img_path}
+            if cfg.DATASET.get('pw3d_test_gt2d', False):
+                # GT 2D (H36M-17) cho tap test: chieu khop H36M regress tu mesh GT len anh, cung cach nhanh train.
+                # Cung khung voi inputs['joints'] (output_hm_shape, truoc khi wrapper chuan hoa ve [-1, 1]).
+                # Chi de phan tich (vd sai so 2D detector), KHONG dung trong evaluate().
+                gt_h36m_cam = np.dot(self.h36m_joint_regressor, smpl_mesh_cam).astype(np.float32)  # (17, 3) met
+                gt_h36m_img = cam2pixel(gt_h36m_cam, cam_param['focal'], cam_param['princpt'])  # (17, 3) pixel anh goc
+                gt_xy1 = np.concatenate((gt_h36m_img[:, :2], np.ones_like(gt_h36m_img[:, 0:1])), 1)
+                gt_h36m_img[:, :2] = np.dot(img2bb_trans, gt_xy1.transpose(1, 0)).transpose(1, 0)[:, :2]
+                gt_h36m_img[:, 0] = gt_h36m_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+                gt_h36m_img[:, 1] = gt_h36m_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+                gt_trunc = (
+                    (gt_h36m_img[:, 0] >= 0) * (gt_h36m_img[:, 0] < cfg.output_hm_shape[2]) *
+                    (gt_h36m_img[:, 1] >= 0) * (gt_h36m_img[:, 1] < cfg.output_hm_shape[1])
+                ).reshape(-1, 1).astype(np.float32)
+                targets['orig_joint_img'] = gt_h36m_img.astype(np.float32)  # cot z = do sau tuyet doi (met), giong nhanh train
+                meta_info['orig_joint_valid'] = np.ones((len(self.h36m_joints_name), 1), dtype=np.float32)
+                meta_info['orig_joint_trunc'] = gt_trunc  # 1 = khop GT nam trong khung crop
             return inputs, targets, meta_info
 
     def random_idx_eval(self, outs, index):
