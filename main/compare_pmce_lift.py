@@ -1,43 +1,33 @@
-"""So sanh pose lift cua PMCE (GraphormerNet, checkpoint train tren Human36M 17 khop) voi MotionBERT hien tai.
+"""So sanh pose lift cua PMCE (GraphormerNet, checkpoint train tren Human36M 17 khop) voi MotionBERT,
+tren CUNG mau, CUNG 2D dau vao, CUNG giao thuc (17 khop H36M, root-relative, mm).
 
-Ho tro 2 split test, dung chung quy uoc (17 khop H36M, root-relative, mm) nhu main/compare_motionbert_gt2d.py:
-  --split 3dpw      : 2D dau vao la 2D THUC TE (raw_joint_coord_img, cung nguon voi inputs['joints']/'halpe').
-                       So sanh truc tiep voi 2 dong da co cua MotionBERT: halpe=72.50mm / gt2d=63.17mm
-                       (xem 01_PROJECT_CONTEXT.md). PMCE la CHEO-DOMAIN (chi train Human3.6M, khong thay 3DPW).
-  --split Human36M  : giao thuc GT 2D SACH (oracle) co san cua tap test H36M (S9, S11, cam 4) -- xem
-                       data_final/Human36M/dataset.py nhanh "if self.data_split != 'train'". KHONG cheo-domain
-                       (PMCE train chinh tren H36M) nhung 2D la oracle, khong phai detector thuc -> KHONG so
-                       sanh truc tiep so voi dong '3dpw' (2 giao thuc 2D khac nhau).
+Split ho tro:
+  --split 3dpw | 3dpw-oc | 3dpw-pc : 2D dau vao = 2D detector cua dataset (DATASET.pw3d_2d_source, vd Halpe-26).
+                                     PMCE la CHEO-DOMAIN (chi train Human3.6M).
+  --split Human36M                 : S9, S11, camera 4. 2D dau vao theo DATASET.h36m_2d_source:
+                                     'halpe26' = 2D detector that (can Human36M_test_halpe26.npz),
+                                     'gt_posefix' = GT 2D sach (oracle).
+  --gt2d                           : them dong GT 2D sach (oracle) cho ca 2 model (3DPW: tu bat pw3d_test_gt2d).
 
-Khac MotionBERT:
-  - GraphormerNet nhan THEM dac trung anh (SPIN ResNet-50, global-average-pool -> 2048-d) dua vao moi khop,
-    khong chi 2D don thuan.
-  - PMCE train voi seqlen=16 frame lien tiep. Hien FuseKin chua co frame lien tiep thuc te -> nhan ban 1 anh
-    thanh 16 ban giong nhau (dung dung hanh vi fallback goc cua PMCE khi start_index==end_index,
-    xem PMCE/Human36M/dataset.py get_single_item/get_sequence).
-  - 2D dau vao phai chuan hoa theo quy uoc cua PMCE: normalize_screen_coordinates(X, w, h) = X/w*2 - [1, h/w],
-    dung W,H cua ANH GOC (truoc crop) -- khac han 2D chuan hoa [-1,1] theo khung crop ma FuseKin dung noi bo.
-    Script nay dung meta['raw_joint_coord_img'] (2D pixel ANH GOC) + meta['img_shape'] (= (h, w) ANH GOC),
-    2 truong moi them vao data_final/PW3D/dataset.py + lib/utils/jotr_dataset.py, chi co khi
-    dataset.keep_vis_info = True (bat trong script nay, KHONG doi hanh vi mac dinh cua dataset).
-  - PMCE goc dung crop 224x224, FuseKin dung crop 256x256. Vi dung global-average-pool tren toan bo feature map
-    (khong phai AvgPool2d kernel 7x7 co dinh cua PMCE) nen chenh lech kich thuoc crop nay duoc coi la xap xi
-    chap nhan duoc (da thong nhat voi nguoi dung, xem phan "huong moi" trong 01_PROJECT_CONTEXT.md).
-  - Chi so sanh dong "2D thuc te" (tuong duong dong 'halpe' cua compare_motionbert_gt2d.py), dung
-    raw_joint_coord_img + inputs['joints_mask'] lam 2D/conf dau vao. Dong 'gt2d' oracle cho PMCE la buoc
-    tiep theo, chua lam trong script nay.
-  - Checkpoint PMCE goc (Human3.6M) thuong xuat pose3d theo milimet, trong khi GT cua FuseKin (orig_joint_cam /
-    tu smpl_mesh_cam) theo met -> script tu phat hien ti le qua do dai xuong dui (khop 1-0) VA IN RO ra man hinh
-    de nguoi dung tu kiem tra, khong am tham gia dinh (giong cach lam cua main/debug_pose_estimation.py).
+Cach dua 2D vao tung model (chung 1 nguon 2D, chi khac cach chuan hoa):
+  * MotionBERT: inputs['joints'] (chuan hoa [-1, 1] theo khung crop, wrapper) + joints_mask -- giong
+    finetune_motionbert.py / compare_motionbert_gt2d.py.
+  * PMCE      : 2D pixel ANH GOC -> normalize_screen_coordinates(X, w, h) = X/w*2 - [1, h/w], tru root,
+    lap 16 frame (fallback goc cua PMCE khi chi co 1 anh). 2D detector lay tu meta['raw_joint_coord_img'];
+    GT 2D lay bang nghich dao phep affine crop (img2bb_trans) cua targets['orig_joint_img'].
+  * PMCE them dac trung anh SPIN ResNet-50 (global-average-pool, 2048-d); crop 256 (PMCE goc 224) -> xap xi.
+  * Checkpoint PMCE goc thuong xuat mm, GT FuseKin la met -> tu phat hien qua do dai xuong dui (khop 1-0), IN RA.
 
 Chay (tu thu muc goc repo):
   python main/compare_pmce_lift.py --cfg ./config/finetune_motionbert_halpe26.yaml \
       --pmce_ckpt /path/to/pmce_human36m_posenet.pth.tar \
-      --split 3dpw --max_samples 2000
+      --mb_ckpt experiment/finetune_motionbert_halpe26/best_epoch.bin \
+      --split 3dpw --max_samples 0 --gt2d
+  # H36M voi 2D Halpe: them 'h36m_2d_source: halpe26' vao muc DATASET cua yml, roi --split Human36M
+Khong truyen --mb_ckpt -> chi chay PMCE (nhu ban cu).
 
-Checkpoint PMCE: dang format {'epoch','model_state_dict','optim_state_dict','scheduler_state_dict','train_log','test_log'}
-(xem PMCE/base.py Trainer/Tester). Script tu bo prefix 'module.' neu co va nap voi strict=False, in ro
-missing/unexpected keys de nguoi dung kiem tra dung loai checkpoint (17 khop human36, KHONG phai 19 khop smplcoco).
+Checkpoint PMCE: {'epoch','model_state_dict',...} (PMCE/base.py). Tu bo prefix 'module.', nap strict=False va in
+missing/unexpected keys (ban 17 khop human36, KHONG phai 19 khop smplcoco).
 """
 import os, sys, json
 sys.path.append('./lib')
@@ -62,15 +52,32 @@ def normalize_screen_coordinates_np(xy, h, w):
     return xy / w * 2.0 - offset
 
 
+def hm_to_raw_px(xy_hm, img2bb):
+    """Toa do khung output_hm_shape (B, J, 2) -> pixel ANH GOC, dung nghich dao affine crop img2bb (B, 2, 3)."""
+    xy = xy_hm.copy()
+    xy[..., 0] = xy[..., 0] / cfg.output_hm_shape[2] * cfg.input_img_shape[1]
+    xy[..., 1] = xy[..., 1] / cfg.output_hm_shape[1] * cfg.input_img_shape[0]
+    out = np.empty_like(xy)
+    for b in range(xy.shape[0]):
+        A = np.concatenate([img2bb[b], np.array([[0, 0, 1]], dtype=img2bb.dtype)], axis=0)
+        Ainv = np.linalg.inv(A)[:2]
+        xy1 = np.concatenate([xy[b], np.ones_like(xy[b][:, :1])], axis=1)
+        out[b] = xy1 @ Ainv.T
+    return out.astype(np.float32)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--cfg', default='config/finetune_motionbert_halpe26.yaml',
-                    help='Dung chung cfg voi compare_motionbert_gt2d.py de cung giao thuc du lieu (lift_only, pw3d_2d_source, ...)')
+                    help='Dung chung cfg voi compare_motionbert_gt2d.py (MOTIONBERT.*, pw3d/h36m_2d_source, ...)')
     ap.add_argument('--pmce_ckpt', required=True,
-                    help="Checkpoint GraphormerNet cua PMCE (da train tren Human36M, 17 khop, hpe_dim=256, hpe_dep=3, seqlen=16)")
+                    help="Checkpoint GraphormerNet cua PMCE (Human36M, 17 khop, hpe_dim=256, hpe_dep=3, seqlen=16)")
+    ap.add_argument('--mb_ckpt', default='',
+                    help="(Tuy chon) checkpoint MotionBERT (khoa 'model_pos') -> chay tren CUNG mau, CUNG 2D voi PMCE")
+    ap.add_argument('--gt2d', action='store_true', help='Them dong GT 2D sach (oracle) cho ca 2 model')
     ap.add_argument('--spin_ckpt', default='data_final/base_data/spin_model_checkpoint.pth.tar',
                     help='Checkpoint SPIN ResNet-50 dung de trich dac trung anh (giong backbone chinh cua FuseKin)')
-    ap.add_argument('--split', default='3dpw', help="'3dpw' (2D thuc te) hoac 'Human36M' (2D GT sach, oracle)")
+    ap.add_argument('--split', default='3dpw', help="'3dpw' | '3dpw-oc' | '3dpw-pc' | 'Human36M'")
     ap.add_argument('--max_samples', type=int, default=2000, help='<=0: toan bo; lay mau trai deu')
     ap.add_argument('--batch_size', type=int, default=16)
     ap.add_argument('--workers', type=int, default=4)
@@ -81,21 +88,34 @@ def main():
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
     update_config(args.cfg)
     cfg.DATASET.workers = args.workers
+    if args.gt2d:
+        cfg.DATASET.pw3d_test_gt2d = True   # 3DPW test tra them targets['orig_joint_img'] (H36M test luon co)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = torch.device('cuda')
 
-    # QUAN TRONG: khac voi compare_motionbert_gt2d.py (chi can 2D, khong doc anh), GraphormerNet can ANH THUC
-    # de trich dac trung SPIN. cfg.DATASET.lift_only=True (thuong duoc bat trong cfg finetune MotionBERT) se
-    # lam PW3D bo qua viec doc anh (img = torch.zeros(1), xem data_final/PW3D/dataset.py) -> ep ve False o day,
-    # doc lap voi gia tri trong file --cfg, de dam bao luon co anh thuc.
+    # GraphormerNet can ANH THUC (dac trung SPIN) -> ep lift_only = False bat ke --cfg.
     if cfg.DATASET.lift_only:
-        print(f'[cfg] lift_only=True trong {args.cfg} -> ep ve False de PW3D doc anh thuc cho SPIN backbone.')
+        print(f'[cfg] lift_only=True trong {args.cfg} -> ep ve False de dataset doc anh thuc cho SPIN backbone.')
     cfg.DATASET.lift_only = False
+
+    is_h36m = args.split == 'Human36M'
+    if is_h36m:
+        src = cfg.DATASET.get('h36m_2d_source', 'gt_posefix')
+        det_label = 'halpe' if src == 'halpe26' else 'gt2d-input'
+    else:
+        src = cfg.DATASET.pw3d_2d_source
+        det_label = 'halpe' if src == 'halpe26' else 'openpose'
+    print(f'[cfg] split={args.split} | nguon 2D dau vao = {src} (dong "{det_label}") | gt2d oracle = {args.gt2d}')
+    if is_h36m and src != 'halpe26':
+        print('  LUU Y: h36m_2d_source != halpe26 -> dau vao test H36M la GT 2D sach (oracle), khong phai detector.')
 
     # ---------------- Models ----------------
     from models.backbones.resnet import ResNetBackbone
     from models.PoseEstimation import get_model as get_pmce_model
+    # dung chung ham voi finetune_motionbert.py -> cung giao thuc dau vao / PA-MPJPE voi compare_motionbert_gt2d.py
+    from finetune_motionbert import build_model, make_mb_input, normalize_hm_xy, batch_pa_errors
+    from utils.h36m_adapter import h36m_joint_indices
 
     print('==> Nap SPIN ResNet-50 (trich dac trung anh, global-average-pool)...')
     backbone = ResNetBackbone(resnet_type=50)
@@ -116,10 +136,23 @@ def main():
               '(human36), hpe_dim=256, hpe_dep=3 hay khong (ban 19 khop smplcoco se lech shape spatial_pos_embed).')
     pmce = pmce.eval()
 
+    mb = None
+    if args.mb_ckpt:
+        print('==> Nap MotionBERT...')
+        mb = build_model(cfg.MOTIONBERT)
+        mck = torch.load(args.mb_ckpt, map_location=lambda s, l: s)
+        mb.load_state_dict(mck['model_pos'], strict=True)
+        mb.eval()
+        rootrel = cfg.MODEL.motionbert_2d_rootrel
+        drop_idx = h36m_joint_indices(list(cfg.MODEL.motionbert_drop_joints))
+        meta_ck = mck.get('fusekin_meta', {})
+        print(f"  [ckpt] {args.mb_ckpt} | epoch {mck.get('epoch', '?')} | train_list: {meta_ck.get('train_list', '?')} "
+              f"| rootrel_2d={rootrel} | drop={list(cfg.MODEL.motionbert_drop_joints)}")
+
     # ---------------- Data ----------------
     from utils.jotr_dataset import get_test_dataset
     dataset = get_test_dataset(args.split, None)
-    dataset.keep_vis_info = True   # bat de lay raw_joint_coord_img + img_shape qua meta (xem lib/utils/jotr_dataset.py)
+    dataset.keep_vis_info = True
     n_total = len(dataset)
     if args.max_samples <= 0 or args.max_samples >= n_total:
         idxs = np.arange(n_total)
@@ -128,104 +161,132 @@ def main():
     loader = DataLoader(Subset(dataset, idxs.tolist()), batch_size=args.batch_size, shuffle=False,
                         num_workers=cfg.DATASET.workers, pin_memory=True)
     reg = torch.as_tensor(dataset.dataset.h36m_joint_regressor, dtype=torch.float32, device=device)
-    print(f'[data] {args.split}: dung {len(idxs)}/{n_total} mau, seqlen={SEQLEN} (nhan ban 1 anh)')
+    print(f'[data] {args.split}: dung {len(idxs)}/{n_total} mau, seqlen PMCE={SEQLEN} (nhan ban 1 anh)')
 
-    if dataset[0][2].get('raw_joint_coord_img') is None:
-        raise SystemExit("meta khong co 'raw_joint_coord_img'. Kiem tra data_final/PW3D/dataset.py + "
-                         "lib/utils/jotr_dataset.py da duoc cap nhat (VIS_META_KEYS) va dataset.keep_vis_info=True.")
+    s0 = dataset[0]
+    if s0[2].get('raw_joint_coord_img') is None:
+        raise SystemExit("meta khong co 'raw_joint_coord_img' (kiem tra dataset + VIS_META_KEYS).")
+    if args.gt2d and 'orig_joint_img' not in s0[1]:
+        raise SystemExit(f"--gt2d nhung targets khong co 'orig_joint_img' (keys: {list(s0[1].keys())}).")
 
-    err_pj, pa_err, mask_sum = [], [], np.zeros(len(JOINTS))
-    bonelen_ratio_log = []
+    variants = [det_label] + (['gt2d'] if args.gt2d else [])
+    models = ['pmce'] + (['motionbert'] if mb is not None else [])
+    res = {(m, v): {'err': [], 'pa': [], 'mask': np.zeros(len(JOINTS))} for m in models for v in variants}
+    ratio_log = []
     n_seen = 0
 
-    # import batch_pa_errors tu finetune_motionbert.py de dung chung cong thuc PA-MPJPE voi compare_motionbert_gt2d.py
-    from finetune_motionbert import batch_pa_errors
+    def run_pmce(raw_xy, mask, img_h, img_w, img_feat):
+        """raw_xy (B, 17, 2) pixel anh goc, mask (B, 17, 1) numpy -> pred root-relative (B, 17, 3) met."""
+        B = raw_xy.shape[0]
+        xy_norm = np.empty_like(raw_xy)
+        for b in range(B):
+            xy_norm[b] = normalize_screen_coordinates_np(raw_xy[b], img_h[b], img_w[b])
+        xy_norm = xy_norm - xy_norm[:, 0:1, :]          # root-relative, giong PMCE/Human36M/dataset.py
+        xy_norm = xy_norm * (mask[..., 0:1] > 0)         # khop khong hop le -> 0
+        x = torch.from_numpy(xy_norm).to(device).float().unsqueeze(1).repeat(1, SEQLEN, 1, 1)   # (B, T, 17, 2)
+        pred = pmce(x, img_feat)
+        return pred - pred[:, 0:1, :]
 
     with torch.no_grad():
-        for bi, (inputs, targets, meta) in enumerate(tqdm(loader, desc='PMCE GraphormerNet')):
+        for bi, (inputs, targets, meta) in enumerate(tqdm(loader, desc='PMCE vs MotionBERT')):
             B = inputs['img'].shape[0]
 
-            # ---- 3D GT (giong compare_motionbert_gt2d.py) ----
+            # ---- 3D GT ----
             if 'orig_joint_cam' in targets:
                 gt3d = targets['orig_joint_cam'].to(device).float()
             else:
                 gt3d = torch.matmul(reg[None], targets['smpl_mesh_cam'].to(device).float())
             gt3d = gt3d - gt3d[:, 0:1, :]   # root-relative, met
 
-            # ---- Dac trung anh: SPIN global-average-pool, nhan ban qua T=16 frame ----
+            # ---- Dac trung anh cho PMCE ----
             img = inputs['img'].to(device).float()
-            _, feat_token = backbone(img)                       # feat_token: (B, 1, 2048)
-            global_feat = feat_token.view(B, -1)                 # (B, 2048)
-            img_feat = global_feat.unsqueeze(1).repeat(1, SEQLEN, 1)   # (B, T, 2048)
+            _, feat_token = backbone(img)
+            img_feat = feat_token.view(B, -1).unsqueeze(1).repeat(1, SEQLEN, 1)   # (B, T, 2048)
+            img_h = meta['img_shape'][0].numpy().astype(np.float32)
+            img_w = meta['img_shape'][1].numpy().astype(np.float32)
 
-            # ---- 2D dau vao: raw_joint_coord_img (pixel ANH GOC) -> normalize_screen_coordinates(h, w) ----
-            raw_xy = meta['raw_joint_coord_img'][..., :2].numpy().astype(np.float32)   # (B, 17, 2) pixel anh goc
-            # data['img_shape'] = (img_height, img_width) la tuple 2 so (xem data_final/PW3D/dataset.py) ->
-            # DataLoader default_collate tra ve TUPLE 2 tensor (B,), KHONG phai 1 tensor (B,2).
-            img_h = meta['img_shape'][0].numpy().astype(np.float32)                    # (B,)
-            img_w = meta['img_shape'][1].numpy().astype(np.float32)                    # (B,)
-            conf = inputs['joints_mask'].numpy().astype(np.float32)                    # (B, 17, 1) -- cung nguon voi raw_xy
+            # ---- 2D cho tung bien the: (xy MotionBERT [-1,1] crop, conf tensor), (raw px PMCE, mask numpy) ----
+            conf_det = inputs['joints_mask'].float()
+            v2d = {det_label: (inputs['joints'][..., :2].float(), conf_det,
+                               meta['raw_joint_coord_img'][..., :2].numpy().astype(np.float32),
+                               conf_det.numpy())}
+            if args.gt2d:
+                gt_hm = targets['orig_joint_img'][..., :2].float()
+                gt_mask = (meta['orig_joint_valid'] * meta['orig_joint_trunc']).float()
+                gt_xy = normalize_hm_xy(gt_hm) * (gt_mask > 0)
+                gt_raw = hm_to_raw_px(gt_hm.numpy(), meta['img2bb_trans'].numpy().astype(np.float64))
+                v2d['gt2d'] = (gt_xy, gt_mask, gt_raw, gt_mask.numpy())
 
-            xy_norm = np.empty_like(raw_xy)
-            for b in range(B):
-                xy_norm[b] = normalize_screen_coordinates_np(raw_xy[b], img_h[b], img_w[b])
-            xy_norm = xy_norm - xy_norm[:, 0:1, :]            # root-relative, giong PMCE/Human36M/dataset.py
-            xy_norm = xy_norm * (conf[..., 0:1] > 0)           # khop khong hop le -> 0 (giong jotr_dataset.py)
-
-            x = torch.from_numpy(xy_norm).to(device).float().unsqueeze(1).repeat(1, SEQLEN, 1, 1)   # (B, T, 17, 2)
-
-            pred = pmce(x, img_feat)                           # (B, 17, 3)
-            pred_rel = pred - pred[:, 0:1, :]
-
-            # ---- Tu phat hien ti le mm/met qua do dai xuong dui (khop 1-0), giong debug_pose_estimation.py ----
-            gt_bone = torch.norm(gt3d[:, 1] - gt3d[:, 0], dim=-1)          # (B,) met
-            pred_bone = torch.norm(pred_rel[:, 1] - pred_rel[:, 0], dim=-1)
-            ratio = (pred_bone / gt_bone.clamp_min(1e-6)).mean().item()
-            bonelen_ratio_log.append(ratio)
-            if ratio > 10:
-                pred_rel = pred_rel / 1000.0   # pred dang la mm -> doi ve met cho khop voi GT
-
-            err_pj.append((torch.norm(pred_rel - gt3d, dim=-1) * 1000).cpu().numpy())   # mm
-            pa_err.append((batch_pa_errors(pred_rel, gt3d) * 1000).cpu().numpy())        # mm
-            mask_sum += (conf[..., 0] > 0).sum(0)
+            for v, (xy_mb, conf_mb, raw_xy, mask_np) in v2d.items():
+                # PMCE
+                pred = run_pmce(raw_xy, mask_np, img_h, img_w, img_feat)
+                gt_bone = torch.norm(gt3d[:, 1] - gt3d[:, 0], dim=-1)
+                ratio = (torch.norm(pred[:, 1] - pred[:, 0], dim=-1) / gt_bone.clamp_min(1e-6)).mean().item()
+                ratio_log.append(ratio)
+                if ratio > 10:
+                    pred = pred / 1000.0   # pred dang la mm -> met
+                r = res[('pmce', v)]
+                r['err'].append((torch.norm(pred - gt3d, dim=-1) * 1000).cpu().numpy())
+                r['pa'].append((batch_pa_errors(pred, gt3d) * 1000).cpu().numpy())
+                r['mask'] += (mask_np[..., 0] > 0).sum(0)
+                # MotionBERT
+                if mb is not None:
+                    pm = mb(make_mb_input(xy_mb.to(device), conf_mb.to(device), rootrel, drop_idx))[:, 0]
+                    pm = pm - pm[:, 0:1, :]
+                    r = res[('motionbert', v)]
+                    r['err'].append((torch.norm(pm - gt3d, dim=-1) * 1000).cpu().numpy())
+                    r['pa'].append((batch_pa_errors(pm, gt3d) * 1000).cpu().numpy())
+                    r['mask'] += (conf_mb[..., 0] > 0).float().sum(0).numpy()
             n_seen += B
 
-    err_pj = np.concatenate(err_pj)      # (N, 17) mm
-    pa_err = np.concatenate(pa_err)      # (N,) mm
-    mpjpe = err_pj.mean(1)               # (N,)
-    avg_ratio = float(np.mean(bonelen_ratio_log))
+    for r in res.values():
+        r['err'] = np.concatenate(r['err'])     # (N, 17) mm
+        r['pa'] = np.concatenate(r['pa'])       # (N,) mm
+    avg_ratio = float(np.mean(ratio_log))
 
     # ---------------- In ket qua ----------------
-    is_3dpw = args.split.startswith('3dpw')
-    row_label = 'pmce (raw2d)' if is_3dpw else 'pmce (gt2d-oracle)'
     print('\n' + '=' * 78)
-    print(f'PMCE GraphormerNet lift | {args.split} | n={n_seen} | 17 khop H36M, root-relative (mm)')
-    print(f'(ti le do dai xuong dui pred/gt trung binh = {avg_ratio:.2f} -> '
-          f'{"da chia pred cho 1000 (mm->m)" if avg_ratio > 10 else "KHONG doi ti le (coi pred da la met)"})')
+    print(f'Lift 2D -> 3D | {args.split} | n={n_seen} | 17 khop H36M, root-relative (mm) | cung mau, cung 2D')
+    print(f'(PMCE: ti le xuong dui pred/gt TB = {avg_ratio:.2f} -> '
+          f'{"da chia pred cho 1000 (mm->m)" if avg_ratio > 10 else "giu nguyen (pred da la met)"})')
     print('=' * 78)
-    print(f'{"dau vao 2D":<20}{"MPJPE":>10}{"PA-MPJPE":>11}{"khop co mat":>14}')
-    print(f'{row_label:<20}{mpjpe.mean():>10.2f}{pa_err.mean():>11.2f}{mask_sum.mean() / n_seen * 100:>13.1f}%')
-    if is_3dpw:
-        print('\n  So sanh voi MotionBERT hien tai (xem 01_PROJECT_CONTEXT.md, cung tap test 3dpw, cung giao thuc 2D thuc te):')
-        print('    MotionBERT halpe (2D detector thuc): 72.50 mm')
-        print('    MotionBERT gt2d  (2D GT oracle)     : 63.17 mm')
-        print('  LUU Y: PMCE checkpoint train CHEO-DOMAIN (chi Human3.6M, KHONG thay 3DPW luc train) -> ket qua nay')
-        print('  phan anh kha nang GENERALIZE, khong phai so sanh cong bang 100% ve du lieu train.')
-    else:
-        print('\n  LUU Y: day la giao thuc GT 2D SACH (oracle) co san cua tap test H36M -- KHONG CUNG giao thuc 2D')
-        print('  voi dong "pmce (raw2d)" cua --split 3dpw (2D thuc te). KHONG so sanh truc tiep 2 split nay voi nhau.')
-        print('  PMCE KHONG cheo-domain o day (checkpoint train chinh tren H36M) -> ket qua nay la "san nha" cua PMCE.')
+    print(f'{"model":<12}{"dau vao 2D":<14}{"MPJPE":>10}{"PA-MPJPE":>11}{"khop co mat":>14}')
+    for m in models:
+        for v in variants:
+            r = res[(m, v)]
+            print(f'{m:<12}{v:<14}{r["err"].mean(1).mean():>10.2f}{r["pa"].mean():>11.2f}'
+                  f'{r["mask"].mean() / n_seen * 100:>13.1f}%')
 
-    print(f'\n{"khop":<12}{"pmce (mm)":>12}')
+    if mb is not None:
+        print()
+        for v in variants:
+            d = res[('motionbert', v)]['err'].mean(1) - res[('pmce', v)]['err'].mean(1)
+            se = d.std(ddof=1) / np.sqrt(len(d))
+            print(f'[{v}] motionbert - pmce (MPJPE): {d.mean():+.2f} +/- {1.96 * se:.2f} mm | '
+                  f'motionbert tot hon o {(d < 0).mean() * 100:.1f}% mau')
+        print('  (khoang tin cay coi cac mau doc lap -> lac quan voi frame lien tiep cua 3DPW / H36M)')
+
+    print('\nLUU Y mien du lieu:')
+    print('  * PMCE: checkpoint chi train Human3.6M -> 3DPW la CHEO-DOMAIN, H36M la "san nha".')
+    if mb is not None:
+        print('  * MotionBERT: xem train_list cua checkpoint o tren (neu co 3dpw-train -> 3DPW test cung mien, '
+              'khong cong bang voi PMCE).')
+    if is_h36m and src != 'halpe26':
+        print('  * H36M voi gt2d-input: 2D oracle, khong so truc tiep voi so cua --split 3dpw (2D detector).')
+
+    hdr = f'\n{"khop":<12}' + ''.join(f'{(m[:4] + "/" + v)[:13]:>14}' for m in models for v in variants)
+    print(hdr)
     for j, jn in enumerate(JOINTS):
-        print(f'{jn:<12}{err_pj[:, j].mean():>12.1f}')
+        print(f'{jn:<12}' + ''.join(f'{res[(m, v)]["err"][:, j].mean():>14.1f}' for m in models for v in variants))
 
-    out = {'pmce_ckpt': args.pmce_ckpt, 'split': args.split, 'n': int(n_seen), 'cfg': args.cfg,
-           'seqlen': SEQLEN, 'bonelen_ratio': avg_ratio,
-           'mpjpe_mm': float(mpjpe.mean()), 'pa_mpjpe_mm': float(pa_err.mean()),
-           'per_joint_mm': err_pj.mean(0).tolist()}
+    out = {'pmce_ckpt': args.pmce_ckpt, 'mb_ckpt': args.mb_ckpt, 'split': args.split, 'n': int(n_seen),
+           'cfg': args.cfg, '2d_source': src, 'seqlen': SEQLEN, 'pmce_bonelen_ratio': avg_ratio,
+           'results': {f'{m}/{v}': {'mpjpe_mm': float(res[(m, v)]['err'].mean()),
+                                    'pa_mpjpe_mm': float(res[(m, v)]['pa'].mean()),
+                                    'per_joint_mm': res[(m, v)]['err'].mean(0).tolist()}
+                       for m in models for v in variants}}
     os.makedirs(cfg.res_dir, exist_ok=True)
-    path = os.path.join(cfg.res_dir, 'compare_pmce_lift.json')
+    path = os.path.join(cfg.res_dir, f'compare_pmce_lift_{args.split}.json')
     with open(path, 'w') as f:
         json.dump(out, f, indent=2)
     print(f'\nDa luu: {path}')

@@ -352,6 +352,7 @@ class Human36M(torch.utils.data.Dataset):
             gt_joint_img = input_img.astype(np.float32)   # GT 2D sach, khung output_hm_shape (cot z = do sau mm, khong dung)
             if self.h36m_2d_source == 'halpe26':
                 in_xy, in_mask = self._halpe_input(data, False, img_shape, img2bb_trans)
+                raw_joint_coord_img = data['halpe_h36m'].copy()   # 2D dau vao pixel ANH GOC = Halpe (cho PMCE)
             else:
                 in_xy, in_mask = gt_joint_img[:, :2], joint_trunc
             inputs = {'img': img, 'joints': in_xy.astype(np.float32), 'joints_mask': in_mask.astype(np.float32)}

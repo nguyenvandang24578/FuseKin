@@ -22,7 +22,7 @@ DATASET:
     lift_only: True              # khong doc anh, khong tinh SMPL, tra thang H36M-17
     pw3d_2d_source: 'halpe26'    # 2D cua 3DPW lay tu 3DPW_{split}_halpe26.json (du 17 khop)
     halpe26_conf_thr: 0.3        # score <= nguong -> khop khong hop le (mask 0)
-
+    h36m_2d_source: 'halpe26'
 MODEL:
     motionbert_2d_rootrel: False
     # Halpe-26 co du 17 khop (Head_top that, Torso = trung diem Neck-Hip) -> KHONG xoa khop nao.
