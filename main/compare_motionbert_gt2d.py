@@ -12,6 +12,9 @@ Chay (tu thu muc goc repo):
 
 Luu y:
   * GT 2D: tap train cua 3DPW tra san; val/test tra khi cfg.DATASET.pw3d_test_gt2d = True (script tu bat).
+  * Human36M (--split Human36M, S9/S11 camera 4): GT 2D luon co. Dong dau = Halpe-26 khi
+    DATASET.h36m_2d_source: 'halpe26' (can Human36M_test_halpe26.npz tu tools/extract_halpe26_h36m.py),
+    nguoc lai dau vao la GT 2D sach (trung dong gt2d).
     Vd test: --split 3dpw | 3dpw-oc | 3dpw-pc. (3dpw-crowd + halpe26 hien bi loi ValueError, xem PLAN_FULL_DATA V3)
   * GT 2D la phep chieu CHINH XAC cua 3D dich -> day la can tren (oracle), khong phai kich ban thuc.
   * Neu checkpoint da finetune tren 3dpw-train thi ca hai dong deu da thay mau nay. Chay them voi checkpoint
@@ -62,9 +65,20 @@ def main():
     rootrel = cfg.MODEL.motionbert_2d_rootrel
     drop_names = list(cfg.MODEL.motionbert_drop_joints)
     drop_idx = h36m_joint_indices(drop_names)
-    print(f'[cfg] pw3d_2d_source={cfg.DATASET.pw3d_2d_source} | rootrel_2d={rootrel} | drop_joints={drop_names}')
-    if cfg.DATASET.pw3d_2d_source != 'halpe26':
-        print("  CANH BAO: pw3d_2d_source khong phai 'halpe26' -> dong 'halpe' dang dung 2D OpenPose.")
+    # Nguon 2D cua dong 'halpe' (khoa noi bo van la 'halpe'; chi doi nhan khi in)
+    if args.split == 'Human36M':
+        src = cfg.DATASET.get('h36m_2d_source', 'gt_posefix')
+        in_label = 'halpe' if src == 'halpe26' else 'input=gt2d'
+        print(f'[cfg] h36m_2d_source={src} | rootrel_2d={rootrel} | drop_joints={drop_names}')
+        if src != 'halpe26':
+            print("  CANH BAO: h36m_2d_source khong phai 'halpe26' -> dau vao test H36M la GT 2D sach, "
+                  "dong dau trung voi gt2d. Dat DATASET.h36m_2d_source: 'halpe26' (can tools/extract_halpe26_h36m.py).")
+    else:
+        src = cfg.DATASET.pw3d_2d_source
+        in_label = 'halpe' if src == 'halpe26' else 'openpose'
+        print(f'[cfg] pw3d_2d_source={src} | rootrel_2d={rootrel} | drop_joints={drop_names}')
+        if src != 'halpe26':
+            print("  CANH BAO: pw3d_2d_source khong phai 'halpe26' -> dong dau dang dung 2D OpenPose.")
 
     # ---------------- Model ----------------
     model = build_model(mb_cfg)
@@ -146,11 +160,11 @@ def main():
     print('=' * 78)
     print(f'{"dau vao 2D":<16}{"MPJPE":>10}{"PA-MPJPE":>11}{"khop co mat":>14}')
     for n in names:
-        print(f'{n:<16}{mpjpe[n].mean():>10.2f}{pa_err[n].mean():>11.2f}{mask_sum[n].mean() / n_seen * 100:>13.1f}%')
+        print(f'{(in_label if n == "halpe" else n):<16}{mpjpe[n].mean():>10.2f}{pa_err[n].mean():>11.2f}{mask_sum[n].mean() / n_seen * 100:>13.1f}%')
 
     d = mpjpe['halpe'] - mpjpe['gt2d']
     se = d.std(ddof=1) / np.sqrt(len(d))
-    print(f'\nhalpe - gt2d (MPJPE): {d.mean():+.2f} +/- {1.96 * se:.2f} mm | '
+    print(f'\n{in_label} - gt2d (MPJPE): {d.mean():+.2f} +/- {1.96 * se:.2f} mm | '
           f'gt2d tot hon o {(d > 0).mean() * 100:.1f}% mau | GT 2D giam loi {d.mean() / mpjpe["halpe"].mean() * 100:.1f}%')
     print('  (khoang tin cay tinh theo mau doc lap -> lac quan: cac frame 3DPW lien tiep tuong quan)')
 
@@ -162,7 +176,7 @@ def main():
     else:
         print('Loi cua 2D Halpe nam NGOAI khoang cac muc nhieu da thu (hoac khong don dieu) -> doi --noise_px')
 
-    print(f'\n{"khop":<12}{"halpe (mm)":>12}{"gt2d (mm)":>12}{"2D lech (px)":>14}')
+    print(f'\n{"khop":<12}{in_label + " (mm)":>12}{"gt2d (mm)":>12}{"2D lech (px)":>14}')
     for j, jn in enumerate(JOINTS):
         px = px_sum[j] / px_cnt[j] if px_cnt[j] > 0 else float('nan')
         print(f'{jn:<12}{err_pj["halpe"][:, j].mean():>12.1f}{err_pj["gt2d"][:, j].mean():>12.1f}{px:>14.1f}')

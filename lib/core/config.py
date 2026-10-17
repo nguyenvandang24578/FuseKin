@@ -115,6 +115,12 @@ cfg.DATASET.halpe26_conf_thr = 0.3
 # 3DPW test: tra them GT 2D (targets['orig_joint_img'] H36M-17, khung output_hm_shape) + meta orig_joint_valid/trunc.
 # Chi de phan tich sai so 2D dau vao; evaluate() khong dung. Mac dinh TAT = hanh vi cu.
 cfg.DATASET.pw3d_test_gt2d = False
+# Nguon 2D dau vao cua Human36M (train + test):
+#   'gt_posefix' (mac dinh, giong JOTR): train = GT 2D + nhieu PoseFix, test = GT 2D sach
+#   'halpe26'   : Human36M_{split}_halpe26.npz tu tools/extract_halpe26_h36m.py (nguong = halpe26_conf_thr)
+cfg.DATASET.h36m_2d_source = 'gt_posefix'
+# Thu muc chua Human36M_{split}_halpe26.npz ('' = <jotr_data_root>/Human36M)
+cfg.DATASET.h36m_halpe26_dir = ''
 cfg.DATASET.jotr_data_root = os.environ.get(
     'JOTR_DATA_ROOT',
     osp.abspath(osp.join(cfg.root_dir, 'data_final')),

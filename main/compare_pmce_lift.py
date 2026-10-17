@@ -1,7 +1,13 @@
 """So sanh pose lift cua PMCE (GraphormerNet, checkpoint train tren Human36M 17 khop) voi MotionBERT hien tai.
 
-Dung lai cung tap test 3DPW va cung quy uoc (17 khop H36M, root-relative, mm) nhu main/compare_motionbert_gt2d.py,
-de so sanh truc tiep voi 2 dong da co: halpe=72.50mm / gt2d=63.17mm (xem 01_PROJECT_CONTEXT.md).
+Ho tro 2 split test, dung chung quy uoc (17 khop H36M, root-relative, mm) nhu main/compare_motionbert_gt2d.py:
+  --split 3dpw      : 2D dau vao la 2D THUC TE (raw_joint_coord_img, cung nguon voi inputs['joints']/'halpe').
+                       So sanh truc tiep voi 2 dong da co cua MotionBERT: halpe=72.50mm / gt2d=63.17mm
+                       (xem 01_PROJECT_CONTEXT.md). PMCE la CHEO-DOMAIN (chi train Human3.6M, khong thay 3DPW).
+  --split Human36M  : giao thuc GT 2D SACH (oracle) co san cua tap test H36M (S9, S11, cam 4) -- xem
+                       data_final/Human36M/dataset.py nhanh "if self.data_split != 'train'". KHONG cheo-domain
+                       (PMCE train chinh tren H36M) nhung 2D la oracle, khong phai detector thuc -> KHONG so
+                       sanh truc tiep so voi dong '3dpw' (2 giao thuc 2D khac nhau).
 
 Khac MotionBERT:
   - GraphormerNet nhan THEM dac trung anh (SPIN ResNet-50, global-average-pool -> 2048-d) dua vao moi khop,
@@ -64,7 +70,7 @@ def main():
                     help="Checkpoint GraphormerNet cua PMCE (da train tren Human36M, 17 khop, hpe_dim=256, hpe_dep=3, seqlen=16)")
     ap.add_argument('--spin_ckpt', default='data_final/base_data/spin_model_checkpoint.pth.tar',
                     help='Checkpoint SPIN ResNet-50 dung de trich dac trung anh (giong backbone chinh cua FuseKin)')
-    ap.add_argument('--split', default='3dpw')
+    ap.add_argument('--split', default='3dpw', help="'3dpw' (2D thuc te) hoac 'Human36M' (2D GT sach, oracle)")
     ap.add_argument('--max_samples', type=int, default=2000, help='<=0: toan bo; lay mau trai deu')
     ap.add_argument('--batch_size', type=int, default=16)
     ap.add_argument('--workers', type=int, default=4)
@@ -190,18 +196,25 @@ def main():
     avg_ratio = float(np.mean(bonelen_ratio_log))
 
     # ---------------- In ket qua ----------------
+    is_3dpw = args.split.startswith('3dpw')
+    row_label = 'pmce (raw2d)' if is_3dpw else 'pmce (gt2d-oracle)'
     print('\n' + '=' * 78)
     print(f'PMCE GraphormerNet lift | {args.split} | n={n_seen} | 17 khop H36M, root-relative (mm)')
     print(f'(ti le do dai xuong dui pred/gt trung binh = {avg_ratio:.2f} -> '
           f'{"da chia pred cho 1000 (mm->m)" if avg_ratio > 10 else "KHONG doi ti le (coi pred da la met)"})')
     print('=' * 78)
-    print(f'{"dau vao 2D":<16}{"MPJPE":>10}{"PA-MPJPE":>11}{"khop co mat":>14}')
-    print(f'{"pmce (raw2d)":<16}{mpjpe.mean():>10.2f}{pa_err.mean():>11.2f}{mask_sum.mean() / n_seen * 100:>13.1f}%')
-    print('\n  So sanh voi MotionBERT hien tai (xem 01_PROJECT_CONTEXT.md, cung tap test 3dpw):')
-    print('    MotionBERT halpe (2D detector thuc): 72.50 mm')
-    print('    MotionBERT gt2d  (2D GT oracle)     : 63.17 mm')
-    print('  LUU Y: PMCE checkpoint train CHEO-DOMAIN (chi Human3.6M, KHONG thay 3DPW luc train) -> ket qua nay')
-    print('  phan anh kha nang GENERALIZE, khong phai so sanh cong bang 100% ve du lieu train.')
+    print(f'{"dau vao 2D":<20}{"MPJPE":>10}{"PA-MPJPE":>11}{"khop co mat":>14}')
+    print(f'{row_label:<20}{mpjpe.mean():>10.2f}{pa_err.mean():>11.2f}{mask_sum.mean() / n_seen * 100:>13.1f}%')
+    if is_3dpw:
+        print('\n  So sanh voi MotionBERT hien tai (xem 01_PROJECT_CONTEXT.md, cung tap test 3dpw, cung giao thuc 2D thuc te):')
+        print('    MotionBERT halpe (2D detector thuc): 72.50 mm')
+        print('    MotionBERT gt2d  (2D GT oracle)     : 63.17 mm')
+        print('  LUU Y: PMCE checkpoint train CHEO-DOMAIN (chi Human3.6M, KHONG thay 3DPW luc train) -> ket qua nay')
+        print('  phan anh kha nang GENERALIZE, khong phai so sanh cong bang 100% ve du lieu train.')
+    else:
+        print('\n  LUU Y: day la giao thuc GT 2D SACH (oracle) co san cua tap test H36M -- KHONG CUNG giao thuc 2D')
+        print('  voi dong "pmce (raw2d)" cua --split 3dpw (2D thuc te). KHONG so sanh truc tiep 2 split nay voi nhau.')
+        print('  PMCE KHONG cheo-domain o day (checkpoint train chinh tren H36M) -> ket qua nay la "san nha" cua PMCE.')
 
     print(f'\n{"khop":<12}{"pmce (mm)":>12}')
     for j, jn in enumerate(JOINTS):

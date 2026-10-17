@@ -15,6 +15,7 @@ from utils.posefix import replace_joint_img
 from utils.smpl import SMPL
 from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch_image, augmentation, load_img_from_lmdb, augmentation_noimg
 from utils.transforms import world2cam, cam2pixel, pixel2cam, rigid_align, transform_joint_to_other_db
+from utils.h36m_adapter import halpe26_to_human36m
 # from utils.vis import vis_mesh, save_obj
 
 
@@ -57,6 +58,13 @@ class Human36M(torch.utils.data.Dataset):
         self.root_joint_idx = self.smpl.root_joint_idx
         self.face_kps_vertex = self.smpl.face_kps_vertex
 
+        # Nguon 2D dau vao (cfg.DATASET.h36m_2d_source):
+        #   'gt_posefix' (mac dinh, giong JOTR): train = GT 2D + nhieu PoseFix, test = GT 2D sach
+        #   'halpe26'   : 2D RTMPose Halpe-26 tu tools/extract_halpe26_h36m.py (train + test), bo PoseFix
+        self.h36m_2d_source = cfg.DATASET.get('h36m_2d_source', 'gt_posefix')
+        if self.h36m_2d_source not in ('gt_posefix', 'halpe26'):
+            raise ValueError(f"cfg.DATASET.h36m_2d_source khong hop le: {self.h36m_2d_source}")
+        self.halpe26_conf_thr = cfg.DATASET.halpe26_conf_thr
         self.datalist = self.load_data()
         print("h36m data len: ", len(self.datalist))
 
@@ -119,6 +127,17 @@ class Human36M(torch.utils.data.Dataset):
         else:
             print("Get bounding box and root from groundtruth")
 
+        halpe_index, halpe_kpts, n_halpe_missing = None, None, 0
+        if self.h36m_2d_source == 'halpe26':
+            halpe_dir = cfg.DATASET.get('h36m_halpe26_dir', '') or osp.join(cfg.DATASET.jotr_data_root, 'Human36M')
+            halpe_path = osp.join(halpe_dir, f'Human36M_{self.data_split}_halpe26.npz')
+            if not osp.isfile(halpe_path):
+                raise FileNotFoundError(f"{halpe_path} khong ton tai. Chay tools/extract_halpe26_h36m.py --splits {self.data_split}")
+            hz = np.load(halpe_path)
+            halpe_kpts = hz['kpts']
+            halpe_index = {str(n): i for i, n in enumerate(hz['file_name'])}
+            print(f"Load Halpe-26 input: {halpe_path} ({len(halpe_index)} nguoi)")
+
         datalist = []
         for aid in db.anns.keys():
             ann = db.anns[aid]
@@ -164,6 +183,14 @@ class Human36M(torch.utils.data.Dataset):
                 if bbox is None: continue
                 root_joint_depth = joint_cam[self.h36m_root_joint_idx][2]
     
+            halpe_h36m = None
+            if halpe_index is not None:
+                hi = halpe_index.get(img['file_name'])
+                if hi is None:
+                    n_halpe_missing += 1   # anh khong doc duoc luc trich -> bo mau (test: bao loi ben duoi)
+                    continue
+                halpe_h36m = halpe26_to_human36m(halpe_kpts[hi])   # (17, 3) pixel anh goc + score
+
             datalist.append({
                 'img_path': img_path,
                 'img_id': image_id,
@@ -176,12 +203,35 @@ class Human36M(torch.utils.data.Dataset):
                 'smpl_param': smpl_param,
                 'root_joint_depth': root_joint_depth,
                 'cam_param': cam_param,
+                'halpe_h36m': halpe_h36m,
                 'num_overlap': 0,
                 'near_joints': np.zeros((1, self.coco_joint_num, 3), dtype=np.float32)  # coco_joint_num
 
             })
             
+        if n_halpe_missing:
+            msg = f"[Human36M {self.data_split}] {n_halpe_missing} mau khong co Halpe-26 trong file npz"
+            if self.data_split == 'test':
+                raise KeyError(msg + ' -> tap test bi thieu, trich lai (tools/extract_halpe26_h36m.py --splits test)')
+            print(msg + ' -> bo qua cac mau nay')
         return datalist
+
+    def _halpe_input(self, data, do_flip, img_shape, img2bb_trans):
+        """Halpe-26 (da doi H36M-17, pixel anh goc) -> 2D dau vao trong khung output_hm_shape.
+        Lat + affine GIONG khop GT o nhanh train. Tra ve xy (17, 2), mask (17, 1):
+        mask = 1 khi score > halpe26_conf_thr va khop nam trong khung crop."""
+        k = data['halpe_h36m'].copy()
+        if do_flip:
+            k[:, 0] = img_shape[1] - 1 - k[:, 0]
+            for a, b in self.h36m_flip_pairs:
+                k[a], k[b] = k[b].copy(), k[a].copy()
+        xy1 = np.concatenate((k[:, :2], np.ones_like(k[:, :1])), 1)
+        xy = np.dot(img2bb_trans, xy1.transpose(1, 0)).transpose(1, 0)[:, :2]
+        xy[:, 0] = xy[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+        xy[:, 1] = xy[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+        inside = (xy[:, 0] >= 0) * (xy[:, 0] < cfg.output_hm_shape[2]) * (xy[:, 1] >= 0) * (xy[:, 1] < cfg.output_hm_shape[1])
+        mask = ((k[:, 2] > self.halpe26_conf_thr) * inside).reshape(-1, 1).astype(np.float32)
+        return xy.astype(np.float32), mask
 
     def get_smpl_coord(self, smpl_param, cam_param, do_flip, img_shape):
         pose, shape, trans = smpl_param['pose'], smpl_param['shape'], smpl_param['trans']
@@ -275,11 +325,17 @@ class Human36M(torch.utils.data.Dataset):
             img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split)
             img = self.transform(img.astype(np.float32))/255.
 
-        if lift_only and self.data_split != 'train':
+        if self.data_split != 'train':
             # Test lifter tren H36M (S9, S11, camera 4): dau vao = GT 2D SACH (giao thuc "GT 2D input"),
             # KHONG them nhieu PoseFix (PoseFix co loi rat nang -> so do bi doi len, khong phan anh kha nang lift).
             # GT 3D = mocap, root-relative, met.
+            # Truoc day nhanh nay chi chay khi lift_only=True (dieu kien "lift_only and ..."). Bo dieu kien
+            # lift_only de nhanh nay CUNG chay duoc khi lift_only=False -> luc do img o tren la ANH THUC
+            # (load_img), dung cho mo hinh can dac trung anh (vd GraphormerNet/PMCE, xem main/compare_pmce_lift.py).
+            # Khi lift_only=True (cac cfg finetune MotionBERT hien co), img van la placeholder torch.zeros(1)
+            # nhu cu -> hanh vi mac dinh KHONG doi.
             h36m_joint_img = data['joint_img'].copy()
+            raw_joint_coord_img = h36m_joint_img.copy()  # (17,3) pixel ANH GOC -- dung cho PMCE (xem main/compare_pmce_lift.py)
             h36m_joint_cam = data['joint_cam'] - data['joint_cam'][self.h36m_root_joint_idx, None, :]
             h36m_joint_valid = data['joint_valid'].astype(np.float32)
             xy1 = np.concatenate((h36m_joint_img[:, :2], np.ones_like(h36m_joint_img[:, :1])), 1)
@@ -293,10 +349,17 @@ class Human36M(torch.utils.data.Dataset):
             joint_trunc = h36m_joint_valid * ((gt_x >= 0) * (gt_x < cfg.output_hm_shape[2]) *
                                               (gt_y >= 0) * (gt_y < cfg.output_hm_shape[1])).reshape(-1, 1).astype(np.float32)
 
-            inputs = {'img': img, 'joints': input_img[:, :2].astype(np.float32), 'joints_mask': joint_trunc}
-            targets = {'orig_joint_cam': (h36m_joint_cam / 1000).astype(np.float32)}  # milimeter to meter
-            meta_info = {'orig_joint_valid': h36m_joint_valid,
-                         'img_path': img_path, 'img2bb_trans': img2bb_trans.astype(np.float32)}  # de ve hinh
+            gt_joint_img = input_img.astype(np.float32)   # GT 2D sach, khung output_hm_shape (cot z = do sau mm, khong dung)
+            if self.h36m_2d_source == 'halpe26':
+                in_xy, in_mask = self._halpe_input(data, False, img_shape, img2bb_trans)
+            else:
+                in_xy, in_mask = gt_joint_img[:, :2], joint_trunc
+            inputs = {'img': img, 'joints': in_xy.astype(np.float32), 'joints_mask': in_mask.astype(np.float32)}
+            targets = {'orig_joint_cam': (h36m_joint_cam / 1000).astype(np.float32),  # milimeter to meter
+                       'orig_joint_img': gt_joint_img}                              # GT 2D (vd compare_motionbert_gt2d.py)
+            meta_info = {'orig_joint_valid': h36m_joint_valid, 'orig_joint_trunc': joint_trunc,
+                         'img_path': img_path, 'img2bb_trans': img2bb_trans.astype(np.float32),  # de ve hinh
+                         'img_shape': img_shape, 'raw_joint_coord_img': raw_joint_coord_img}  # cho main/compare_pmce_lift.py
             return inputs, targets, meta_info
 
         if self.data_split == 'train':
@@ -344,24 +407,31 @@ class Human36M(torch.utils.data.Dataset):
                 h36m_joint_valid = transform_joint_to_other_db(h36m_joint_valid, self.h36m_joints_name, self.joints_name)
                 h36m_joint_trunc = transform_joint_to_other_db(h36m_joint_trunc, self.h36m_joints_name, self.joints_name)
 
-            # apply PoseFix
-            input_h36m_joint_img[:, 2] = 1  # joint valid
-            tmp_joint_img = transform_joint_to_other_db(input_h36m_joint_img, self.h36m_joints_name, self.coco_joints_name)
-            tmp_joint_img = replace_joint_img(tmp_joint_img, data['tight_bbox'], data['near_joints'], data['num_overlap'], img2bb_trans)
-            tmp_joint_img = transform_joint_to_other_db(tmp_joint_img, self.coco_joints_name, self.h36m_joints_name)
-            input_h36m_joint_img[self.h36m_coco_common_jidx, :2] = tmp_joint_img[self.h36m_coco_common_jidx, :2]
-            """
-            # debug PoseFix result
-            newimg = vis_keypoints_with_skeleton(img.numpy().transpose(1, 2, 0), input_h36m_joint_img.T, self.h36m_skeleton)
-            cv2.imshow(f'{img_path}', newimg)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
-            cv2.waitKey(1)
-            import pdb; pdb.set_trace()
-            """
-            input_h36m_joint_img[:, 0] = input_h36m_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
-            input_h36m_joint_img[:, 1] = input_h36m_joint_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
-            joint_mask = h36m_joint_trunc
+            if self.h36m_2d_source == 'halpe26':
+                # 2D dau vao = Halpe-26 (lat + affine nhu GT), KHONG them PoseFix
+                in_xy, in_mask = self._halpe_input(data, do_flip, img_shape, img2bb_trans)
+                input_h36m_joint_img = np.concatenate([in_xy, in_mask], axis=1).astype(np.float32)  # H36M-17, khung hm
+                joint_mask = in_mask if lift_only else \
+                    transform_joint_to_other_db(in_mask, self.h36m_joints_name, self.joints_name)
+            else:
+                # apply PoseFix
+                input_h36m_joint_img[:, 2] = 1  # joint valid
+                tmp_joint_img = transform_joint_to_other_db(input_h36m_joint_img, self.h36m_joints_name, self.coco_joints_name)
+                tmp_joint_img = replace_joint_img(tmp_joint_img, data['tight_bbox'], data['near_joints'], data['num_overlap'], img2bb_trans)
+                tmp_joint_img = transform_joint_to_other_db(tmp_joint_img, self.coco_joints_name, self.h36m_joints_name)
+                input_h36m_joint_img[self.h36m_coco_common_jidx, :2] = tmp_joint_img[self.h36m_coco_common_jidx, :2]
+                """
+                # debug PoseFix result
+                newimg = vis_keypoints_with_skeleton(img.numpy().transpose(1, 2, 0), input_h36m_joint_img.T, self.h36m_skeleton)
+                cv2.imshow(f'{img_path}', newimg)
+                cv2.waitKey(0)
+                cv2.destroyAllWindows()
+                cv2.waitKey(1)
+                import pdb; pdb.set_trace()
+                """
+                input_h36m_joint_img[:, 0] = input_h36m_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+                input_h36m_joint_img[:, 1] = input_h36m_joint_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+                joint_mask = h36m_joint_trunc
 
             if lift_only:
                 # Chi tra du lieu lifter can, tat ca o H36M-17. Bo qua SMPL (rat ton thoi gian).

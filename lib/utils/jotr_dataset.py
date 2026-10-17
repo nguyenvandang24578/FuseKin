@@ -142,9 +142,9 @@ def get_train_dataset(name, args):
 def get_test_dataset(name, args):
     # name: '3dpw' | '3dpw-pc' | '3dpw-oc' | '3dpw-crowd' | '3dpw-val' | '3dpw-train-noaug' | 'Human36M'
     if name == 'Human36M':
-        # Split test cua H36M (S9, S11, camera 4). Hien chi ho tro khi cfg.DATASET.lift_only=True.
-        if not cfg.DATASET.lift_only:
-            raise ValueError("Test 'Human36M' hien chi ho tro cfg.DATASET.lift_only=True (finetune MotionBERT).")
+        # Split test cua H36M (S9, S11, camera 4). Chay duoc ca lift_only=True (khong doc anh, MotionBERT)
+        # va lift_only=False (doc anh thuc, vd cho GraphormerNet/PMCE -- xem main/compare_pmce_lift.py).
+        # Luu y: giao thuc 2D cua split nay la GT 2D SACH (oracle), khong phai 2D detector thuc te nhu 3DPW.
         return Human36M17Dataset(Human36M(transforms.ToTensor(), 'test'))
     if name == 'MuCo':
         raise ValueError("MuCo khong co split test (chi co train). Bo 'MuCo' khoi test_list.")
