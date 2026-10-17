@@ -358,6 +358,9 @@ class PW3D(torch.utils.data.Dataset):
         # cv2.waitKey(1)
         """
 
+        # Luu lai 2D truoc khi doi vao khung crop - dung de so sanh voi PMCE (normalize theo anh goc, xem main/compare_pmce_lift.py)
+        raw_joint_coord_img = joint_coord_img.copy()  # (17,3) pixel ANH GOC (x, y, conf/depth)
+
         # x,y affine transform, root-relative depth
         joint_coord_img_xy1 = np.concatenate((joint_coord_img[:, :2], np.ones_like(joint_coord_img[:, 0:1])), 1)
         joint_coord_img[:, :2] = np.dot(img2bb_trans, joint_coord_img_xy1.transpose(1, 0)).transpose(1, 0)[:, :2]
@@ -478,7 +481,8 @@ class PW3D(torch.utils.data.Dataset):
         else:
             inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc}
             targets = {'smpl_mesh_cam': smpl_mesh_cam}
-            meta_info = {'bb2img_trans': bb2img_trans, 'img2bb_trans': img2bb_trans, 'bbox': bbox, 'tight_bbox': data['tight_bbox'], 'aid': aid, 'idx': idx, 'img_path':img_path}
+            meta_info = {'bb2img_trans': bb2img_trans, 'img2bb_trans': img2bb_trans, 'bbox': bbox, 'tight_bbox': data['tight_bbox'], 'aid': aid, 'idx': idx, 'img_path':img_path,
+                         'img_shape': data['img_shape'], 'raw_joint_coord_img': raw_joint_coord_img}
             if cfg.DATASET.get('pw3d_test_gt2d', False):
                 # GT 2D (H36M-17) cho tap test: chieu khop H36M regress tu mesh GT len anh, cung cach nhanh train.
                 # Cung khung voi inputs['joints'] (output_hm_shape, truoc khi wrapper chuan hoa ve [-1, 1]).

@@ -4,7 +4,7 @@ data/
 *.weights
 *.log
 *.Identifier
-*.tar
+*.tar   
 # Bỏ qua các file rác của môi trường Python
 __pycache__/
 *.pyc
@@ -18,3 +18,6 @@ ViTPose/
 courtyard_arguing_00/
 experiment/
 outdoors_climbing_02/
+JOTR/   
+PMCE/
+data_final/lifter/

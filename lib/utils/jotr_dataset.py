@@ -36,7 +36,7 @@ class Human36M17Dataset(Dataset):
     LIFT_TARGET_KEYS_EVAL = {'smpl_mesh_cam', 'orig_joint_cam', 'orig_joint_img'}
     LIFT_META_KEYS = {'orig_joint_valid', 'orig_joint_trunc', 'is_3D'}
     # Them khi keep_vis_info=True (ve hinh trong finetune_motionbert.py, lay tung mau, khong qua collate)
-    VIS_META_KEYS = {'img_path', 'img2bb_trans'}
+    VIS_META_KEYS = {'img_path', 'img2bb_trans', 'img_shape', 'raw_joint_coord_img'}
 
     def __init__(self, dataset):
         self.dataset = dataset
