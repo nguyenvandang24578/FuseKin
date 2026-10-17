@@ -121,6 +121,11 @@ cfg.DATASET.pw3d_test_gt2d = False
 cfg.DATASET.h36m_2d_source = 'gt_posefix'
 # Thu muc chua Human36M_{split}_halpe26.npz ('' = <jotr_data_root>/Human36M)
 cfg.DATASET.h36m_halpe26_dir = ''
+# Nguon 2D dau vao cua MuCo (train): 'gt_posefix' (mac dinh, JOTR) | 'halpe26' (MuCo_train_halpe26.npz
+#   tu tools/extract_halpe26_muco.py, nguong = halpe26_conf_thr)
+cfg.DATASET.muco_2d_source = 'gt_posefix'
+# Thu muc chua MuCo_train_halpe26.npz ('' = <jotr_data_root>/MuCo)
+cfg.DATASET.muco_halpe26_dir = ''
 cfg.DATASET.jotr_data_root = os.environ.get(
     'JOTR_DATA_ROOT',
     osp.abspath(osp.join(cfg.root_dir, 'data_final')),
@@ -336,6 +341,9 @@ cfg.MOTIONBERT.balance_datasets = True
 cfg.MOTIONBERT.gt2d_prob = 0.0
 # Xac suat xoa ngau nhien tung khop hop le cua dau vao 2D luc train (gia lap detector bo sot khop). 0 = tat.
 cfg.MOTIONBERT.joint_drop_prob = 0.0
+# Checkpoint dung cho lan test cuoi: 'best' (theo val_set, nhu cu) | 'latest' (epoch cuoi, khong chon theo val --
+# dung khi val_set la tap khong duoc phep dung de chon model, vd 3dpw-val vi 3DPW-Crowd lay tu split validation)
+cfg.MOTIONBERT.final_ckpt = 'best'
 
 """ Diffusion (SMPL_HyperDiff) """
 cfg.DIFF = edict()

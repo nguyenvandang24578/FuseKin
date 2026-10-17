@@ -1,0 +1,75 @@
+# ======================================================
+# FuseKin — Finetune MotionBERT (lifter 2D -> 3D, F = 1) dung giao thuc JOTR: KHONG thay du lieu 3DPW.
+#   Train : Human36M (2D = Halpe-26, tools/extract_halpe26_h36m.py) + MuCo (2D = Halpe-26, tools/extract_halpe26_muco.py)
+#   Test  : 3DPW-test (2D Halpe-26) + H36M-test S9/S11 cam 4 (2D Halpe-26)
+#   Khoi tao: checkpoint MotionBERT GOC (MB_release.bin, chua finetune tren 3DPW).
+#     KHONG dung ./experiment/pretrained/full/best_epoch.bin neu ban do da train co 3dpw-train.
+#   Chon checkpoint: lay EPOCH CUOI (final_ckpt: 'latest'). 3dpw-val chi de theo doi, KHONG dung chon model
+#     (3DPW-Crowd lay tu split validation -> chon theo 3dpw-val se lam ban so Crowd).
+#   gt2d_prob thap (0.1): model quen 2D detector thay vi dua vao GT 2D sach (ban 0.5 cu: halpe - gt2d = +22..39 mm).
+#   Moi tap deu dung 2D Halpe-26 (cung 1 detector) -> khong lech nguon 2D giua train va test.
+# Truoc khi chay: Human36M_{train,test}_halpe26.npz (tools/extract_halpe26_h36m.py), MuCo_train_halpe26.npz
+#   (tools/extract_halpe26_muco.py), 3DPW_{validation,test}_halpe26.json
+# Chay: python main/finetune_motionbert.py --cfg config/finetune_motionbert_h36m_muco_halpe26.yaml --gpu 0,1,2,3
+# Danh gia lai epoch bat ky:
+#   python main/finetune_motionbert.py --cfg config/finetune_motionbert_h36m_muco_halpe26.yaml --eval_only \
+#       --ckpt experiment/finetune_motionbert_h36m_muco_halpe26/latest_epoch.bin
+# ======================================================
+
+DATASET:
+    train_list: ['Human36M', 'MuCo']
+    test_list: ['3dpw', 'Human36M']
+    input_joint_set: 'human36'
+    target_joint_set: 'human36'
+    workers: 16
+    use_gt_input: False
+    seqlen: 1
+    stride: 1
+    noise: 0
+    lift_only: True              # khong doc anh, khong tinh SMPL, tra thang H36M-17
+    pw3d_2d_source: 'halpe26'    # 3DPW: 3DPW_{split}_halpe26.json
+    h36m_2d_source: 'halpe26'    # H36M: Human36M_{split}_halpe26.npz (train + test)
+    muco_2d_source: 'halpe26'    # MuCo: MuCo_train_halpe26.npz
+    halpe26_conf_thr: 0.3        # score <= nguong -> khop khong hop le (mask 0)
+
+MODEL:
+    motionbert_2d_rootrel: False
+    motionbert_drop_joints: []   # Halpe-26 du 17 khop
+
+MOTIONBERT:
+    pretrained: './MotionBERT/checkpoint/pretrain/MB_release.bin'   # SUA theo duong dan that; --pretrained ghi de
+    save_dir: 'experiment/finetune_motionbert_h36m_muco_halpe26'
+    val_set: '3dpw-val'          # CHI theo doi
+    final_ckpt: 'latest'         # test cuoi bang epoch cuoi, khong chon theo val
+    iters_per_epoch: 0           # 0 = moi epoch duyet het du lieu (~512k mau)
+    balance_datasets: False      # moi mau dung 1 lan / epoch (H36M 312k + MuCo 200k)
+    gt2d_prob: 0.1               # 10% mau dung GT 2D sach, 90% 2D Halpe-26
+    joint_drop_prob: 0.1         # gia lap detector bo sot khop
+
+    # Training (moi epoch ~ 22 lan 3dpw-train -> it epoch hon ban 3DPW)
+    finetune: True
+    epochs: 30
+    checkpoint_frequency: 5
+    batch_size: 128
+    dropout: 0.0
+    learning_rate: 0.0002
+    weight_decay: 0.01
+    lr_decay: 0.95               # sau 30 epoch lr con ~21% ban dau
+
+    # Model (DSTformer) - phai khop MB_release.bin
+    maxlen: 243
+    dim_feat: 512
+    mlp_ratio: 2
+    depth: 5
+    dim_rep: 512
+    num_heads: 8
+    att_fuse: True
+    num_joints: 17
+
+    # Loss weights (velocity = 0 khi F=1)
+    lambda_3d_velocity: 20.0
+    lambda_scale: 0.5
+    lambda_lv: 0.0
+    lambda_lg: 0.0
+    lambda_a: 0.0
+    lambda_av: 0.0

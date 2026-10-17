@@ -16,6 +16,7 @@ from utils.posefix import replace_joint_img
 from utils.smpl import SMPL
 from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch_image, augmentation, compute_iou, load_img_from_lmdb, augmentation_noimg
 from utils.transforms import world2cam, cam2pixel, pixel2cam, rigid_align, transform_joint_to_other_db
+from utils.h36m_adapter import halpe26_to_human36m
 # from utils.vis import vis_keypoints, vis_mesh, save_obj, vis_keypoints_with_skeleton, vis_bbox
 import transforms3d
 
@@ -64,6 +65,13 @@ class MuCo(torch.utils.data.Dataset):
         self.root_joint_idx = self.smpl.root_joint_idx
         self.face_kps_vertex = self.smpl.face_kps_vertex
 
+        # Nguon 2D dau vao (cfg.DATASET.muco_2d_source):
+        #   'gt_posefix' (mac dinh, giong JOTR): GT 2D + nhieu PoseFix
+        #   'halpe26'   : RTMPose Halpe-26 tu tools/extract_halpe26_muco.py, bo PoseFix
+        self.muco_2d_source = cfg.DATASET.get('muco_2d_source', 'gt_posefix')
+        if self.muco_2d_source not in ('gt_posefix', 'halpe26'):
+            raise ValueError(f"cfg.DATASET.muco_2d_source khong hop le: {self.muco_2d_source}")
+        self.halpe26_conf_thr = cfg.DATASET.halpe26_conf_thr
         self.datalist = self.load_data()
         print("muco data len: ", len(self.datalist))
 
@@ -76,6 +84,17 @@ class MuCo(torch.utils.data.Dataset):
             print('Unknown data subset')
             assert 0
         
+        halpe_index, halpe_kpts, n_halpe_missing = None, None, 0
+        if self.muco_2d_source == 'halpe26':
+            halpe_dir = cfg.DATASET.get('muco_halpe26_dir', '') or osp.join(cfg.DATASET.jotr_data_root, 'MuCo')
+            halpe_path = osp.join(halpe_dir, f'MuCo_{self.data_split}_halpe26.npz')
+            if not osp.isfile(halpe_path):
+                raise FileNotFoundError(f"{halpe_path} khong ton tai. Chay tools/extract_halpe26_muco.py")
+            hz = np.load(halpe_path)
+            halpe_kpts = hz['kpts']
+            halpe_index = {int(a): i for i, a in enumerate(hz['ann_id'])}
+            print(f"Load Halpe-26 input: {halpe_path} ({len(halpe_index)} nguoi)")
+
         datalist = []
         for iid in db.imgs.keys():
             img = db.imgs[iid]
@@ -127,6 +146,14 @@ class MuCo(torch.utils.data.Dataset):
                 except KeyError:
                     smpl_param = None
 
+                halpe_h36m = None
+                if halpe_index is not None:
+                    hi = halpe_index.get(int(ann_ids[pid]))
+                    if hi is None:
+                        n_halpe_missing += 1   # anh khong doc duoc luc trich -> bo mau
+                        continue
+                    halpe_h36m = halpe26_to_human36m(halpe_kpts[hi])   # (17, 3) pixel anh goc + score
+
                 datalist.append({
                     'img_path': img_path,
                     'img_shape': (img_height, img_width),
@@ -138,10 +165,29 @@ class MuCo(torch.utils.data.Dataset):
                     'cam_param': cam_param,
                     'smpl_param': smpl_param,
                     'near_joints': near_joints,
-                    'num_overlap': num_overlap
+                    'num_overlap': num_overlap,
+                    'halpe_h36m': halpe_h36m
                 })
 
+        if n_halpe_missing:
+            print(f"[MuCo] {n_halpe_missing} mau khong co Halpe-26 trong file npz -> bo qua")
         return datalist
+
+    def _halpe_input(self, data, do_flip, img_shape, img2bb_trans):
+        """Halpe-26 (da doi H36M-17, pixel anh goc) -> 2D dau vao khung output_hm_shape (giong Human36M._halpe_input).
+        Tra ve xy (17, 2), mask (17, 1): score > halpe26_conf_thr va nam trong khung crop."""
+        k = data['halpe_h36m'].copy()
+        if do_flip:
+            k[:, 0] = img_shape[1] - 1 - k[:, 0]
+            for a, b in self.h36m_flip_pairs:
+                k[a], k[b] = k[b].copy(), k[a].copy()
+        xy1 = np.concatenate((k[:, :2], np.ones_like(k[:, :1])), 1)
+        xy = np.dot(img2bb_trans, xy1.transpose(1, 0)).transpose(1, 0)[:, :2]
+        xy[:, 0] = xy[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+        xy[:, 1] = xy[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+        inside = (xy[:, 0] >= 0) * (xy[:, 0] < cfg.output_hm_shape[2]) * (xy[:, 1] >= 0) * (xy[:, 1] < cfg.output_hm_shape[1])
+        mask = ((k[:, 2] > self.halpe26_conf_thr) * inside).reshape(-1, 1).astype(np.float32)
+        return xy.astype(np.float32), mask
 
     def get_smpl_coord(self, smpl_param, cam_param, do_flip, img_shape):
         pose, shape, trans = smpl_param['pose'], smpl_param['shape'], smpl_param['trans']
@@ -287,22 +333,28 @@ class MuCo(torch.utils.data.Dataset):
             muco_joint_valid = transform_joint_to_other_db(muco_joint_valid, self.muco_joints_name, self.joints_name)
             muco_joint_trunc = transform_joint_to_other_db(muco_joint_trunc, self.muco_joints_name, self.joints_name)
 
-        # apply PoseFix
-        input_muco_joint_img[:, 2] = 1 # joint valid
-        tmp_joint_img = transform_joint_to_other_db(input_muco_joint_img, self.muco_joints_name, self.coco_joints_name)
-        tmp_joint_img = replace_joint_img(tmp_joint_img, data['tight_bbox'], near_joints, data['num_overlap'], img2bb_trans)
-        tmp_joint_img = transform_joint_to_other_db(tmp_joint_img, self.coco_joints_name, self.muco_joints_name)
-        input_muco_joint_img[self.muco_coco_common_jidx, :2] = tmp_joint_img[self.muco_coco_common_jidx, :2]
-        """
-        # debug PoseFix result
-        newimg = vis_keypoints_with_skeleton(img.numpy().transpose(1, 2, 0), input_muco_joint_img.T, self.muco_skeleton)
-        cv2.imshow(f'{img_path}', newimg)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-        cv2.waitKey(1)
-        """
-        input_muco_joint_img[:, 0] = input_muco_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
-        input_muco_joint_img[:, 1] = input_muco_joint_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+        halpe_in = None   # (17, 3) H36M-17 khung hm [x, y, mask] khi muco_2d_source = halpe26
+        if self.muco_2d_source == 'halpe26':
+            # 2D dau vao = Halpe-26 (lat + affine nhu GT), KHONG them PoseFix
+            in_xy, in_mask = self._halpe_input(data, do_flip, img_shape, img2bb_trans)
+            halpe_in = np.concatenate([in_xy, in_mask], axis=1).astype(np.float32)
+        else:
+            # apply PoseFix
+            input_muco_joint_img[:, 2] = 1 # joint valid
+            tmp_joint_img = transform_joint_to_other_db(input_muco_joint_img, self.muco_joints_name, self.coco_joints_name)
+            tmp_joint_img = replace_joint_img(tmp_joint_img, data['tight_bbox'], near_joints, data['num_overlap'], img2bb_trans)
+            tmp_joint_img = transform_joint_to_other_db(tmp_joint_img, self.coco_joints_name, self.muco_joints_name)
+            input_muco_joint_img[self.muco_coco_common_jidx, :2] = tmp_joint_img[self.muco_coco_common_jidx, :2]
+            """
+            # debug PoseFix result
+            newimg = vis_keypoints_with_skeleton(img.numpy().transpose(1, 2, 0), input_muco_joint_img.T, self.muco_skeleton)
+            cv2.imshow(f'{img_path}', newimg)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+            cv2.waitKey(1)
+            """
+            input_muco_joint_img[:, 0] = input_muco_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+            input_muco_joint_img[:, 1] = input_muco_joint_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
 
         if lift_only:
             # Chi tra du lieu lifter can, tat ca o H36M-17. Bo qua SMPL (rat ton thoi gian).
@@ -311,18 +363,29 @@ class MuCo(torch.utils.data.Dataset):
             [0, 0, 1]], dtype=np.float32)
             muco_joint_cam = np.dot(rot_aug_mat, muco_joint_cam.transpose(1,0)).transpose(1,0) / 1000 # milimeter to meter
             src_names = self.muco_joints_name_h36m_alias
-            h36m_input = transform_joint_to_other_db(input_muco_joint_img, src_names, self.h36m_joints_name)
+            if halpe_in is not None:
+                h36m_input, h36m_in_mask = halpe_in, halpe_in[:, 2:3]
+            else:
+                h36m_input = transform_joint_to_other_db(input_muco_joint_img, src_names, self.h36m_joints_name)
+                h36m_in_mask = None   # = h36m_trunc (GT) ben duoi
             h36m_img = transform_joint_to_other_db(muco_joint_img, src_names, self.h36m_joints_name)
             h36m_cam = transform_joint_to_other_db(muco_joint_cam, src_names, self.h36m_joints_name)
             h36m_valid = transform_joint_to_other_db(muco_joint_valid, src_names, self.h36m_joints_name)
             h36m_trunc = transform_joint_to_other_db(muco_joint_trunc, src_names, self.h36m_joints_name)
-            inputs = {'img': img, 'joints': h36m_input[:, :2].astype(np.float32), 'joints_mask': h36m_trunc.astype(np.float32)}
+            if h36m_in_mask is None:
+                h36m_in_mask = h36m_trunc
+            inputs = {'img': img, 'joints': h36m_input[:, :2].astype(np.float32), 'joints_mask': h36m_in_mask.astype(np.float32)}
             targets = {'orig_joint_img': h36m_img.astype(np.float32), 'orig_joint_cam': h36m_cam.astype(np.float32)}
             meta_info = {'orig_joint_valid': h36m_valid.astype(np.float32), 'orig_joint_trunc': h36m_trunc.astype(np.float32), 'is_3D': float(True),
                          'img_path': img_path, 'img2bb_trans': img2bb_trans.astype(np.float32)}  # de ve hinh
             return inputs, targets, meta_info
 
-        input_muco_joint_img = transform_joint_to_other_db(input_muco_joint_img, self.muco_joints_name, self.joints_name)
+        if halpe_in is not None:
+            input_muco_joint_img = transform_joint_to_other_db(halpe_in, self.h36m_joints_name, self.joints_name)
+            input_mask = input_muco_joint_img[:, 2:3].copy()
+        else:
+            input_muco_joint_img = transform_joint_to_other_db(input_muco_joint_img, self.muco_joints_name, self.joints_name)
+            input_mask = muco_joint_trunc
 
         if smpl_param is not None:
             # smpl coordinates
@@ -396,7 +459,7 @@ class MuCo(torch.utils.data.Dataset):
             smpl_param_valid[self.joints_name.index(name)] = 0
         smpl_param_valid = smpl_param_valid.reshape(-1)
 
-        inputs = {'img': img, 'joints': input_muco_joint_img[:, :2], 'joints_mask': muco_joint_trunc}
+        inputs = {'img': img, 'joints': input_muco_joint_img[:, :2], 'joints_mask': input_mask}
         targets = {'orig_joint_img': muco_joint_img, 'fit_joint_img': smpl_joint_img, 'orig_joint_cam': muco_joint_cam, 'fit_joint_cam': smpl_joint_cam, 'pose_param': smpl_pose, 'shape_param': smpl_shape}
         meta_info = {'orig_joint_valid': muco_joint_valid, 'orig_joint_trunc': muco_joint_trunc, 'fit_param_valid': smpl_param_valid, 'fit_joint_trunc': smpl_joint_trunc, 'is_valid_fit': float(is_valid_fit), 'is_3D': float(True)}
 

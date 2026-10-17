@@ -1,4 +1,4 @@
-"""Kiem chung 2D Halpe-26 cua Human36M QUA CHINH DATASET FuseKin (sau crop, augment, lat anh).
+"""Kiem chung 2D Halpe-26 cua Human36M / MuCo QUA CHINH DATASET FuseKin (sau crop, augment, lat anh).
 
 Moi mau ve 1 hang (anh crop 256 sau augment):
   [GT 2D] | [Halpe-26 (dau vao)] | [PoseFix (dau vao cu, chi train)] | [GT (xanh) + Halpe (do) chong len]
@@ -8,7 +8,9 @@ la do nguon 2D. Neu lat anh / affine sai, Halpe se lech han GT (nhat la khop tra
 In them thong ke tren --stats_num mau: lech px (trong crop 256) giua Halpe va GT theo tung khop,
 ti le khop co mat (mask), va so sanh voi PoseFix (train).
 
-Chay (tu thu muc goc repo, moi truong FuseKin; can Human36M_{split}_halpe26.npz da trich):
+Chay (tu thu muc goc repo, moi truong FuseKin; can Human36M_{split}_halpe26.npz / MuCo_train_halpe26.npz da trich):
+  python tools/vis_h36m_halpe26.py --cfg ./config/train_teacher_hint_k16_v2.yml --dataset MuCo --split train --num 12 --stats_num 1000
+  (MuCo: GT 2D che do co anh khong co Torso/Neck/Nose -> 3 khop do de trong, binh thuong)
   python tools/vis_h36m_halpe26.py --cfg ./config/train_teacher_hint_k16_v2.yml --split test --num 12
   python tools/vis_h36m_halpe26.py --cfg ./config/train_teacher_hint_k16_v2.yml --split train --num 12 --stats_num 1000
 Ket qua: <out_dir>/{split}_XXXX.jpg + <out_dir>/{split}_stats.json
@@ -29,12 +31,17 @@ from utils.jotr_dataset import get_train_dataset, get_test_dataset
 from utils.h36m_adapter import HUMAN36M_JOINTS
 
 GREEN, RED, BLUE = (0, 200, 0), (0, 0, 255), (255, 128, 0)
+# Khung xuong H36M-17 (giong Human36M.h36m_skeleton)
+H36M_SKELETON = ((0, 7), (7, 8), (8, 9), (9, 10), (8, 11), (11, 12), (12, 13), (8, 14), (14, 15), (15, 16),
+                 (0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 6))
+SRC_ATTR = {'Human36M': 'h36m_2d_source', 'MuCo': 'muco_2d_source'}   # thuoc tinh nguon 2D cua tung dataset
 
 
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--cfg', required=True, help='yml bat ky (chi lay DATASET.*); script tu dat h36m_2d_source=halpe26')
-    p.add_argument('--split', default='test', choices=['train', 'test'])
+    p.add_argument('--dataset', default='Human36M', choices=['Human36M', 'MuCo'])
+    p.add_argument('--split', default='test', choices=['train', 'test'], help='MuCo chi co train')
     p.add_argument('--num', type=int, default=12, help='so mau ve')
     p.add_argument('--stats_num', type=int, default=500, help='so mau tinh thong ke (gom ca mau ve)')
     p.add_argument('--seed', type=int, default=0)
@@ -51,13 +58,14 @@ def seed_all(s):
 def get_sample(ds, idx, source):
     """Lay mau idx voi nguon 2D cho truoc, seed co dinh theo idx -> cung augment giua cac nguon."""
     base = ds.dataset
-    old = base.h36m_2d_source
-    base.h36m_2d_source = source
+    attr = SRC_ATTR[type(base).__name__]
+    old = getattr(base, attr)
+    setattr(base, attr, source)
     seed_all((100003 * idx + 7) % (2 ** 32 - 1))   # numpy chi nhan seed < 2^32
     try:
         return ds[idx]
     finally:
-        base.h36m_2d_source = old
+        setattr(base, attr, old)
 
 
 def to_px_input(joints):
@@ -104,16 +112,21 @@ def title(img, text):
 def main():
     args = parse_args()
     update_config(args.cfg)
-    cfg.DATASET.h36m_2d_source = 'halpe26'   # nap file npz; tung mau doi nguon qua base.h36m_2d_source
+    if args.dataset == 'MuCo':
+        args.split = 'train'                  # MuCo chi co split train
+        cfg.DATASET.muco_2d_source = 'halpe26'
+    else:
+        cfg.DATASET.h36m_2d_source = 'halpe26'   # nap file npz; tung mau doi nguon qua thuoc tinh cua dataset
     cfg.DATASET.lift_only = False             # can anh that de ve
     cfg.DATASET.workers = 0
     os.makedirs(args.out_dir, exist_ok=True)
 
-    ds = get_train_dataset('Human36M', None) if args.split == 'train' else get_test_dataset('Human36M', None)
+    ds = get_train_dataset(args.dataset, None) if args.split == 'train' else get_test_dataset(args.dataset, None)
     base = ds.dataset
-    skeleton = base.h36m_skeleton
+    skeleton = H36M_SKELETON
     is_train = args.split == 'train'
-    print(f'[data] Human36M {args.split}: {len(ds)} mau | conf_thr = {base.halpe26_conf_thr}')
+    tag = f'{args.dataset}_{args.split}'
+    print(f'[data] {args.dataset} {args.split}: {len(ds)} mau | conf_thr = {base.halpe26_conf_thr}')
 
     rng = np.random.RandomState(args.seed)
     n_stats = min(max(args.stats_num, args.num), len(ds))
@@ -151,12 +164,12 @@ def main():
             ov = draw_pose(img.copy(), gt, gt_ok, skeleton, GREEN, label=False)
             ov = draw_pose(ov, xy, m, skeleton, RED, label=False)
             panels.append(title(ov, 'GT (xanh) + Halpe (do)'))
-            path = os.path.join(args.out_dir, f'{args.split}_{i:04d}_idx{int(idx)}.jpg')
+            path = os.path.join(args.out_dir, f'{tag}_{i:04d}_idx{int(idx)}.jpg')
             cv2.imwrite(path, np.concatenate(panels, axis=1))
 
     # ---------------- Thong ke ----------------
     print('\n' + '=' * 72)
-    print(f'Human36M {args.split} | {n_stats} mau | lech 2D so voi GT (px trong crop {cfg.input_img_shape[1]})')
+    print(f'{args.dataset} {args.split} | {n_stats} mau | lech 2D so voi GT (px trong crop {cfg.input_img_shape[1]})')
     print('=' * 72)
     keys = ['halpe'] + (['posefix'] if is_train else [])
     E = {k: np.stack(err[k]) for k in keys}
@@ -168,7 +181,7 @@ def main():
         for k in keys:
             line += f'{np.nanmean(E[k][:, j]):>14.1f}{C[k][:, j].mean() * 100:>13.1f}%'
         print(line)
-    stats = {'split': args.split, 'n': int(n_stats), 'conf_thr': float(base.halpe26_conf_thr)}
+    stats = {'dataset': args.dataset, 'split': args.split, 'n': int(n_stats), 'conf_thr': float(base.halpe26_conf_thr)}
     for k in keys:
         per_sample = np.nanmean(E[k], axis=1)
         stats[k] = {
@@ -187,7 +200,7 @@ def main():
     print('  * Nghi loi lat / affine: lech TB > 15-20px o NHIEU mau, hoac khop trai-phai lech ~ be rong vai/hong.')
     if is_train:
         print('  * PoseFix la nhieu tong hop (co ca nhay sang khop khac) -> thuong lech hon Halpe tren H36M.')
-    path = os.path.join(args.out_dir, f'{args.split}_stats.json')
+    path = os.path.join(args.out_dir, f'{tag}_stats.json')
     with open(path, 'w') as f:
         json.dump(stats, f, indent=2)
     print(f'\nDa luu {min(args.num, n_stats)} anh + {path}')

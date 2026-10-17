@@ -377,11 +377,15 @@ def main():
             save(best_path, epoch + 1, min_loss)
             log(f"--> Saved new best model (Val MPJPE={val['mpjpe']:.2f} mm) to {best_path}")
 
-    # ---------------- Test 1 lan voi best checkpoint ----------------
-    if os.path.exists(best_path):
-        best = torch.load(best_path, map_location=lambda storage, loc: storage)
+    # ---------------- Test 1 lan voi checkpoint cuoi (MOTIONBERT.final_ckpt: 'best' | 'latest') ----------------
+    final_kind = mb_cfg.get('final_ckpt', 'best')
+    if final_kind not in ('best', 'latest'):
+        raise ValueError(f"MOTIONBERT.final_ckpt khong hop le: {final_kind}")
+    final_path = best_path if final_kind == 'best' else os.path.join(save_dir, 'latest_epoch.bin')
+    if os.path.exists(final_path):
+        best = torch.load(final_path, map_location=lambda storage, loc: storage)
         model.load_state_dict(best['model_pos'], strict=True)
-        log(f"===== Test voi best checkpoint (epoch {best['epoch']}) =====")
+        log(f"===== Test voi {final_kind} checkpoint (epoch {best['epoch']}): {final_path} =====")
         run_tests(model, list(cfg.DATASET.test_list), mb_cfg, device, rootrel, drop_idx, log,
                   num_vis=opts.num_vis)
 
