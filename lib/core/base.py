@@ -280,7 +280,10 @@ class Trainer:
 
             
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
-            pred_pose = pred_pose - pred_pose[:, 0:1, :]
+            # student_3d_rootrel=True (mac dinh): tru root truoc loss.
+            # student_3d_rootrel=False: giu nguyen (mesh_loss dam bao gan root-relative).
+            if cfg.MODEL.get('student_3d_rootrel', True):
+                pred_pose = pred_pose - pred_pose[:, 0:1, :]
 
             # ---- Compute individual losses ----
             loss_smpl_joint_cam = self.jotr_coord_loss(
@@ -584,7 +587,10 @@ class Teacher_Trainer:
 
             # Regress H36M joints from the predicted SMPL mesh.
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
-            pred_pose = pred_pose - pred_pose[:, 0:1, :]
+            # student_3d_rootrel=True (mac dinh): tru root truoc loss.
+            # student_3d_rootrel=False: giu nguyen (mesh_loss dam bao gan root-relative).
+            if cfg.MODEL.get('student_3d_rootrel', True):
+                pred_pose = pred_pose - pred_pose[:, 0:1, :]
             loss_smpl_joint_cam = self.jotr_coord_loss(
                 pred_pose,
                 gt_fit_joint_cam,
@@ -1131,7 +1137,12 @@ class Student_Trainer:
 
             # Regress H36M joints from the predicted SMPL mesh.
             pred_pose = torch.matmul(self.J_regressor[None, :, :], pred_mesh)
-            pred_pose_rootrel = pred_pose - pred_pose[:, 0:1, :]
+            # student_3d_rootrel=True (mac dinh): tru root truoc loss cho khop voi GT root-relative.
+            # student_3d_rootrel=False: giu nguyen (pred_pose xap xi root-relative do mesh_loss train).
+            if cfg.MODEL.get('student_3d_rootrel', True):
+                pred_pose_rootrel = pred_pose - pred_pose[:, 0:1, :]
+            else:
+                pred_pose_rootrel = pred_pose
 
             # ---------- mask khớp hợp lệ ----------
             valid_joint = fit_joint_trunc

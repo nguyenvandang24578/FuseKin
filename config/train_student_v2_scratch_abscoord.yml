@@ -1,0 +1,78 @@
+# Train Student v2 TU DAU (from scratch), KHONG KD, KHONG init tu Teacher.
+# Diem khac biet chinh so voi train_student_kd_e1_v2.yml:
+#   - init_student_from_teacher: False  -> random init (tru backbone SPIN)
+#   - student_use_kd: False             -> khong co KD loss
+#   - student_3d_rootrel: False         -> joint 3D VAO fusion KHONG tru root (cam-space tuyet doi)
+#                                          pred_pose trong loss cung KHONG tru root
+#                                          (GT la root-relative nen mesh_loss tu dong ep model xap xi root-relative)
+#   - motionbert_2d_rootrel: False      -> giu nguyen (da la False tu truoc)
+# Muc dich: xem mo hinh co loi gi khi nhan them thong tin global position.
+# Chay: python main/train.py --cfg ./config/train_student_v2_scratch_abscoord.yml --exp_name student_v2_scratch_abscoord --gpu 0
+DATASET:
+  train_list: ['3dpw-train']
+  test_list: ['3dpw']
+  input_joint_set: 'human36'
+  target_joint_set: 'human36'
+  workers: 8
+  use_gt_input: False
+  seqlen: 1
+  stride: 1
+  pw3d_2d_source: 'halpe26'
+  halpe26_conf_thr: 0.3
+
+MODEL:
+  name: 'student'
+  resnet_type: 50
+  freeze_backbone: True
+  hpe_dim: 512
+  hpe_dep: 5
+  motionbert_pretrained: './experiment/finetune_motionbert_halpe26_3dpw/best_epoch.bin'
+  motionbert_2d_rootrel: False       # 2D input khong tru root (giong ban goc)
+  motionbert_drop_joints: []
+  backbone_pretrained: 'spin'
+  TEACHER: ''                        # khong dung Teacher
+  student_use_kd: False              # tat KD
+  init_student_from_teacher: False   # train tu dau, khong load Teacher
+
+  # --- Flag moi: 3D joint vao fusion KHONG tru root ---
+  student_3d_rootrel: False          # False = giu toa do cam-space tuyet doi truoc fusion va trong loss
+
+  # ---- Kien truc v2 (giu y nhu KD v2) ----
+  joint_pe2d: True
+  pe2d_num_freq: 6
+  fusion_joint_self_attn: True
+  pose_head_mode: 'per_joint'
+  pose_query_bone: True
+  shape_attn_mode: 'tokens'
+
+  # ---- KD tat ----
+  kd_mode: 'feat'
+  kd_hard_w: 1.0
+  kd_lambda: 0.0                     # lambda=0 -> KD loss nhan 0, vo hieu
+  kd_w_proj: 0.0
+  kd_w_joint: 0.0
+  kd_w_global: 0.0
+  kd_noise_weight: False
+  kd_nce_w: 0.0
+  s2d_noise_prob: 0.0
+
+TRAIN:
+  print_freq: 20
+  batch_size: 32
+  shuffle: True
+  begin_epoch: 1
+  end_epoch: 30
+  scheduler: 'step'
+  lr: 0.0001
+  lr_step: [15, 22, 27]
+  lr_factor: 0.5
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 32
+  shuffle: False
+  select_dataset: '3dpw'
+  final_test_list: ['3dpw']

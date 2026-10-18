@@ -307,7 +307,10 @@ class ARTS(nn.Module):
             else:
                 # MotionBERT finetune ra milimet, lift_2d_to_3d đã đổi về mét (root-relative bên dưới)
                 pose_3d = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask)
-            pose_3d = pose_3d - pose_3d[:, 0:1, :]            # root-relative
+            # student_3d_rootrel=True (mac dinh): tru root de fusion nhan toa do relative.
+            # student_3d_rootrel=False: giu nguyen toa do tuyet doi trong cam-space, model hoc context day du.
+            if cfg.MODEL.get('student_3d_rootrel', True):
+                pose_3d = pose_3d - pose_3d[:, 0:1, :]        # root-relative
 
         result = self.smpl_model(
             joints=pose_3d,
@@ -317,7 +320,7 @@ class ARTS(nn.Module):
             **self._pe2d_kwargs(pose_2d, joints_mask),
         )
         result['privileged_3d'] = self.privileged_joint_head(result['feat_joint'])
-        result['lifted_joints_3d'] = pose_3d   # joint nhiễu đưa vào student (để log / loss nếu cần)
+        result['lifted_joints_3d'] = pose_3d   # joint dua vao student (tuyet doi hoac root-rel tuy flag)
         return result
 
     def forward_arts(self, image, pose_input, is_train, use_gt_3d=False,
