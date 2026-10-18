@@ -1,0 +1,50 @@
+# =====================================================================
+# FuseKin -- DiffLifter, thi nghiem scale = 3.0 (tang SNR cua x_t)
+# Giu nguyen moi thu khac so voi finetune_difflifter.yaml, chi doi scale + save_dir.
+# Ly do: std GT 3D (bo root) ~ 0.29 m -> voi scale = 1 thi SNR(t) qua thap, mang bo qua x_t
+#   o phan lon cac buoc DDIM (xem diag_difflifter muc E). scale = 3 -> std ~ 0.87 ~ 1 (nhu du lieu anh [-1,1]).
+# Chay:
+#   python main/finetune_difflifter.py --cfg config/finetune_difflifter_scale3.yaml --gpu 0
+# =====================================================================
+
+DATASET:
+  lift_only: True
+  train_list: ['Human36M', 'MuCo', '3dpw-train']
+  test_list: ['3dpw', 'Human36M']   # tam bo 3dpw-oc / 3dpw-pc: 2D Halpe co the lech nguoi (xem tools/check_pw3d_halpe_ids.py)
+  pw3d_2d_source: 'halpe26'
+  h36m_2d_source: 'halpe26'
+  muco_2d_source: 'halpe26'
+  halpe26_conf_thr: 0.3
+  workers: 8
+  no_rot_aug: False
+
+DIFFLIFT:
+  # Model
+  embed_dim: 512
+  depth: 4
+  num_heads: 8
+
+  # Diffusion
+  timesteps: 1000
+  sampling_timesteps: 5
+  num_proposals: 5
+  scale: 3.0                # <-- THAY DOI so voi ban goc (1.0)
+
+  # Training
+  val_set: '3dpw-val'
+  save_dir: 'experiment/finetune_difflifter_scale3'   # <-- THAY DOI de khong de len ket qua cu
+  epochs: 100
+  lr: 0.0003
+  lr_decay: 0.99
+  weight_decay: 0.01
+  batch_size: 512
+  save_freq: 10
+  iters_per_epoch: 0
+  print_freq: 50
+  balance_datasets: True
+  resume: ''
+
+  # Occlusion augmentation
+  joint_drop_prob: 0.1
+  limb_drop_prob: 0.1
+  jitter_std: 0.02

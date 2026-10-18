@@ -384,8 +384,10 @@ class DiffLifter(nn.Module):
 
             alpha = self.alphas_cumprod[time]
             alpha_next = self.alphas_cumprod[time_next]
-            sigma = eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
-            c = (1 - alpha_next - sigma ** 2).sqrt()
+            sigma = eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).clamp(min=0).sqrt()
+            # clamp(min=0): khi alpha ~ 0 (t=999) va eta=1, 1 - alpha_next - sigma^2 ~ 1e-8 co the
+            # am nho do lam tron float32 -> sqrt ra NaN (gap o S=3). Ve ly thuyet bieu thuc nay >= 0.
+            c = (1 - alpha_next - sigma ** 2).clamp(min=0).sqrt()
 
             # pred_noise tu pred_x0 (giong D3DP predict_noise_from_start)
             pred_noise = (x - pred_x0_scaled * alpha.sqrt()) / (1 - alpha + 1e-8).sqrt()
@@ -395,7 +397,11 @@ class DiffLifter(nn.Module):
 
         all_preds = x / self.scale              # (B, K, 17, 3) -- met
         mean_pose = all_preds.mean(dim=1)       # (B, 17, 3)
-        spread = all_preds.std(dim=1).norm(dim=-1)  # (B, 17)
+        # K=1: std khong xac dinh (NaN + warning) -> spread = 0
+        if K > 1:
+            spread = all_preds.std(dim=1).norm(dim=-1)  # (B, 17)
+        else:
+            spread = torch.zeros(all_preds.shape[0], self.num_joints, device=device)
         return mean_pose, spread, all_preds
 
     # ------------------------------------------------------------------
