@@ -228,6 +228,10 @@ cfg.MODEL.priv_beta = 0.05
 cfg.MODEL.init_student_from_teacher = True
 # False -> Student "from scratch": khong Teacher, khong KD, khong khoi tao tu Teacher (baseline de so voi KD)
 cfg.MODEL.student_use_kd = True
+# True (mac dinh, hanh vi cu): tru root khoi 3D lifted TRUOC khi dua vao fusion (FuseKin them vao khi port).
+# False: giu nguyen toa do tuyet doi trong cam-space, giong ARTS goc (chi chia 1000, khong tru root);
+#   GT van la root-relative -> model tu hoc cach bo qua global translation (nhu ARTS goc thiet ke).
+cfg.MODEL.student_3d_rootrel = True
 # ---- Che do KD (Student_Trainer) ----
 # 'legacy': nhu cu. 'feat': chi KD feature (E1) [+ trong so theo nhieu khop (E2)] [+ InfoNCE (E3)],
 #   loss = kd_hard_w*hard + kd_lambda*KD + privileged; KHONG KD output, KHONG adaptive weight.
