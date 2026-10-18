@@ -1,0 +1,47 @@
+﻿# =====================================================================
+# FuseKin -- Train DiffLifter (single-frame diffusion 2D->3D lifter)
+# Chay:
+#   python main/finetune_difflifter.py --cfg config/finetune_difflifter.yaml --gpu 0
+# =====================================================================
+
+DATASET:
+  lift_only: True                      # khong doc anh, chi lay 2D joint + GT 3D
+  train_list: ['Human36M', 'MuCo', '3dpw-train']
+  test_list: ['3dpw', 'Human36M']
+  pw3d_2d_source: 'halpe26'           # RTMPose Halpe-26 -> H36M-17
+  h36m_2d_source: 'halpe26'
+  muco_2d_source: 'halpe26'
+  halpe26_conf_thr: 0.3
+  workers: 16
+  no_rot_aug: False
+
+DIFFLIFT:
+  # Model
+  embed_dim: 256
+  depth: 4
+  num_heads: 8
+
+  # Diffusion
+  timesteps: 1000
+  sampling_timesteps: 5
+  num_proposals: 5
+  scale: 1.0
+
+  # Training
+  val_set: '3dpw-val'
+  save_dir: 'experiment/finetune_difflifter'
+  epochs: 100
+  lr: 0.0003
+  lr_decay: 0.99
+  weight_decay: 0.01
+  batch_size: 512
+  save_freq: 10
+  iters_per_epoch: 0
+  print_freq: 50
+  balance_datasets: True
+  resume: ''
+
+  # Occlusion augmentation (gia lap che khuat)
+  joint_drop_prob: 0.1
+  limb_drop_prob: 0.1
+  jitter_std: 0.02

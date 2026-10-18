@@ -377,6 +377,32 @@ cfg.PMCE.batch_size = 128
 cfg.PMCE.workers = 16
 cfg.PMCE.final_ckpt = 'latest'     # test cuoi: 'latest' (epoch cuoi) | 'best' (theo val_sets[0])
 
+""" DiffLifter (single-frame diffusion 2D->3D, main/finetune_difflifter.py) """
+cfg.DIFFLIFT = edict()
+cfg.DIFFLIFT.embed_dim = 256           # chieu an Transformer (D3DP goc = 512)
+cfg.DIFFLIFT.depth = 4                 # so Spatial Attention blocks (D3DP goc = 8)
+cfg.DIFFLIFT.num_heads = 8
+cfg.DIFFLIFT.timesteps = 1000          # T diffusion timesteps khi train
+cfg.DIFFLIFT.sampling_timesteps = 5   # S DDIM steps khi inference
+cfg.DIFFLIFT.num_proposals = 5        # K hypotheses khi inference
+cfg.DIFFLIFT.scale = 1.0              # he so scale toa do 3D truoc khi them noise
+cfg.DIFFLIFT.val_set = '3dpw-val'     # tap chon best checkpoint
+cfg.DIFFLIFT.save_dir = 'experiment/finetune_difflifter'
+cfg.DIFFLIFT.epochs = 100
+cfg.DIFFLIFT.lr = 3e-4
+cfg.DIFFLIFT.lr_decay = 0.99          # nhan lr moi epoch
+cfg.DIFFLIFT.weight_decay = 0.01
+cfg.DIFFLIFT.batch_size = 512
+cfg.DIFFLIFT.save_freq = 10           # luu checkpoint moi N epoch
+cfg.DIFFLIFT.iters_per_epoch = 0      # 0 = chay het dataloader
+cfg.DIFFLIFT.print_freq = 50
+cfg.DIFFLIFT.balance_datasets = True  # can bang dataset khi tron nhieu nguon
+cfg.DIFFLIFT.resume = ''              # checkpoint de resume tu do
+# Occlusion augmentation
+cfg.DIFFLIFT.joint_drop_prob = 0.1    # xac suat drop tung khop hop le
+cfg.DIFFLIFT.limb_drop_prob = 0.1     # xac suat drop ca chi (tay/chan)
+cfg.DIFFLIFT.jitter_std = 0.02        # std nhieu 2D (toa do chuan hoa [-1,1])
+
 """ Diffusion (SMPL_HyperDiff) """
 cfg.DIFF = edict()
 cfg.DIFF.num_timesteps = 1000
