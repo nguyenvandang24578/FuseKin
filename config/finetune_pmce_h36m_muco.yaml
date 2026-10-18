@@ -28,7 +28,7 @@ MODEL:
     hpe_dep: 3
 
 PMCE:
-    pmce_ckpt: '/duong/dan/pmce_human36m.pth.tar'   # SUA: checkpoint PMCE goc (Human36M, 17 khop) - giong file Setting 2
+    pmce_ckpt: './experiment/pretrained/pose_h36m.pth.tar'   # SUA: checkpoint PMCE goc (Human36M, 17 khop) - giong file Setting 2
     from_scratch: False
     train_sets: ['h36m-train', 'muco-train']        # Setting 1: KHONG 3dpw-train
     val_sets: ['3dpw-train']              # chay moi epoch; val_sets[0] chon best_epoch.bin
