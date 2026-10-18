@@ -30,7 +30,7 @@ MODEL:
   hpe_dep: 5
   # ---- Lifter = PMCE (thay MotionBERT); MotionBERT khong duoc dung o ban nay ----
   pose_lifter: 'pmce'
-  pmce_checkpoint: './experiment/finetune_pmce_halpe26/best_epoch.bin'   # SUA: epoch PMCE muon dung
+  pmce_checkpoint: './experiment/finetune_pmce_h36m_muco/best_epoch.bin'   # SUA: tro sang ban Setting 1 (khong 3dpw-train), sau khi finetune_pmce_h36m_muco.yaml chay xong
   pmce_dim: 256                  # khop checkpoint PMCE (GraphormerNet 256 / 3); TACH khoi hpe_dim (fusion 512)
   pmce_dep: 3
   backbone_pretrained: 'spin'

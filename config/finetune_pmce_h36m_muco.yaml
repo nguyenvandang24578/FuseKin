@@ -1,0 +1,45 @@
+# ======================================================
+# FuseKin — Finetune PMCE (GraphormerNet) voi 2D Halpe-26, Setting 1 (giao thuc JOTR): KHONG 3dpw-train.
+# Copy tu finetune_pmce_halpe26.yaml, chi doi PMCE.train_sets + save_dir. Dung chung dac trung da trich
+#   (data_final/feat_cache, giong file goc) -> KHONG can trich lai.
+# Ly do: finetune_pmce_halpe26.yaml (Setting 2) co 3dpw-train -> lifter thay doi it giua train/test (3dpw-train 38.5
+#   vs 3dpw-test 77mm, xem 01_PROJECT_CONTEXT.md muc 8) -> nghi fusion cua Student hoc "chep khop" vi luc train
+#   khop dau vao gan dung het. Setting 1 (khong thay 3dpw) -> lifter "kho deu" giua train/test, fusion phai hoc
+#   sua bang anh -> kiem tra xem KD/anh co vuot tuong 78mm khong.
+# Chay (can da trich dac trung h36m-train, muco-train, 3dpw-train, 3dpw-test o data_final/feat_cache):
+#   python main/finetune_pmce.py --cfg ./config/finetune_pmce_h36m_muco.yaml --gpu 0,1,2,3
+# ======================================================
+
+DATASET:
+    input_joint_set: 'human36'
+    target_joint_set: 'human36'
+    workers: 16
+    use_gt_input: False
+    seqlen: 1
+    stride: 1
+    lift_only: True
+    pw3d_2d_source: 'halpe26'    # 3DPW_{split}_halpe26.json
+    h36m_2d_source: 'halpe26'    # Human36M_{split}_halpe26.npz
+    muco_2d_source: 'halpe26'    # MuCo_train_halpe26.npz
+    halpe26_conf_thr: 0.3
+
+MODEL:
+    hpe_dim: 256                 # PMCE GraphormerNet (checkpoint Human36M: 256 / 3)
+    hpe_dep: 3
+
+PMCE:
+    pmce_ckpt: '/duong/dan/pmce_human36m.pth.tar'   # SUA: checkpoint PMCE goc (Human36M, 17 khop) - giong file Setting 2
+    from_scratch: False
+    train_sets: ['h36m-train', 'muco-train']        # Setting 1: KHONG 3dpw-train
+    val_sets: ['3dpw-train']              # chay moi epoch; val_sets[0] chon best_epoch.bin
+    test_sets: ['3dpw-test']             # chay moi test_every epoch (nang hon, khong can thay sau tung ep)
+    test_every: 5                         # 3dpw-test moi 5 ep + ep cuoi
+    feat_dir: 'data_final/feat_cache'
+    save_dir: 'experiment/finetune_pmce_h36m_muco'
+    epochs: 15
+    lr: 0.00005                           # giong PMCE goc (train_pose_h36m.yml)
+    lr_decay: 0.95                        # nhan lr moi epoch
+    weight_decay: 0.0
+    batch_size: 128
+    workers: 16
+    final_ckpt: 'latest'                  # test cuoi bang epoch cuoi
