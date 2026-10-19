@@ -42,7 +42,7 @@ from tqdm import tqdm
 # Import qua 'core.*' / 'utils.*' (KHONG qua 'lib.core.*') de dung chung 1 module config voi dataset.
 from core.config import update_config, cfg
 from utils.jotr_dataset import get_train_dataset, get_test_dataset
-from models.diff_lifter import DiffLifter
+from models.diff_lifter import DiffLifter, aggregate_jpma
 
 JOINT_NAMES = ['Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso',
                'Neck', 'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist',
@@ -152,10 +152,13 @@ def sample(model, cond, bi, seed):
     return preds - preds[:, :, 0:1, :]
 
 
-def metrics_from_preds(preds, gt):
+def metrics_from_preds(preds, gt, cond=None):
     mean = preds.mean(1)
     errs_k = torch.norm(preds - gt.unsqueeze(1), dim=-1).mean(-1)          # (B, K)
+    # JPMA: moi khop chon gia thuyet khop 2D nhat (can cond); khong co cond -> bang mean
+    jp = aggregate_jpma(preds, cond) if cond is not None else mean
     return {
+        'jpma': torch.norm(jp - gt, dim=-1).mean(-1),                      # (B,)
         'err_j': torch.norm(mean - gt, dim=-1),                            # (B, 17) loi cua mean
         'pa': pa_mpjpe_batch(mean, gt),                                    # (B,)
         'mink': errs_k.min(1).values,                                      # (B,)
@@ -176,9 +179,11 @@ def make_loader(name, args, shuffle=False, seed=0):
 
 def build_model(ckpt, device):
     dc = ckpt['difflift_cfg']
+    # aggregate luon 'mean' o day: diag tu tinh ca mean lan JPMA tu K gia thuyet
     model = DiffLifter(num_joints=17, embed_dim=dc['embed_dim'], depth=dc['depth'], num_heads=dc['num_heads'],
                        timesteps=dc['timesteps'], sampling_timesteps=dc['sampling_timesteps'],
-                       num_proposals=dc['num_proposals'], scale=dc['scale'], drop_path_rate=0.0).to(device)
+                       num_proposals=dc['num_proposals'], scale=dc['scale'], drop_path_rate=0.0,
+                       cond_mode=dc.get('cond_mode', 'input'), aggregate='mean').to(device)
     model.load_state_dict(ckpt['model_state'], strict=True)
     model.eval()
     return model
@@ -237,13 +242,13 @@ def report_stats(args):
 def eval_set(model, name, args, device):
     ds, loader, reg = make_loader(name, args)
     reg = reg.to(device)
-    acc = {k: [] for k in ('err_j', 'pa', 'mink', 'k1', 'med', 'spr_j', 'msk_j')}
+    acc = {k: [] for k in ('jpma', 'err_j', 'pa', 'mink', 'k1', 'med', 'spr_j', 'msk_j')}
     for bi, (inp, tgt, meta) in enumerate(tqdm(loader, desc=name)):
         if args.max_batches > 0 and bi >= args.max_batches:
             break
         cond = make_cond(inp, device)
         gt = get_gt(tgt, reg, device)
-        m = metrics_from_preds(sample(model, cond, bi, args.seed), gt)
+        m = metrics_from_preds(sample(model, cond, bi, args.seed), gt, cond)
         for k, v in m.items():
             acc[k].append(v.cpu())
         acc['msk_j'].append(cond[..., 2].cpu())
@@ -256,7 +261,8 @@ def report_main(name, r):
     spr = r['spr_j'][:, 1:]
     err = r['err_j'][:, 1:]
     log(f"\n[{name}] n={err_s.shape[0]}")
-    log(f"  MPJPE (mm): mean-K={mm(err_s):.2f} | median-K={mm(r['med']):.2f} | K=1 (gia thuyet dau)={mm(r['k1']):.2f} "
+    log(f"  MPJPE (mm): mean-K={mm(err_s):.2f} | JPMA={mm(r['jpma']):.2f} | median-K={mm(r['med']):.2f} "
+        f"| K=1 (gia thuyet dau)={mm(r['k1']):.2f} "
         f"| min-K={mm(r['mink']):.2f} | PA(mean)={mm(r['pa']):.2f}")
     log(f"  spread TB (bo root)={float(spr.mean()) * 1000:.2f} mm | loi TB (bo root)={float(err.mean()) * 1000:.2f} mm "
         f"| spread/loi={float(spr.mean() / err.mean()):.3f}")
@@ -358,32 +364,38 @@ def report_sweep(model, cache, seed):
     log('F. QUET SAMPLER (tap con ngau nhien). S=1: chi 1 buoc tai t=999 ~ hoi quy thuan tu 2D')
     log('=' * 70)
     d = (model.sampling_timesteps, model.num_proposals, model.ddim_sampling_eta)
-    log(f"  {'S':>3} {'K':>3} {'eta':>4} | {'MPJPE(mean)':>11} | {'PA':>6} | {'min-K':>6} | {'spread':>6}   (mm)")
+    log(f"  {'S':>3} {'K':>3} {'eta':>4} | {'MPJPE(mean)':>11} | {'JPMA':>6} | {'PA':>6} | {'min-K':>6} "
+        f"| {'spread':>6}   (mm)")
     for S, K, eta in SWEEP:
-        tot = np.zeros(5)
+        tot = np.zeros(6)
         with sampler(model, S, K, eta):
             for bi, (cond, gt) in enumerate(cache):
-                m = metrics_from_preds(sample(model, cond, bi, seed), gt)
+                m = metrics_from_preds(sample(model, cond, bi, seed), gt, cond)
                 tot += np.array([m['err_j'].mean(1).sum().item(), m['pa'].sum().item(), m['mink'].sum().item(),
-                                 m['spr_j'][:, 1:].mean(1).sum().item(), gt.shape[0]])
-        n = tot[4]
+                                 m['spr_j'][:, 1:].mean(1).sum().item(), m['jpma'].sum().item(), gt.shape[0]])
+        n = tot[5]
         mark = '  <- mac dinh checkpoint' if (S, K, eta) == (d[0], d[1], d[2]) else ''
-        log(f"  {S:>3} {K:>3} {eta:>4.1f} | {tot[0] / n * 1000:>11.2f} | {tot[1] / n * 1000:>6.2f} "
-            f"| {tot[2] / n * 1000:>6.2f} | {tot[3] / n * 1000:>6.2f}{mark}")
+        log(f"  {S:>3} {K:>3} {eta:>4.1f} | {tot[0] / n * 1000:>11.2f} | {tot[4] / n * 1000:>6.2f} "
+            f"| {tot[1] / n * 1000:>6.2f} | {tot[2] / n * 1000:>6.2f} | {tot[3] / n * 1000:>6.2f}{mark}")
 
 
 # ============================================================
 # G. Che nhan tao theo chi
 # ============================================================
+def agg_pose(preds, cond, agg):
+    """Gop K gia thuyet: 'mean' hoac 'jpma'."""
+    return aggregate_jpma(preds, cond) if agg == 'jpma' else preds.mean(1)
+
+
 @torch.no_grad()
-def report_limb_drop(model, cache, seed):
+def report_limb_drop(model, cache, seed, tag='sampler mac dinh', agg='mean'):
     log('\n' + '=' * 70)
-    log('G. CHE NHAN TAO THEO CHI (xy = 0, mask = 0 cho ca chi; chi tinh mau ma chi do ban dau nhin ro)')
+    log(f'G. CHE NHAN TAO THEO CHI [{tag}] (xy = 0, mask = 0 cho ca chi; chi tinh mau ma chi do ban dau nhin ro)')
     log('=' * 70)
     acc = {g: np.zeros(7) for g in LIMBS}   # n, eb, ed, sb, sd, ob, od
     for bi, (cond, gt) in enumerate(cache):
         pb = sample(model, cond, bi, seed)
-        eb = torch.norm(pb.mean(1) - gt, dim=-1)
+        eb = torch.norm(agg_pose(pb, cond, agg) - gt, dim=-1)
         sb = spread_of(pb)
         for gname, idx in LIMBS.items():
             other = [j for j in range(1, 17) if j not in idx]
@@ -393,7 +405,7 @@ def report_limb_drop(model, cache, seed):
             c2 = cond.clone()
             c2[:, idx, :] = 0
             pd = sample(model, c2, bi, seed)
-            ed = torch.norm(pd.mean(1) - gt, dim=-1)
+            ed = torch.norm(agg_pose(pd, c2, agg) - gt, dim=-1)
             sd = spread_of(pd)
             acc[gname] += np.array([
                 vis.sum().item(),
@@ -485,6 +497,7 @@ def main():
             summary[name] = {
                 'n': int(r['err_j'].shape[0]),
                 'mpjpe_mean': float(r['err_j'].mean(1).mean()) * 1000,
+                'mpjpe_jpma': float(r['jpma'].mean()) * 1000,
                 'mpjpe_median': float(r['med'].mean()) * 1000,
                 'mpjpe_k1': float(r['k1'].mean()) * 1000,
                 'mink': float(r['mink'].mean()) * 1000,
@@ -501,7 +514,12 @@ def main():
         report_t_curve(model, cache, args.seed)
         if not args.skip_sweep:
             report_sweep(model, cache, args.seed)
-        report_limb_drop(model, cache, args.seed)
+        report_limb_drop(model, cache, args.seed, tag='sampler mac dinh, gop mean')
+        report_limb_drop(model, cache, args.seed, tag='sampler mac dinh, gop JPMA', agg='jpma')
+        # Duong chuan hoi quy thuan (S=1, K=1): so voi dong tren de biet DIFFUSION co giup khi mat khop khong
+        # (neu loi chi bi che / Delta giong nhau -> loi ich den tu kenh conf + augmentation, khong phai diffusion)
+        with sampler(model, 1, 1, None):
+            report_limb_drop(model, cache, args.seed, tag='S=1 K=1 = hoi quy thuan')
         report_speed(model, cache)
     except Exception as e:
         log(f'[sub {args.main_set}] LOI: {type(e).__name__}: {e}')
@@ -509,9 +527,11 @@ def main():
     log('\n' + '=' * 70)
     log('TOM TAT (mm)')
     log('=' * 70)
-    log(f"  {'tap':>12} | {'n':>6} | {'mean-K':>7} | {'K=1':>7} | {'min-K':>7} | {'PA':>6} | {'spread':>6} | {'Spearman':>8}")
+    log(f"  {'tap':>12} | {'n':>6} | {'mean-K':>7} | {'JPMA':>7} | {'K=1':>7} | {'min-K':>7} | {'PA':>6} "
+        f"| {'spread':>6} | {'Spearman':>8}")
     for name, v in summary.items():
-        log(f"  {name:>12} | {v['n']:>6} | {v['mpjpe_mean']:>7.2f} | {v['mpjpe_k1']:>7.2f} | {v['mink']:>7.2f} "
+        log(f"  {name:>12} | {v['n']:>6} | {v['mpjpe_mean']:>7.2f} | {v['mpjpe_jpma']:>7.2f} "
+            f"| {v['mpjpe_k1']:>7.2f} | {v['mink']:>7.2f} "
             f"| {v['pa']:>6.2f} | {v['spread']:>6.2f} | {v['spearman_joint']:>8.3f}")
     with open(os.path.join(cfg.output_dir, 'diag_summary.json'), 'w', encoding='utf-8') as f:
         json.dump({'ckpt': ckpt_path, 'epoch': ckpt.get('epoch'), 'summary': summary}, f, indent=2)

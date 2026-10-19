@@ -386,6 +386,12 @@ cfg.DIFFLIFT.timesteps = 1000          # T diffusion timesteps khi train
 cfg.DIFFLIFT.sampling_timesteps = 5   # S DDIM steps khi inference
 cfg.DIFFLIFT.num_proposals = 5        # K hypotheses khi inference
 cfg.DIFFLIFT.scale = 1.0              # he so scale toa do 3D truoc khi them noise
+# Cach dua 2D vao denoiser: 'input' (mac dinh, chi ghep o lop dau) | 'adaln' (2D + t vao MOI block, theo tung khop)
+# Checkpoint train voi 'input' KHONG nap duoc vao 'adaln' va nguoc lai (khac tham so).
+cfg.DIFFLIFT.cond_mode = 'input'
+# Gop K gia thuyet luc inference: 'mean' (mac dinh) | 'jpma' (moi khop chon gia thuyet khop 2D nhat)
+# Chi anh huong eval / chon best, khong anh huong loss train.
+cfg.DIFFLIFT.aggregate = 'mean'
 cfg.DIFFLIFT.val_set = '3dpw-val'     # tap chon best checkpoint
 cfg.DIFFLIFT.save_dir = 'experiment/finetune_difflifter'
 cfg.DIFFLIFT.epochs = 100

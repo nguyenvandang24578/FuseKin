@@ -1,0 +1,312 @@
+"""
+compare_teacher_student.py — So sanh "khong gian hoc" giua Teacher va Student (FuseKin)
+===========================================================================================
+
+Muc dich: dung ca 2 checkpoint (Teacher da train xong + Student dang train) chay tren
+TAP VAL THAT (khong con du lieu gia nhu sanity_check.py) de xem Student hoc duoc gi so
+voi Teacher — ve ca ket qua cuoi (MPJPE) lan ve khong gian dac trung (feature space) ben
+trong model.
+
+Script in ra:
+
+  1. MPJPE (mm) cua 3 moc so sanh tren cung 1 tap val:
+       - MotionBERT lift (input tho cua Student, truoc khi qua fusion)  -> can duoi
+       - Student (sau fusion + HyperGCN + VPoser)                      -> model dang danh gia
+       - Teacher (nhan GT 3D sach)                                      -> can tren
+     Neu MPJPE(Student) ~ MPJPE(MotionBERT lift), nghia la fusion/HyperGCN gan nhu
+     khong "sua" duoc gi so voi joint nhieu dau vao — dau hieu ro nhat cua van de.
+
+  2. Khoang cach dac trung (cosine distance, da center — giong het cong thuc dung
+     trong KD loss luc train) giua Student va Teacher tai 3 diem noi:
+       - feat_joint_in : dau ra bo ma hoa joint (truoc cross-attn voi anh)
+       - feat_joint    : dac trung joint sau fusion (dau vao HyperGCN)
+       - feat_global   : dac trung toan cuc (dau vao cam_head / nhanh shape)
+     Khoang cach cang gan 0 nghia la Student cang "bat chuoc" Teacher tot o diem do.
+
+  3. Image-shuffle test: tron ngau nhien anh giua cac sample trong batch (giu nguyen
+     joint/GT), roi do lai MPJPE. Neu MPJPE gan nhu KHONG doi so voi luc dung dung anh,
+     nghia la model (ca Teacher lan Student) dang gan nhu BO QUA nhanh anh, chi dua vao
+     nhanh joint de du doan — rat dang chu y vi kien truc fusion ton tai de ket hop ca
+     2 nguon thong tin.
+
+  4. Anh PCA 2 chieu cua feat_global (Teacher vs Student) luu ra file .png — day la
+     cach truc quan nhat de "nhin thay" khong gian hoc cua 2 model giong/khac nhau
+     the nao: neu 2 dam may diem chong len nhau nhieu -> khong gian dac trung gan nhau;
+     neu tach biet ro -> Student hoc ra 1 khong gian khac han Teacher (KD chua hieu qua).
+
+Cach chay:
+    cd <repo_root>
+    python main/compare_teacher_student.py \
+        --cfg <config_cua_student> \
+        --student_ckpt <duong_dan_checkpoint_student>.pth.tar \
+        [--teacher_ckpt <duong_dan_checkpoint_teacher>.pth.tar]   # mac dinh lay cfg.MODEL.TEACHER
+        [--max_batches 30] [--batch_size 16] [--out_dir ./compare_out]
+
+Script doi hoi CUDA (giong sanity_check.py va training binh thuong).
+"""
+import os, sys
+sys.path.append('./lib')
+sys.path.append('./')
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
+import argparse
+import warnings
+warnings.filterwarnings("ignore")
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+
+parser = argparse.ArgumentParser(description='So sanh khong gian hoc Teacher vs Student (FuseKin)')
+parser.add_argument('--cfg', type=str, required=True, help='config yaml (dung config cua Student)')
+parser.add_argument('--student_ckpt', type=str, required=True, help='checkpoint cua Student (.pth.tar)')
+parser.add_argument('--teacher_ckpt', type=str, default='', help='checkpoint cua Teacher (mac dinh: cfg.MODEL.TEACHER)')
+parser.add_argument('--batch_size', type=int, default=16)
+parser.add_argument('--max_batches', type=int, default=30, help='so batch val toi da se duyet qua (de chay nhanh)')
+parser.add_argument('--out_dir', type=str, default='./compare_out')
+parser.add_argument('--seed', type=int, default=0)
+args = parser.parse_args()
+
+from core.config import cfg, update_config
+update_config(args.cfg)
+
+import __init_path  # noqa: F401
+import models
+from models.ARTS import ARTS
+from core.base import load_model_weights
+from utils.jotr_dataset import get_test_dataset
+
+torch.manual_seed(args.seed)
+np.random.seed(args.seed)
+
+if not torch.cuda.is_available():
+    print("\n[LOI] Can CUDA de chay script nay (Vposer/SMPL layer trong repo goi .cuda() "
+          "cung trong code).\n")
+    sys.exit(1)
+
+DEVICE = torch.device('cuda')
+os.makedirs(args.out_dir, exist_ok=True)
+
+
+def hr(title=''):
+    print('\n' + '=' * 78)
+    if title:
+        print(title)
+        print('=' * 78)
+
+
+# --------------------------------------------------------------------------
+# Build + load 2 model
+# --------------------------------------------------------------------------
+def build_and_load(mode, ckpt_path):
+    old_mode = cfg.MODEL.name
+    cfg.MODEL.name = mode
+    model = ARTS(num_joint=17, embed_dim=cfg.MODEL.hpe_dim)
+    cfg.MODEL.name = old_mode
+
+    model = model.to(DEVICE)
+    model = load_model_weights(model, ckpt_path)
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad = False
+    return model
+
+
+# --------------------------------------------------------------------------
+# Helpers hinh hoc / dac trung
+# --------------------------------------------------------------------------
+def h36m_from_mesh(mesh, regressor):
+    """mesh: (B,6890,3) — tuyet doi hay root-relative deu duoc, vi ham tu tru root
+    cua chinh no (h36m pelvis = idx 0) sau khi regress, giong het dataset.evaluate()."""
+    j = torch.einsum('jk,bkc->bjc', regressor, mesh)
+    j = j - j[:, 0:1, :]
+    return j
+
+
+def mpjpe_mm(j_pred_rootrel, j_gt_rootrel):
+    return torch.norm(j_pred_rootrel - j_gt_rootrel, dim=-1).mean(dim=1) * 1000.0  # (B,)
+
+
+def center(x):
+    return F.layer_norm(x, x.shape[-1:])
+
+
+def cos_dist(a, b):
+    return 1.0 - F.cosine_similarity(center(a), center(b.detach()), dim=-1)
+
+
+def pca_2d(X):
+    """X: (N, D) numpy. Tra ve (N, 2) chieu PCA, tinh tren chinh X duoc truyen vao."""
+    Xc = X - X.mean(axis=0, keepdims=True)
+    U, S, Vt = np.linalg.svd(Xc, full_matrices=False)
+    return Xc @ Vt[:2].T
+
+
+# --------------------------------------------------------------------------
+# main
+# --------------------------------------------------------------------------
+def main():
+    teacher_ckpt = args.teacher_ckpt or cfg.MODEL.TEACHER
+    print(f"Student ckpt : {args.student_ckpt}")
+    print(f"Teacher ckpt : {teacher_ckpt}")
+
+    hr("Dang build va nap checkpoint cho 2 model...")
+    student = build_and_load('student', args.student_ckpt)
+    teacher = build_and_load('teacher', teacher_ckpt)
+
+    hr("Dang chuan bi tap val (3DPW test split)...")
+    test_name = cfg.DATASET.test_list[0]
+    dataset = get_test_dataset(test_name, None)
+    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True,
+                         num_workers=0, pin_memory=False)
+    print(f"Dataset: {test_name}  |  so sample: {len(dataset)}  |  se duyet toi da "
+          f"{args.max_batches} batch (batch_size={args.batch_size})")
+
+    h36m_reg = torch.as_tensor(dataset.h36m_joint_regressor, dtype=torch.float32, device=DEVICE)
+
+    # accumulators
+    mpjpe_mb, mpjpe_student, mpjpe_teacher = [], [], []
+    mpjpe_student_shuf, mpjpe_teacher_shuf = [], []
+    kd_proj_list, kd_joint_list, kd_global_list = [], [], []
+    feat_global_teacher_all, feat_global_student_all = [], []
+
+    n_batches = 0
+    with torch.no_grad():
+        for inputs, targets, meta in loader:
+            if n_batches >= args.max_batches:
+                break
+            n_batches += 1
+
+            img = inputs['img'].to(DEVICE).float()
+            joints2d = inputs['joints'].to(DEVICE).float()
+            joints_mask = inputs['joints_mask'].to(DEVICE).float()
+            gt_mesh = targets['smpl_mesh_cam'].to(DEVICE).float()
+
+            gt_h36m = h36m_from_mesh(gt_mesh, h36m_reg)   # (B,17,3) root-relative, GT that
+
+            # ---- Teacher: dau vao la GT 3D (regress tu GT mesh, giong luc eval that) ----
+            teacher_gt_joints = gt_h36m.clone()
+            t_out = teacher(img, teacher_gt_joints, is_train=False)
+
+            # ---- Student: dau vao la 2D -> MotionBERT -> fusion ----
+            s_out = student(img, joints2d, is_train=False, joints_mask=joints_mask)
+
+            # ---- MPJPE 3 moc so sanh ----
+            mb_joints = s_out['lifted_joints_3d']   # da root-relative (xem forward_student)
+            mpjpe_mb.append(mpjpe_mm(mb_joints, gt_h36m).cpu())
+
+            student_h36m = h36m_from_mesh(s_out['smpl_mesh_cam'], h36m_reg)
+            mpjpe_student.append(mpjpe_mm(student_h36m, gt_h36m).cpu())
+
+            teacher_h36m = h36m_from_mesh(t_out['smpl_mesh_cam'], h36m_reg)
+            mpjpe_teacher.append(mpjpe_mm(teacher_h36m, gt_h36m).cpu())
+
+            # ---- Khoang cach dac trung Student vs Teacher (cong thuc giong luc train) ----
+            kd_proj_list.append(cos_dist(s_out['feat_joint_in'], t_out['feat_joint_in']).mean(-1).cpu())
+            kd_joint_list.append(cos_dist(s_out['feat_joint'], t_out['feat_joint']).mean(-1).cpu())
+            kd_global_list.append(cos_dist(s_out['feat_global'], t_out['feat_global']).cpu())
+
+            feat_global_teacher_all.append(t_out['feat_global'].cpu().numpy())
+            feat_global_student_all.append(s_out['feat_global'].cpu().numpy())
+
+            # ---- Image-shuffle test ----
+            perm = torch.randperm(img.shape[0], device=DEVICE)
+            img_shuf = img[perm]
+
+            t_out_shuf = teacher(img_shuf, teacher_gt_joints, is_train=False)
+            s_out_shuf = student(img_shuf, joints2d, is_train=False, joints_mask=joints_mask)
+
+            student_h36m_shuf = h36m_from_mesh(s_out_shuf['smpl_mesh_cam'], h36m_reg)
+            mpjpe_student_shuf.append(mpjpe_mm(student_h36m_shuf, gt_h36m).cpu())
+
+            teacher_h36m_shuf = h36m_from_mesh(t_out_shuf['smpl_mesh_cam'], h36m_reg)
+            mpjpe_teacher_shuf.append(mpjpe_mm(teacher_h36m_shuf, gt_h36m).cpu())
+
+            if n_batches % 5 == 0:
+                print(f"  ... da xu ly {n_batches}/{args.max_batches} batch")
+
+    def cat_mean(lst):
+        return torch.cat(lst).mean().item()
+
+    hr("[1] MPJPE (mm) — 3 moc so sanh tren cung tap val")
+    print(f"  MotionBERT lift (can duoi, input tho cua Student) : {cat_mean(mpjpe_mb):8.2f} mm")
+    print(f"  Student (sau fusion + HyperGCN + VPoser)           : {cat_mean(mpjpe_student):8.2f} mm")
+    print(f"  Teacher (can tren, nhan GT 3D sach)                : {cat_mean(mpjpe_teacher):8.2f} mm")
+    gap_mb = cat_mean(mpjpe_mb) - cat_mean(mpjpe_student)
+    gap_teacher = cat_mean(mpjpe_student) - cat_mean(mpjpe_teacher)
+    print(f"\n  Student cai thien so voi MotionBERT lift : {gap_mb:+.2f} mm "
+          f"({'TOT' if gap_mb > 5 else 'RAT IT / GAN NHU KHONG'})")
+    print(f"  Student con cach Teacher                 : {gap_teacher:+.2f} mm")
+    if gap_mb < 5:
+        print("\n  [CANH BAO] Student gan nhu khong cai thien gi so voi input MotionBERT tho.")
+        print("  -> Fusion + HyperGCN dang KHONG hoc duoc cach 'sua' joint nhieu bang anh,")
+        print("     Student dang gan nhu CHI CHUYEN TIEP input qua, du co KD voi Teacher.")
+
+    hr("[2] Khoang cach dac trung Student vs Teacher (0 = giong het, cang cao cang khac)")
+    print(f"  kd_proj   (feat_joint_in) : {cat_mean(kd_proj_list):.4f}")
+    print(f"  kd_joint  (feat_joint)    : {cat_mean(kd_joint_list):.4f}")
+    print(f"  kd_global (feat_global)   : {cat_mean(kd_global_list):.4f}")
+    print("  (So sanh cac so nay voi log 'KD dist' in ra luc TRAIN — neu tren val cao hon")
+    print("   han so luc train, Student dang OVERFIT vao tap train, khong generalize KD.)")
+
+    hr("[3] Image-shuffle test — model co thuc su dung anh khong?")
+    s_normal, s_shuf = cat_mean(mpjpe_student), cat_mean(mpjpe_student_shuf)
+    t_normal, t_shuf = cat_mean(mpjpe_teacher), cat_mean(mpjpe_teacher_shuf)
+    print(f"  Student MPJPE: anh dung = {s_normal:.2f} mm  |  anh bi tron = {s_shuf:.2f} mm  "
+          f"(chenh lech {s_shuf - s_normal:+.2f} mm)")
+    print(f"  Teacher MPJPE: anh dung = {t_normal:.2f} mm  |  anh bi tron = {t_shuf:.2f} mm  "
+          f"(chenh lech {t_shuf - t_normal:+.2f} mm)")
+    if abs(s_shuf - s_normal) < 3.0:
+        print("\n  [CANH BAO] Tron anh gan nhu khong lam MPJPE cua Student xau di.")
+        print("  -> Student co the dang gan nhu BO QUA nhanh anh, chi dua vao joint input")
+        print("     de du doan pose/shape. Fusion cross-attention co the chua thuc su can")
+        print("     thiet / chua hoc duoc cach khai thac thong tin tu anh.")
+    else:
+        print("\n  [OK] Tron anh lam MPJPE xau di ro ret -> Student co dang thuc su dung anh.")
+
+    # ---- PCA feature-space plot ----
+    hr("[4] Ve PCA 2D cua feat_global (Teacher vs Student)")
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        feat_t = np.concatenate(feat_global_teacher_all, axis=0)
+        feat_s = np.concatenate(feat_global_student_all, axis=0)
+        combined = np.concatenate([feat_t, feat_s], axis=0)
+        coords = pca_2d(combined)
+        n_t = feat_t.shape[0]
+        coords_t, coords_s = coords[:n_t], coords[n_t:]
+
+        plt.figure(figsize=(7, 6))
+        plt.scatter(coords_t[:, 0], coords_t[:, 1], s=8, alpha=0.5, label='Teacher', c='tab:blue')
+        plt.scatter(coords_s[:, 0], coords_s[:, 1], s=8, alpha=0.5, label='Student', c='tab:orange')
+        plt.legend()
+        plt.title('PCA 2D cua feat_global — Teacher vs Student')
+        plt.xlabel('PC1')
+        plt.ylabel('PC2')
+        out_path = os.path.join(args.out_dir, 'feat_global_pca.png')
+        plt.savefig(out_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  Da luu anh: {out_path}")
+        print("  -> 2 dam may diem chong len nhau nhieu: khong gian dac trung gan nhau.")
+        print("  -> 2 dam may diem tach biet ro: Student hoc ra 1 khong gian KHAC HAN Teacher,")
+        print("     du da duoc train voi KD loss keo ve gan Teacher.")
+    except Exception as e:
+        print(f"  [BO QUA] Khong ve duoc PCA (loi: {e})")
+
+    hr("TONG KET")
+    print(f"So batch da xu ly: {n_batches} (~{n_batches * args.batch_size} sample)")
+    print(f"MPJPE: MotionBERT={cat_mean(mpjpe_mb):.2f}mm | Student={cat_mean(mpjpe_student):.2f}mm "
+          f"| Teacher={cat_mean(mpjpe_teacher):.2f}mm")
+    print(f"KD distance (val): proj={cat_mean(kd_proj_list):.4f} | joint={cat_mean(kd_joint_list):.4f} "
+          f"| global={cat_mean(kd_global_list):.4f}")
+    print(f"Anh huong cua anh: Student {s_shuf - s_normal:+.2f}mm | Teacher {t_shuf - t_normal:+.2f}mm")
+    print(f"Anh PCA feature space: {os.path.join(args.out_dir, 'feat_global_pca.png')}")
+
+
+if __name__ == '__main__':
+    main()

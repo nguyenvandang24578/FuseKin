@@ -271,6 +271,8 @@ def save_ckpt(path, model, optimizer, epoch, best_val, dl_cfg):
             'sampling_timesteps': dl_cfg.sampling_timesteps,
             'num_proposals': dl_cfg.num_proposals,
             'scale':     dl_cfg.scale,
+            'cond_mode': getattr(dl_cfg, 'cond_mode', 'input'),
+            'aggregate': getattr(dl_cfg, 'aggregate', 'mean'),
         },
     }, path)
 
@@ -321,6 +323,8 @@ def main():
     log(f'embed_dim={dl_cfg.embed_dim} | depth={dl_cfg.depth} | '
         f'T={dl_cfg.timesteps} | S={dl_cfg.sampling_timesteps} | K={dl_cfg.num_proposals}')
     log(f'lr={dl_cfg.lr} | batch={dl_cfg.batch_size} | epochs={dl_cfg.epochs}')
+    log(f'scale={dl_cfg.scale} | cond_mode={getattr(dl_cfg, "cond_mode", "input")} | '
+        f'aggregate={getattr(dl_cfg, "aggregate", "mean")}')
 
     # --- Model ---
     model = DiffLifter(
@@ -333,6 +337,8 @@ def main():
         num_proposals=dl_cfg.num_proposals,
         scale=dl_cfg.scale,
         drop_path_rate=0.1,
+        cond_mode=getattr(dl_cfg, 'cond_mode', 'input'),
+        aggregate=getattr(dl_cfg, 'aggregate', 'mean'),
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
