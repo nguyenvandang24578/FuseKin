@@ -160,6 +160,9 @@ def save_vis(img, anns, kpts, scores, out_path, thr=0.3):
 
 def run_split(model, args, split, out_dir):
     ann_file = osp.join(args.data_root, f'3DPW_latest_{split}.json')
+    if not osp.exists(ann_file):
+        # split dac biet (vd 'oc', 'pc'): doc 3DPW_<split>.json, id Halpe = id annotation cua chinh file do
+        ann_file = osp.join(args.data_root, f'3DPW_{split}.json')
     with open(ann_file) as f:
         db = json.load(f)
     imgs = {im['id']: im for im in db['images']}
