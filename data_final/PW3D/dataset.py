@@ -150,6 +150,12 @@ class PW3D(torch.utils.data.Dataset):
         elif cfg.DATASET.pw3d_2d_source != 'openpose':
             raise ValueError(f"cfg.DATASET.pw3d_2d_source khong hop le: {cfg.DATASET.pw3d_2d_source}")
 
+        # oc/pc gom sequence cua ca train/val/test -> chi giu sequence thuoc test neu bat co (tranh ro ri)
+        test_seqs = None
+        if cfg.DATASET.pw3d_ocpc_test_only and self.data_name in ['3dpw-oc', '3dpw-pc']:
+            with open(osp.join(self.data_path, '3DPW_latest_test.json')) as f:
+                test_seqs = {im['sequence'] for im in json.load(f)['images']}
+            print(f'[ocpc_test_only] chi giu sequence thuoc test: {sorted(test_seqs)}')
         hhrnet_count = 0
         datalist = []
 
@@ -163,6 +169,8 @@ class PW3D(torch.utils.data.Dataset):
             img_width, img_height = img['width'], img['height']
             sequence_name = img['sequence']
             img_name = img['file_name']
+            if test_seqs is not None and sequence_name not in test_seqs:
+                continue
 
             if cfg.crowd and self.data_split=='validation':
                 if 'courtyard_hug_00' not in sequence_name and 'courtyard_dancing_00' not in sequence_name:
@@ -378,6 +386,9 @@ class PW3D(torch.utils.data.Dataset):
         joint_trunc = joint_valid * (
                     (joint_coord_img[:, 0] >= 0) * (joint_coord_img[:, 0] < cfg.output_hm_shape[2]) * \
                     (joint_coord_img[:, 1] >= 0) * (joint_coord_img[:, 1] < cfg.output_hm_shape[1])).reshape(-1, 1).astype(np.float32)
+        if cfg.DATASET.lift_soft_conf and data['halpe_h36m'] is not None:
+            # giu score Halpe lien tuc cho khop hop le (cot 2 cua joint_coord_img = score)
+            joint_trunc = joint_trunc * np.clip(joint_coord_img[:, 2:3], 0.0, 1.0).astype(np.float32)
 
         """
         print(f'{img_path} trunc:\n', joint_trunc.nonzero())

@@ -183,7 +183,9 @@ def build_model(ckpt, device):
     model = DiffLifter(num_joints=17, embed_dim=dc['embed_dim'], depth=dc['depth'], num_heads=dc['num_heads'],
                        timesteps=dc['timesteps'], sampling_timesteps=dc['sampling_timesteps'],
                        num_proposals=dc['num_proposals'], scale=dc['scale'], drop_path_rate=0.0,
-                       cond_mode=dc.get('cond_mode', 'input'), aggregate='mean').to(device)
+                       cond_mode=dc.get('cond_mode', 'input'), aggregate='mean',
+                       conf_attn=dc.get('conf_attn', False), skel_attn=dc.get('skel_attn', False),
+                       mask_token=dc.get('mask_token', False), self_cond=dc.get('self_cond', False)).to(device)
     model.load_state_dict(ckpt['model_state'], strict=True)
     model.eval()
     return model
@@ -299,6 +301,14 @@ def report_visibility(r):
         log(f"      khop nhin ro (mask=1): loi {float(e[m].mean()) * 1000:.1f} mm | spread {float(s[m].mean()) * 1000:.1f} mm")
     if (~m).any():
         log(f"      khop mat (mask=0)    : loi {float(e[~m].mean()) * 1000:.1f} mm | spread {float(s[~m].mean()) * 1000:.1f} mm")
+    # Khi bat DATASET.lift_soft_conf: conf = score Halpe -> loi theo muc score (score thap ~ bi che that)
+    c = r['msk_j'][:, 1:]
+    if ((c > 0) & (c < 0.999)).any():
+        for lo, hi in [(0.0, 0.5), (0.5, 0.7), (0.7, 0.85), (0.85, 1.01)]:
+            sel = (c > lo) & (c <= hi) if lo > 0 else (c > 0) & (c <= hi)
+            if sel.any():
+                log(f"      score ({lo:.2f}, {min(hi, 1.0):.2f}]: loi {float(e[sel].mean()) * 1000:.1f} mm "
+                    f"| spread {float(s[sel].mean()) * 1000:.1f} mm | ti le {float(sel.float().mean()) * 100:.1f}%")
     nmiss = (r['msk_j'] == 0).sum(1)
     for lo, hi in [(0, 0), (1, 1), (2, 3), (4, 17)]:
         sel = (nmiss >= lo) & (nmiss <= hi)
@@ -388,9 +398,13 @@ def agg_pose(preds, cond, agg):
 
 
 @torch.no_grad()
-def report_limb_drop(model, cache, seed, tag='sampler mac dinh', agg='mean'):
+def report_limb_drop(model, cache, seed, tag='sampler mac dinh', agg='mean', corrupt='drop'):
+    # corrupt='drop' : xy = 0, mask = 0 (khop bien mat)
+    # corrupt='shift': ca chi dich 1 doan ngau nhien (std 0.15, co dinh theo seed) + score ha ve nguong+0.05
+    #                  (neu lift_soft_conf) -> giong che khuat THAT cua detector (van co toa do nhung sai)
     log('\n' + '=' * 70)
-    log(f'G. CHE NHAN TAO THEO CHI [{tag}] (xy = 0, mask = 0 cho ca chi; chi tinh mau ma chi do ban dau nhin ro)')
+    what = 'xy = 0, mask = 0' if corrupt == 'drop' else '2D ca chi dich sai cho + score thap'
+    log(f'G. CHE NHAN TAO THEO CHI [{tag}] ({what}; chi tinh mau ma chi do ban dau nhin ro)')
     log('=' * 70)
     acc = {g: np.zeros(7) for g in LIMBS}   # n, eb, ed, sb, sd, ob, od
     for bi, (cond, gt) in enumerate(cache):
@@ -403,7 +417,15 @@ def report_limb_drop(model, cache, seed, tag='sampler mac dinh', agg='mean'):
             if vis.sum() == 0:
                 continue
             c2 = cond.clone()
-            c2[:, idx, :] = 0
+            if corrupt == 'shift':
+                gen = torch.Generator(device=cond.device)
+                gen.manual_seed(seed * 1000 + bi)
+                off = torch.randn(cond.shape[0], 1, 2, generator=gen, device=cond.device) * 0.15
+                c2[:, idx, :2] = (cond[:, idx, :2] + off).clamp(-1, 1)
+                if cfg.DATASET.lift_soft_conf:
+                    c2[:, idx, 2] = torch.clamp(cond[:, idx, 2], max=cfg.DATASET.halpe26_conf_thr + 0.05)
+            else:
+                c2[:, idx, :] = 0
             pd = sample(model, c2, bi, seed)
             ed = torch.norm(agg_pose(pd, c2, agg) - gt, dim=-1)
             sd = spread_of(pd)
@@ -520,6 +542,10 @@ def main():
         # (neu loi chi bi che / Delta giong nhau -> loi ich den tu kenh conf + augmentation, khong phai diffusion)
         with sampler(model, 1, 1, None):
             report_limb_drop(model, cache, args.seed, tag='S=1 K=1 = hoi quy thuan')
+        # Che giong that: 2D sai cho (khong bien mat)
+        report_limb_drop(model, cache, args.seed, tag='DICH SAI CHO, sampler mac dinh, gop mean', corrupt='shift')
+        with sampler(model, 1, 1, None):
+            report_limb_drop(model, cache, args.seed, tag='DICH SAI CHO, S=1 K=1 = hoi quy thuan', corrupt='shift')
         report_speed(model, cache)
     except Exception as e:
         log(f'[sub {args.main_set}] LOI: {type(e).__name__}: {e}')

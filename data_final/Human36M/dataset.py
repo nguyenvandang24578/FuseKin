@@ -231,6 +231,9 @@ class Human36M(torch.utils.data.Dataset):
         xy[:, 1] = xy[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
         inside = (xy[:, 0] >= 0) * (xy[:, 0] < cfg.output_hm_shape[2]) * (xy[:, 1] >= 0) * (xy[:, 1] < cfg.output_hm_shape[1])
         mask = ((k[:, 2] > self.halpe26_conf_thr) * inside).reshape(-1, 1).astype(np.float32)
+        if cfg.DATASET.lift_soft_conf:
+            # giu score lien tuc cho khop hop le (tin hieu che khuat cho lifter)
+            mask = mask * np.clip(k[:, 2:3], 0.0, 1.0).astype(np.float32)
         return xy.astype(np.float32), mask
 
     def get_smpl_coord(self, smpl_param, cam_param, do_flip, img_shape):

@@ -79,12 +79,14 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, attn_bias=None):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads,
                                    C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
         attn = (q @ k.transpose(-2, -1)) * self.scale
+        if attn_bias is not None:
+            attn = attn + attn_bias          # (B, H, 1, N): bias theo KEY (khop nguon)
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
@@ -122,8 +124,17 @@ class AdaLNBlock(nn.Module):
     """
 
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None,
-                 drop=0., attn_drop=0., drop_path=0., act_layer=nn.GELU):
+                 drop=0., attn_drop=0., drop_path=0., act_layer=nn.GELU, conf_attn=False,
+                 num_hops=0):
         super().__init__()
+        # skel_attn: bias attention hoc duoc theo so canh tren khung xuong (kieu Graphormer), moi head 1 gia tri
+        # cho moi khoang cach. Khoi tao 0 -> ban dau giong block cu.
+        self.hop_bias = nn.Embedding(num_hops, num_heads) if num_hops > 0 else None
+        if self.hop_bias is not None:
+            nn.init.zeros_(self.hop_bias.weight)
+        # conf_attn: moi head hoc 1 he so w_h, bias attention = w_h * log(conf cua khop KEY).
+        # w_h khoi tao 0 -> ban dau giong het block cu. w_h > 0 -> khop score thap / bi che it duoc tham khao.
+        self.conf_w = nn.Parameter(torch.zeros(num_heads)) if conf_attn else None
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias,
                               qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
@@ -135,11 +146,45 @@ class AdaLNBlock(nn.Module):
         nn.init.zeros_(self.ada[-1].weight)
         nn.init.zeros_(self.ada[-1].bias)
 
-    def forward(self, x, c):
+    def forward(self, x, c, log_conf=None, hops=None):
         sh1, sc1, g1, sh2, sc2, g2 = self.ada(c).chunk(6, dim=-1)    # moi cai (N, 17, dim)
-        x = x + self.drop_path(g1 * self.attn(self.norm1(x) * (1 + sc1) + sh1))
+        bias = None
+        if self.conf_w is not None and log_conf is not None:
+            bias = self.conf_w[None, :, None, None] * log_conf[:, None, None, :]   # (B, H, 1, 17)
+        if self.hop_bias is not None and hops is not None:
+            hb = self.hop_bias(hops).permute(2, 0, 1)[None]                         # (1, H, 17, 17)
+            bias = hb if bias is None else bias + hb
+        x = x + self.drop_path(g1 * self.attn(self.norm1(x) * (1 + sc1) + sh1, attn_bias=bias))
         x = x + self.drop_path(g2 * self.mlp(self.norm2(x) * (1 + sc2) + sh2))
         return x
+
+
+# Cha cua tung khop H36M-17 (0 Pelvis, 1 RHip, 2 RKnee, 3 RAnk, 4 LHip, 5 LKnee, 6 LAnk, 7 Torso,
+# 8 Neck, 9 Nose, 10 Head, 11 LSho, 12 LElb, 13 LWri, 14 RSho, 15 RElb, 16 RWri)
+H36M_PARENTS = [-1, 0, 1, 2, 0, 4, 5, 0, 7, 8, 9, 8, 11, 12, 8, 14, 15]
+
+
+def skeleton_hops(parents=H36M_PARENTS):
+    """Ma tran so canh ngan nhat giua 2 khop tren khung xuong (J, J), long."""
+    J = len(parents)
+    adj = [[] for _ in range(J)]
+    for j, p in enumerate(parents):
+        if p >= 0:
+            adj[j].append(p)
+            adj[p].append(j)
+    hops = torch.zeros(J, J, dtype=torch.long)
+    for s in range(J):
+        dist = [-1] * J
+        dist[s] = 0
+        q = [s]
+        while q:
+            u = q.pop(0)
+            for v in adj[u]:
+                if dist[v] < 0:
+                    dist[v] = dist[u] + 1
+                    q.append(v)
+        hops[s] = torch.tensor(dist)
+    return hops
 
 
 class SinusoidalPositionEmbeddings(nn.Module):
@@ -172,7 +217,8 @@ class SpatialMixSTE(nn.Module):
     def __init__(self, num_joints=17, in_chans=3, embed_dim_ratio=256, depth=4,
                  num_heads=8, mlp_ratio=2., qkv_bias=True, qk_scale=None,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
-                 norm_layer=None, cond_mode='input'):
+                 norm_layer=None, cond_mode='input', conf_attn=False, skel_attn=False,
+                 mask_token=False, self_cond=False):
         super().__init__()
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
         # 'input' (mac dinh, hanh vi cu): 2D chi ghep voi x_t o lop embedding dau.
@@ -180,9 +226,31 @@ class SpatialMixSTE(nn.Module):
         if cond_mode not in ('input', 'adaln'):
             raise ValueError(f"cond_mode khong hop le: {cond_mode}")
         self.cond_mode = cond_mode
+        if conf_attn and cond_mode != 'adaln':
+            raise ValueError("conf_attn chi dung voi cond_mode='adaln'")
+        self.conf_attn = conf_attn
+        if (skel_attn or mask_token) and cond_mode != 'adaln':
+            raise ValueError("skel_attn / mask_token chi dung voi cond_mode='adaln'")
+        self.skel_attn = skel_attn
+        self.mask_token = mask_token
+        # self_cond: token dau vao them 3 kenh = du doan x0 cua buoc DDIM truoc (0 o buoc dau / khi train khong dung)
+        self.self_cond = self_cond
 
         # Input: concat(2D+conf, noisy_3D) = in_chans + 3
-        self.Spatial_patch_to_embedding = nn.Linear(in_chans + 3, embed_dim_ratio)
+        self.Spatial_patch_to_embedding = nn.Linear(in_chans + 3 + (3 if self_cond else 0), embed_dim_ratio)
+        # mask_token: vector hoc duoc cong vao token + dieu kien cua khop KHONG co 2D (conf = 0),
+        # thay vi de mang tu hieu xy = (0, 0) (= tam crop, mot vi tri co that).
+        if mask_token:
+            self.mask_in = nn.Parameter(torch.zeros(1, 1, embed_dim_ratio))
+            self.mask_cond = nn.Parameter(torch.zeros(1, 1, embed_dim_ratio))
+            trunc_normal_(self.mask_in, std=.02)
+            trunc_normal_(self.mask_cond, std=.02)
+        if skel_attn:
+            hops = skeleton_hops()
+            self.register_buffer('hops', hops, persistent=False)
+            n_hops = int(hops.max()) + 1
+        else:
+            n_hops = 0
         self.Spatial_pos_embed = nn.Parameter(torch.zeros(1, num_joints, embed_dim_ratio))
 
         self.pos_drop = nn.Dropout(p=drop_rate)
@@ -205,7 +273,8 @@ class SpatialMixSTE(nn.Module):
             self.STEblocks = nn.ModuleList([
                 AdaLNBlock(dim=embed_dim_ratio, num_heads=num_heads, mlp_ratio=mlp_ratio,
                            qkv_bias=qkv_bias, qk_scale=qk_scale, drop=drop_rate,
-                           attn_drop=attn_drop_rate, drop_path=dpr[i])
+                           attn_drop=attn_drop_rate, drop_path=dpr[i], conf_attn=conf_attn,
+                           num_hops=n_hops)
                 for i in range(depth)
             ])
         else:
@@ -225,19 +294,22 @@ class SpatialMixSTE(nn.Module):
 
         trunc_normal_(self.Spatial_pos_embed, std=.02)
 
-    def forward(self, x_2d, x_3d, t):
+    def forward(self, x_2d, x_3d, t, x_sc=None):
         """
         Train:  x_2d (B,17,3), x_3d (B,17,3),   t (B,)  -> (B,17,3)
         Infer:  x_2d (B,17,3), x_3d (B,K,17,3), t (B,)  -> (B,K,17,3)
         x_2d = [x_norm, y_norm, conf]
+        x_sc: du doan x0 truoc do (cung shape x_3d, met) khi self_cond; None -> 0
         """
         inference_mode = x_3d.dim() == 4  # (B,K,17,3)
+        if self.self_cond:
+            x_3d = torch.cat([x_3d, torch.zeros_like(x_3d) if x_sc is None else x_sc], dim=-1)
 
         if inference_mode:
             B, K, N, _ = x_3d.shape
             x_2d_exp = x_2d.unsqueeze(1).expand(-1, K, -1, -1)    # (B,K,17,3)
             x = torch.cat([x_2d_exp, x_3d], dim=-1)               # (B,K,17,6)
-            x = x.reshape(B * K, N, 6)
+            x = x.reshape(B * K, N, x.shape[-1])
             t_exp = t.unsqueeze(1).expand(-1, K).reshape(B * K)    # (B*K,)
             c2d = x_2d_exp.reshape(B * K, N, x_2d.shape[-1])       # (B*K,17,3) cho adaLN
         else:
@@ -249,6 +321,9 @@ class SpatialMixSTE(nn.Module):
 
         # --- Spatial embedding ---
         x = self.Spatial_patch_to_embedding(x)           # (..., 17, embed_dim)
+        missing = (c2d[..., 2:3] <= 0).to(x.dtype) if self.mask_token else None   # (..., 17, 1)
+        if missing is not None:
+            x = x + missing * self.mask_in
         x = x + self.Spatial_pos_embed
         time_embed = self.time_mlp(t_exp)                # (..., embed_dim)
         x = x + time_embed[:, None, :]                   # broadcast len 17 joints
@@ -258,8 +333,13 @@ class SpatialMixSTE(nn.Module):
         if self.cond_mode == 'adaln':
             # Vector dieu kien theo tung khop: 2D cua khop + vi tri khop + t
             c = self.cond_embed(c2d) + self.Spatial_pos_embed + time_embed[:, None, :]
+            # log(conf) cua tung khop (conf = 0 -> log(1e-3) ~ -6.9): dung lam bias attention neu conf_attn
+            if missing is not None:
+                c = c + missing * self.mask_cond
+            log_conf = torch.log(c2d[..., 2].clamp(min=1e-3)) if self.conf_attn else None
+            hops = self.hops if self.skel_attn else None
             for blk in self.STEblocks:
-                x = blk(x, c)
+                x = blk(x, c, log_conf, hops)
         else:
             for blk in self.STEblocks:
                 x = blk(x)
@@ -332,7 +412,8 @@ class DiffLifter(nn.Module):
 
     def __init__(self, num_joints=17, embed_dim=256, depth=4, num_heads=8,
                  timesteps=1000, sampling_timesteps=5, num_proposals=5,
-                 scale=1.0, drop_path_rate=0.1, cond_mode='input', aggregate='mean'):
+                 scale=1.0, drop_path_rate=0.1, cond_mode='input', aggregate='mean', conf_attn=False,
+                 skel_attn=False, mask_token=False, self_cond=False):
         super().__init__()
 
         self.num_joints = num_joints
@@ -376,7 +457,12 @@ class DiffLifter(nn.Module):
             num_heads=num_heads,
             drop_path_rate=drop_path_rate,
             cond_mode=cond_mode,
+            conf_attn=conf_attn,
+            skel_attn=skel_attn,
+            mask_token=mask_token,
+            self_cond=self_cond,
         )
+        self.self_cond = self_cond
 
     # ------------------------------------------------------------------
     # Forward diffusion: q(x_t | x_0)
@@ -396,13 +482,13 @@ class DiffLifter(nn.Module):
     # ------------------------------------------------------------------
     # Goi denoiser: tra ve pred_x0 don vi MET, root-relative (khop 0 = 0)
     # ------------------------------------------------------------------
-    def _denoise(self, xy_conf, x_in, t):
+    def _denoise(self, xy_conf, x_in, t, x_sc=None):
         """
         x_in: x_t da clamp va chia scale (giong D3DP model_predictions).
         Output tho cua denoiser duoc hieu la toa do met (giong D3DP: loss so truc tiep voi GT met).
         Tru root giong PMCE (pred - pred[:, :1]) -> GT root-relative, khop Pelvis luon = 0.
         """
-        pred = self.denoiser(xy_conf, x_in, t)
+        pred = self.denoiser(xy_conf, x_in, t, x_sc)
         return pred - pred[..., 0:1, :]
 
     # ------------------------------------------------------------------
@@ -428,8 +514,14 @@ class DiffLifter(nn.Module):
         x_t = self.q_sample(x0, t, noise)
         x_in = x_t.clamp(-1.1 * self.scale, 1.1 * self.scale) / self.scale
 
+        # Self-conditioning (Chen et al. 2022): 50% batch, tinh x0 lan 1 (khong grad) roi dua vao lam goi y.
+        # Luc inference, goi y = x0 du doan o buoc DDIM truoc -> cac buoc sau co the sua dan.
+        x_sc = None
+        if self.self_cond and torch.rand(()) < 0.5:
+            with torch.no_grad():
+                x_sc = self._denoise(xy_conf, x_in, t).detach()
         # Output da la met (KHONG nhan scale): truoc day nhan scale -> sai don vi khi scale != 1
-        pred_x0 = self._denoise(xy_conf, x_in, t)    # (B, 17, 3) met, root-relative
+        pred_x0 = self._denoise(xy_conf, x_in, t, x_sc)    # (B, 17, 3) met, root-relative
         return pred_x0
 
     # ------------------------------------------------------------------
@@ -461,12 +553,15 @@ class DiffLifter(nn.Module):
         # Khoi tao K hypotheses song song: (B, K, 17, 3)
         x = torch.randn(B, K, self.num_joints, 3, device=device, generator=generator)
 
+        x_sc = None    # self_cond: du doan x0 cua buoc truoc
         for time, time_next in time_pairs:
             t_cond = torch.full((B,), time, device=device, dtype=torch.long)
 
             # Denoiser forward: x (B,K,17,3) -> pred_x0 (B,K,17,3)
             x_in = x.clamp(-1.1 * self.scale, 1.1 * self.scale) / self.scale
-            pred_x0 = self._denoise(xy_conf, x_in, t_cond)    # (B,K,17,3) met, root-rel
+            pred_x0 = self._denoise(xy_conf, x_in, t_cond, x_sc)    # (B,K,17,3) met, root-rel
+            if self.self_cond:
+                x_sc = pred_x0
             pred_x0_scaled = (pred_x0 * self.scale).clamp(
                 -1.1 * self.scale, 1.1 * self.scale)
 

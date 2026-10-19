@@ -110,8 +110,13 @@ cfg.DATASET.lift_only = False
 #   'halpe26': file <PW3D>/3DPW_{split}_halpe26.json do tools/extract_halpe26_3dpw.py sinh ra (RTMPose Halpe-26),
 #              doi sang H36M-17 du 17 khop (Head_top = dinh dau detector, Torso = trung diem Neck-Hip).
 cfg.DATASET.pw3d_2d_source = 'openpose'
+# Chi danh gia 3dpw-oc / 3dpw-pc tren cac sequence thuoc TEST (bo sequence trung train/val de tranh ro ri). Mac dinh TAT.
+cfg.DATASET.pw3d_ocpc_test_only = False
 # Nguong score de coi 1 khop Halpe-26 la hop le (mask = 1)
 cfg.DATASET.halpe26_conf_thr = 0.3
+# joints_mask MEM: khop hop le (score > nguong, nam trong crop) mang gia tri = score Halpe (cat ve [0, 1]) thay vi 1.
+# Khop khong hop le van = 0. Ap dung cho Halpe-26 cua H36M / MuCo / 3DPW. Mac dinh TAT (mask nhi phan nhu cu).
+cfg.DATASET.lift_soft_conf = False
 # 3DPW test: tra them GT 2D (targets['orig_joint_img'] H36M-17, khung output_hm_shape) + meta orig_joint_valid/trunc.
 # Chi de phan tich sai so 2D dau vao; evaluate() khong dung. Mac dinh TAT = hanh vi cu.
 cfg.DATASET.pw3d_test_gt2d = False
@@ -408,6 +413,22 @@ cfg.DIFFLIFT.resume = ''              # checkpoint de resume tu do
 cfg.DIFFLIFT.joint_drop_prob = 0.1    # xac suat drop tung khop hop le
 cfg.DIFFLIFT.limb_drop_prob = 0.1     # xac suat drop ca chi (tay/chan)
 cfg.DIFFLIFT.jitter_std = 0.02        # std nhieu 2D (toa do chuan hoa [-1,1])
+# Che khuat GIONG THAT (mac dinh TAT): voi xac suat occ_aug_prob moi chi (cang+ban chan / cang+ban tay),
+# 2D bi dat SAI CHO (dich ca doan / lay vi tri chi doi xung / dinh vao khop goc) hoac xoa, score bi ha ve gan nguong.
+cfg.DIFFLIFT.occ_aug_prob = 0.0
+cfg.DIFFLIFT.occ_shift_std = 0.15     # do lech 2D (toa do [-1,1]) khi dat sai cho
+# EMA trong so (mac dinh TAT = 0). Bat (vd 0.999) -> eval/luu bang trong so EMA, on dinh hon cho diffusion.
+cfg.DIFFLIFT.ema_decay = 0.0
+# Attention biet do tin cay (chi cond_mode='adaln', mac dinh TAT): khop score thap / bi che it duoc cac khop khac tham khao
+cfg.DIFFLIFT.conf_attn = False
+# Kien truc v3 (chi cond_mode='adaln', mac dinh TAT)
+cfg.DIFFLIFT.skel_attn = False        # bias attention theo so canh tren khung xuong
+cfg.DIFFLIFT.mask_token = False       # vector hoc duoc cho khop khong co 2D
+cfg.DIFFLIFT.self_cond = False        # self-conditioning: buoc DDIM sau nhin du doan x0 buoc truoc
+# Danh gia them trong luc train (khong anh huong chon best, best van theo val_set)
+cfg.DIFFLIFT.epoch_eval_sets = []     # danh gia MOI epoch, vd ['3dpw']
+cfg.DIFFLIFT.full_eval_sets = []      # danh gia moi full_eval_freq epoch, vd ['Human36M', '3dpw-oc', '3dpw-pc']
+cfg.DIFFLIFT.full_eval_freq = 5
 
 """ Diffusion (SMPL_HyperDiff) """
 cfg.DIFF = edict()

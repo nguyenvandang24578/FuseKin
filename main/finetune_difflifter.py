@@ -23,6 +23,7 @@ os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 
 import argparse
+import copy
 import random
 import time
 
@@ -93,6 +94,60 @@ def pa_mpjpe_batch(pred, gt):
 # Data helpers -- copy va mo rong tu finetune_motionbert.py
 # ============================================================
 
+# Chi xa (2 khop) + khop goc + chi doi xung, thu tu H36M-17
+OCC_GROUPS = [([2, 3], 1, [5, 6]),        # R_Knee, R_Ankle  | goc R_Hip      | doi xung L
+              ([5, 6], 4, [2, 3]),        # L_Knee, L_Ankle  | goc L_Hip
+              ([12, 13], 11, [15, 16]),   # L_Elbow, L_Wrist | goc L_Shoulder
+              ([15, 16], 14, [12, 13])]   # R_Elbow, R_Wrist | goc R_Shoulder
+
+
+def occ_corrupt(xy, conf, dl_cfg):
+    """
+    Che khuat GIONG THAT cho detector 2D: khop bi che thuong VAN CO toa do (sai cho) + score hoi thap,
+    khong phai bien mat. Moi chi (xac suat occ_aug_prob, chi ap dung khi ca chi dang nhin ro) chon 1 trong 4:
+      0 dich ca doan chi (detector bam vao vat khac)
+      1 lay vi tri chi doi xung trai/phai (nham trai-phai) -- neu chi doi xung khong nhin ro thi doi sang 0
+      2 dinh vao khop goc (vai/hong) -- detector "bo cuoc"
+      3 xoa (xy = 0, conf = 0) nhu cu
+    Score (neu lift_soft_conf): ha ve gan nguong: thr + (conf - thr) * U(0, 0.5). Mask nhi phan: giu nguyen.
+    xy, conf: (B, 17, 2), (B, 17, 1) -> sua tai cho va tra ve.
+    """
+    p = getattr(dl_cfg, 'occ_aug_prob', 0.0)
+    if p <= 0:
+        return xy, conf
+    std = getattr(dl_cfg, 'occ_shift_std', 0.15)
+    soft = cfg.DATASET.lift_soft_conf
+    thr = cfg.DATASET.halpe26_conf_thr
+    B, dev = xy.shape[0], xy.device
+    xy0, conf0 = xy.clone(), conf.clone()
+    ar = torch.arange(B, device=dev)
+    for g, parent, mirror in OCC_GROUPS:
+        sel = (torch.rand(B, device=dev) < p) & (conf0[:, g, 0].min(1).values > 0)
+        if not sel.any():
+            continue
+        mode = torch.randint(0, 4, (B,), device=dev)
+        mirror_ok = conf0[:, mirror, 0].min(1).values > 0
+        mode = torch.where((mode == 1) & ~mirror_ok, torch.zeros_like(mode), mode)
+        cur = xy0[:, g]                                                        # (B, 2, 2)
+        small = lambda: torch.randn_like(cur) * std * 0.25
+        cand = torch.stack([
+            cur + torch.randn(B, 1, 2, device=dev) * std + small(),            # 0 dich
+            xy0[:, mirror] + small(),                                          # 1 doi xung
+            xy0[:, parent:parent + 1].expand_as(cur) + small(),                # 2 dinh khop goc
+            torch.zeros_like(cur),                                             # 3 xoa
+        ], dim=1)                                                              # (B, 4, 2, 2)
+        new_xy = cand[ar, mode].clamp(-1, 1)
+        if soft:
+            new_c = thr + (conf0[:, g] - thr).clamp(min=0) * torch.rand(B, 1, 1, device=dev) * 0.5
+        else:
+            new_c = conf0[:, g].clone()
+        new_c = torch.where((mode == 3)[:, None, None], torch.zeros_like(new_c), new_c)
+        m = sel[:, None, None]
+        xy[:, g] = torch.where(m, new_xy, xy[:, g])
+        conf[:, g] = torch.where(m, new_c, conf[:, g])
+    return xy, conf
+
+
 def make_xy_conf(inputs_b, device, dl_cfg):
     """
     Lay xy_conf tu batch:
@@ -123,6 +178,9 @@ def make_xy_conf(inputs_b, device, dl_cfg):
             xy[:, group, :]   = xy[:, group, :]   * (~mask_drop).unsqueeze(-1).float()
             conf[:, group, :] = conf[:, group, :] * (~mask_drop).unsqueeze(-1).float()
 
+    # 2b. Che khuat giong that (2D sai cho + score thap), mac dinh TAT (occ_aug_prob = 0)
+    xy, conf = occ_corrupt(xy, conf, dl_cfg)
+
     # 3. Jitter nho tren toa do 2D
     jitter_std = getattr(dl_cfg, 'jitter_std', 0.0)
     if jitter_std > 0:
@@ -143,7 +201,18 @@ def make_gt3d(targets_b, device):
 # Train epoch -- theo pattern LiftTrainer.train() + finetune_motionbert.train_epoch()
 # ============================================================
 
-def train_epoch(model, loader, optimizer, device, dl_cfg, epoch):
+@torch.no_grad()
+def ema_update(ema, model, decay, step):
+    """EMA trong so: ema = d * ema + (1 - d) * model. Warmup d nho luc dau de EMA bat kip."""
+    d = min(decay, (1 + step) / (10 + step))
+    for e, m in zip(ema.state_dict().values(), model.state_dict().values()):
+        if e.dtype.is_floating_point:
+            e.mul_(d).add_(m.detach(), alpha=1 - d)
+        else:
+            e.copy_(m)
+
+
+def train_epoch(model, loader, optimizer, device, dl_cfg, epoch, ema=None, step0=0):
     model.train()
     total_loss = 0.0
     n = 0
@@ -172,6 +241,8 @@ def train_epoch(model, loader, optimizer, device, dl_cfg, epoch):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        if ema is not None:
+            ema_update(ema, model, dl_cfg.ema_decay, step0 + n)
 
         total_loss += loss.item()
         n += 1
@@ -185,7 +256,7 @@ def train_epoch(model, loader, optimizer, device, dl_cfg, epoch):
                   f'gt_3d range: {gt_3d.min().item():.3f}..{gt_3d.max().item():.3f} | '
                   f'pred_x0 range: {pred_x0.min().item():.3f}..{pred_x0.max().item():.3f}')
 
-    return total_loss / max(n, 1)
+    return total_loss / max(n, 1), n
 
 
 # ============================================================
@@ -257,10 +328,13 @@ def evaluate(model, loader, h36m_regressor, device, desc='Val', seed=0):
 # Checkpoint helpers
 # ============================================================
 
-def save_ckpt(path, model, optimizer, epoch, best_val, dl_cfg):
+def save_ckpt(path, model, optimizer, epoch, best_val, dl_cfg, ema=None, step=0):
+    # Co EMA: 'model_state' = trong so EMA (diag / FuseKin nap thang), 'raw_model_state' = trong so goc (de resume)
+    extra = {'raw_model_state': model.state_dict(), 'step': step} if ema is not None else {}
     torch.save({
         'epoch': epoch,
-        'model_state': model.state_dict(),
+        'model_state': (ema if ema is not None else model).state_dict(),
+        **extra,
         'optimizer_state': optimizer.state_dict(),
         'best_val_mpjpe': best_val,
         'difflift_cfg': {
@@ -273,13 +347,26 @@ def save_ckpt(path, model, optimizer, epoch, best_val, dl_cfg):
             'scale':     dl_cfg.scale,
             'cond_mode': getattr(dl_cfg, 'cond_mode', 'input'),
             'aggregate': getattr(dl_cfg, 'aggregate', 'mean'),
+            'soft_conf': bool(cfg.DATASET.lift_soft_conf),
+            'conf_attn': bool(getattr(dl_cfg, 'conf_attn', False)),
+            'skel_attn': bool(getattr(dl_cfg, 'skel_attn', False)),
+            'mask_token': bool(getattr(dl_cfg, 'mask_token', False)),
+            'self_cond': bool(getattr(dl_cfg, 'self_cond', False)),
+            'ema_decay': float(getattr(dl_cfg, 'ema_decay', 0.0)),
         },
     }, path)
 
 
-def load_ckpt(path, model, optimizer=None, device='cpu'):
+def load_ckpt(path, model, optimizer=None, device='cpu', ema=None):
     ckpt = torch.load(path, map_location=device)
-    model.load_state_dict(ckpt['model_state'])
+    if ema is not None and 'raw_model_state' in ckpt:
+        # resume co EMA: model = trong so goc, ema = trong so EMA
+        model.load_state_dict(ckpt['raw_model_state'])
+        ema.load_state_dict(ckpt['model_state'])
+    else:
+        model.load_state_dict(ckpt['model_state'])
+        if ema is not None:
+            ema.load_state_dict(ckpt['model_state'])
     if optimizer is not None and 'optimizer_state' in ckpt:
         optimizer.load_state_dict(ckpt['optimizer_state'])
     return ckpt.get('epoch', 0), ckpt.get('best_val_mpjpe', float('inf'))
@@ -339,6 +426,10 @@ def main():
         drop_path_rate=0.1,
         cond_mode=getattr(dl_cfg, 'cond_mode', 'input'),
         aggregate=getattr(dl_cfg, 'aggregate', 'mean'),
+        conf_attn=getattr(dl_cfg, 'conf_attn', False),
+        skel_attn=getattr(dl_cfg, 'skel_attn', False),
+        mask_token=getattr(dl_cfg, 'mask_token', False),
+        self_cond=getattr(dl_cfg, 'self_cond', False),
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -350,14 +441,27 @@ def main():
         weight_decay=getattr(dl_cfg, 'weight_decay', 0.01),
     )
 
+    # EMA (tat khi ema_decay = 0)
+    ema = None
+    if getattr(dl_cfg, 'ema_decay', 0.0) > 0:
+        ema = copy.deepcopy(model).eval()
+        for q in ema.parameters():
+            q.requires_grad_(False)
+    log(f'ema_decay={getattr(dl_cfg, "ema_decay", 0.0)} | occ_aug_prob={getattr(dl_cfg, "occ_aug_prob", 0.0)} | '
+        f'soft_conf={cfg.DATASET.lift_soft_conf} | conf_attn={getattr(dl_cfg, "conf_attn", False)} | '
+        f'skel_attn={getattr(dl_cfg, "skel_attn", False)} | mask_token={getattr(dl_cfg, "mask_token", False)} | '
+        f'self_cond={getattr(dl_cfg, "self_cond", False)} | balance_datasets={getattr(dl_cfg, "balance_datasets", True)}')
+
     start_epoch = 0
+    step = 0
     best_val = float('inf')
     best_path  = os.path.join(save_dir, 'best_epoch.bin')
     latest_path = os.path.join(save_dir, 'latest_epoch.bin')
 
     # Resume
     if getattr(dl_cfg, 'resume', '') and os.path.exists(dl_cfg.resume):
-        start_epoch, best_val = load_ckpt(dl_cfg.resume, model, optimizer, device)
+        start_epoch, best_val = load_ckpt(dl_cfg.resume, model, optimizer, device, ema=ema)
+        step = 10 ** 6   # resume: bo warmup EMA
         log(f'Resumed from {dl_cfg.resume} (epoch {start_epoch})')
 
     # --- Eval only ---
@@ -405,6 +509,29 @@ def main():
     log(f'# val {dl_cfg.val_set}: {len(val_ds)}')
     val_reg = val_ds.dataset.h36m_joint_regressor
 
+    # Tap danh gia them: moi epoch (epoch_eval_sets) va moi full_eval_freq epoch (full_eval_sets)
+    extra_loaders = {}
+    for name in list(getattr(dl_cfg, 'epoch_eval_sets', [])) + list(getattr(dl_cfg, 'full_eval_sets', [])):
+        if name in extra_loaders or name == dl_cfg.val_set:
+            continue
+        try:
+            ds_e = get_test_dataset(name, None)
+            extra_loaders[name] = (DataLoader(ds_e, batch_size=dl_cfg.batch_size, shuffle=False,
+                                              num_workers=cfg.DATASET.workers, pin_memory=True),
+                                   ds_e.dataset.h36m_joint_regressor)
+            log(f'# eval them {name}: {len(ds_e)}')
+        except Exception as e:
+            log(f'# eval them {name}: LOI {type(e).__name__}: {e}')
+
+    def eval_extra(names, eval_model, epoch_no):
+        for name in names:
+            if name not in extra_loaders:
+                continue
+            ld, reg = extra_loaders[name]
+            r = evaluate(eval_model, ld, reg, device, desc=f'Eval {name}')
+            log(f'    [Ep {epoch_no} | {name}] MPJPE: {r["mpjpe"]:.2f} mm | PA: {r["pa_mpjpe"]:.2f} mm | '
+                f'min-K: {r["min_k"]:.2f} mm (n={r["n"]})')
+
     # --- Train loop (theo pattern LiftTrainer.train + LiftTester.test) ---
     lr_decay = dl_cfg.lr_decay
     # Resume: tiep tuc lich LR tu epoch da dung (khong quay ve lr goc)
@@ -415,8 +542,11 @@ def main():
     for epoch in range(start_epoch, dl_cfg.epochs):
         t0 = time.time()
 
-        train_loss = train_epoch(model, train_loader, optimizer, device, dl_cfg, epoch + 1)
-        val_res    = evaluate(model, val_loader, val_reg, device, desc=f'Val {dl_cfg.val_set}')
+        train_loss, n_it = train_epoch(model, train_loader, optimizer, device, dl_cfg, epoch + 1,
+                                       ema=ema, step0=step)
+        step += n_it
+        eval_model = ema if ema is not None else model
+        val_res    = evaluate(eval_model, val_loader, val_reg, device, desc=f'Val {dl_cfg.val_set}')
 
         elapsed = (time.time() - t0) / 60
         log(f'[Epoch {epoch+1}/{dl_cfg.epochs}] {elapsed:.1f}m | '
@@ -426,6 +556,11 @@ def main():
             f'min-K: {val_res["min_k"]:.2f} mm | '
             f'LR: {lr:.6f}')
 
+        # Danh gia them (chi log, KHONG dung de chon best)
+        eval_extra(list(getattr(dl_cfg, 'epoch_eval_sets', [])), eval_model, epoch + 1)
+        if (epoch + 1) % getattr(dl_cfg, 'full_eval_freq', 5) == 0:
+            eval_extra(list(getattr(dl_cfg, 'full_eval_sets', [])), eval_model, epoch + 1)
+
         # LR decay
         lr *= lr_decay
         for pg in optimizer.param_groups:
@@ -434,14 +569,14 @@ def main():
         # Checkpoint: cap nhat best TRUOC de latest luu dung best_val (resume khong bi lech)
         if val_res['mpjpe'] < best_val:
             best_val = val_res['mpjpe']
-            save_ckpt(best_path, model, optimizer, epoch + 1, best_val, dl_cfg)
+            save_ckpt(best_path, model, optimizer, epoch + 1, best_val, dl_cfg, ema, step)
             log(f'--> Best model saved (Val MPJPE={best_val:.2f} mm)')
 
-        save_ckpt(latest_path, model, optimizer, epoch + 1, best_val, dl_cfg)
+        save_ckpt(latest_path, model, optimizer, epoch + 1, best_val, dl_cfg, ema, step)
 
         if (epoch + 1) % getattr(dl_cfg, 'save_freq', 10) == 0:
             ep_path = os.path.join(save_dir, f'epoch_{epoch+1}.bin')
-            save_ckpt(ep_path, model, optimizer, epoch + 1, best_val, dl_cfg)
+            save_ckpt(ep_path, model, optimizer, epoch + 1, best_val, dl_cfg, ema, step)
 
     # --- Final test ---
     log('===== Final test with best checkpoint =====')
