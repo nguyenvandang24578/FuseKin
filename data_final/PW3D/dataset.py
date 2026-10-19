@@ -139,9 +139,11 @@ class PW3D(torch.utils.data.Dataset):
         self.use_halpe26 = (cfg.DATASET.pw3d_2d_source == 'halpe26') and not cfg.crowd
         halpe26 = None
         if self.use_halpe26:
-            halpe_path = osp.join(self.data_path, f'3DPW_{self.data_split}_halpe26.json')
+            # oc/pc co id annotation rieng -> dung file Halpe rieng (3DPW_oc_halpe26.json / 3DPW_pc_halpe26.json)
+            halpe_tag = {'3dpw-oc': 'oc', '3dpw-pc': 'pc'}.get(self.data_name, self.data_split)
+            halpe_path = osp.join(self.data_path, f'3DPW_{halpe_tag}_halpe26.json')
             if not osp.isfile(halpe_path):
-                raise FileNotFoundError(f"{halpe_path} khong ton tai. Chay tools/extract_halpe26_3dpw.py --splits {self.data_split}")
+                raise FileNotFoundError(f"{halpe_path} khong ton tai. Chay tools/extract_halpe26_3dpw.py --splits {halpe_tag}")
             with open(halpe_path) as f:
                 halpe26 = json.load(f)
             print(f"Load Halpe-26 input: {halpe_path} ({len(halpe26)} nguoi)")
