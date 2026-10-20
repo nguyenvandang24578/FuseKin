@@ -107,7 +107,10 @@ def pa_mpjpe_batch(pred, gt):
 
 def make_cond(inp, device):
     """Dieu kien 2D: [x_norm, y_norm, mask] giong finetune_difflifter.evaluate. (B, 17, 3)"""
-    return torch.cat([inp['joints'][..., :2].float(), inp['joints_mask'].float()], dim=-1).to(device)
+    c = torch.cat([inp['joints'][..., :2].float(), inp['joints_mask'].float()], dim=-1).to(device)
+    if 'cam_bbox' in inp:   # DATASET.lift_cam_bbox: ghep 3 so cam_bbox vao moi khop -> (B, 17, 6)
+        c = torch.cat([c, inp['cam_bbox'].float().to(device)[:, None, :].expand(-1, c.shape[1], -1)], dim=-1)
+    return c
 
 
 def get_gt(targets, reg, device):
@@ -185,7 +188,8 @@ def build_model(ckpt, device):
                        num_proposals=dc['num_proposals'], scale=dc['scale'], drop_path_rate=0.0,
                        cond_mode=dc.get('cond_mode', 'input'), aggregate='mean',
                        conf_attn=dc.get('conf_attn', False), skel_attn=dc.get('skel_attn', False),
-                       mask_token=dc.get('mask_token', False), self_cond=dc.get('self_cond', False)).to(device)
+                       mask_token=dc.get('mask_token', False), self_cond=dc.get('self_cond', False),
+                       cam_cond=dc.get('cam_cond', False)).to(device)
     model.load_state_dict(ckpt['model_state'], strict=True)
     model.eval()
     return model
@@ -425,7 +429,7 @@ def report_limb_drop(model, cache, seed, tag='sampler mac dinh', agg='mean', cor
                 if cfg.DATASET.lift_soft_conf:
                     c2[:, idx, 2] = torch.clamp(cond[:, idx, 2], max=cfg.DATASET.halpe26_conf_thr + 0.05)
             else:
-                c2[:, idx, :] = 0
+                c2[:, idx, :3] = 0   # chi xoa x, y, conf (giu cam_bbox)
             pd = sample(model, c2, bi, seed)
             ed = torch.norm(agg_pose(pd, c2, agg) - gt, dim=-1)
             sd = spread_of(pd)

@@ -13,6 +13,7 @@ from utils.smpl import SMPL
 from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch_image, augmentation, load_img_from_lmdb, augmentation_noimg
 from utils.transforms import cam2pixel, pixel2cam, rigid_align, transform_joint_to_other_db, denorm_joints, convert_crop_cam_to_orig_img
 from utils.h36m_adapter import halpe26_to_human36m
+from utils.cam_bbox import cam_bbox_feat
 # from utils.vis import save_obj, vis_keypoints_with_skeleton, vis_bbox, render_mesh
 
 
@@ -484,6 +485,9 @@ class PW3D(torch.utils.data.Dataset):
             # Keep the 2D input pose 3-column (x, y, conf) to match the test
             # branch so the model receives the same input format in both phases.
             inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc, 'joints_raw': joints_raw_pmce}
+            if cfg.DATASET.lift_cam_bbox:
+                # vi tri bbox so voi camera (CLIFF) -> lifter biet goc nghieng camera
+                inputs['cam_bbox'] = cam_bbox_feat(bbox, cam_param, data['img_shape'], do_flip, rot)
             targets = {'orig_joint_img': orig_joint_img, 'orig_joint_cam': orig_joint_cam, 'fit_joint_cam': fit_joint_cam, 'pose_param': smpl_pose, 'shape_param': smpl_shape, 'smpl_mesh_cam': smpl_mesh_cam}
             meta_info = {
                 'img_path': img_path, 'img2bb_trans': img2bb_trans.astype(np.float32),  # de ve hinh
@@ -498,6 +502,9 @@ class PW3D(torch.utils.data.Dataset):
             return inputs, targets, meta_info
         else:
             inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc, 'joints_raw': joints_raw_pmce}
+            if cfg.DATASET.lift_cam_bbox:
+                # vi tri bbox so voi camera (CLIFF) -> lifter biet goc nghieng camera
+                inputs['cam_bbox'] = cam_bbox_feat(bbox, cam_param, data['img_shape'], do_flip, rot)
             targets = {'smpl_mesh_cam': smpl_mesh_cam}
             meta_info = {'bb2img_trans': bb2img_trans, 'img2bb_trans': img2bb_trans, 'bbox': bbox, 'tight_bbox': data['tight_bbox'], 'aid': aid, 'idx': idx, 'img_path':img_path,
                          'img_shape': data['img_shape'], 'raw_joint_coord_img': raw_joint_coord_img}

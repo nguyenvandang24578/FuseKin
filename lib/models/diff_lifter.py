@@ -235,6 +235,7 @@ class SpatialMixSTE(nn.Module):
         self.mask_token = mask_token
         # self_cond: token dau vao them 3 kenh = du doan x0 cua buoc DDIM truoc (0 o buoc dau / khi train khong dung)
         self.self_cond = self_cond
+        self.in_chans = in_chans
 
         # Input: concat(2D+conf, noisy_3D) = in_chans + 3
         self.Spatial_patch_to_embedding = nn.Linear(in_chans + 3 + (3 if self_cond else 0), embed_dim_ratio)
@@ -302,6 +303,8 @@ class SpatialMixSTE(nn.Module):
         x_sc: du doan x0 truoc do (cung shape x_3d, met) khi self_cond; None -> 0
         """
         inference_mode = x_3d.dim() == 4  # (B,K,17,3)
+        assert x_2d.shape[-1] == self.in_chans, \
+            f'dieu kien 2D co {x_2d.shape[-1]} kenh, mo hinh can {self.in_chans} (cam_cond can DATASET.lift_cam_bbox)'
         if self.self_cond:
             x_3d = torch.cat([x_3d, torch.zeros_like(x_3d) if x_sc is None else x_sc], dim=-1)
 
@@ -414,7 +417,7 @@ class DiffLifter(nn.Module):
                  timesteps=1000, sampling_timesteps=5, num_proposals=5,
                  scale=1.0, drop_path_rate=0.1, cond_mode='input', aggregate='mean', conf_attn=False,
                  drop_rate=0.0,
-                 skel_attn=False, mask_token=False, self_cond=False):
+                 skel_attn=False, mask_token=False, self_cond=False, cam_cond=False):
         super().__init__()
 
         self.num_joints = num_joints
@@ -452,7 +455,8 @@ class DiffLifter(nn.Module):
         # --- Denoiser backbone ---
         self.denoiser = SpatialMixSTE(
             num_joints=num_joints,
-            in_chans=3,               # [x_norm, y_norm, conf]
+            # [x_norm, y_norm, conf] (+ [dx, dy, size] cua cam_bbox lap cho moi khop neu cam_cond)
+            in_chans=6 if cam_cond else 3,
             embed_dim_ratio=embed_dim,
             depth=depth,
             num_heads=num_heads,

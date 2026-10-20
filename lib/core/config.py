@@ -117,6 +117,8 @@ cfg.DATASET.halpe26_conf_thr = 0.3
 # joints_mask MEM: khop hop le (score > nguong, nam trong crop) mang gia tri = score Halpe (cat ve [0, 1]) thay vi 1.
 # Khop khong hop le van = 0. Ap dung cho Halpe-26 cua H36M / MuCo / 3DPW. Mac dinh TAT (mask nhi phan nhu cu).
 cfg.DATASET.lift_soft_conf = False
+# Them inputs['cam_bbox'] = [(cx-px)/f, (cy-py)/f, kich thuoc/f] (y tuong CLIFF) cho H36M / MuCo / 3DPW. Mac dinh TAT.
+cfg.DATASET.lift_cam_bbox = False
 # 3DPW test: tra them GT 2D (targets['orig_joint_img'] H36M-17, khung output_hm_shape) + meta orig_joint_valid/trunc.
 # Chi de phan tich sai so 2D dau vao; evaluate() khong dung. Mac dinh TAT = hanh vi cu.
 cfg.DATASET.pw3d_test_gt2d = False
@@ -424,6 +426,7 @@ cfg.DIFFLIFT.conf_attn = False
 # Kien truc v3 (chi cond_mode='adaln', mac dinh TAT)
 cfg.DIFFLIFT.skel_attn = False        # bias attention theo so canh tren khung xuong
 cfg.DIFFLIFT.mask_token = False       # vector hoc duoc cho khop khong co 2D
+cfg.DIFFLIFT.cam_cond = False         # dieu kien them cam_bbox (3 so, lap cho moi khop); can DATASET.lift_cam_bbox
 cfg.DIFFLIFT.self_cond = False        # self-conditioning: buoc DDIM sau nhin du doan x0 buoc truoc
 # Danh gia them trong luc train (khong anh huong chon best, best van theo val_set)
 cfg.DIFFLIFT.epoch_eval_sets = []     # danh gia MOI epoch, vd ['3dpw']

@@ -142,7 +142,10 @@ def ddim_traj(model, xy_conf, gen):
 
 
 def make_cond(inp, device):
-    return torch.cat([inp['joints'][..., :2].float(), inp['joints_mask'].float()], dim=-1).to(device)
+    c = torch.cat([inp['joints'][..., :2].float(), inp['joints_mask'].float()], dim=-1).to(device)
+    if 'cam_bbox' in inp:
+        c = torch.cat([c, inp['cam_bbox'].float().to(device)[:, None, :].expand(-1, c.shape[1], -1)], dim=-1)
+    return c
 
 
 def corrupt_arm(cond):

@@ -187,7 +187,15 @@ def make_xy_conf(inputs_b, device, dl_cfg):
         noise = torch.randn_like(xy) * jitter_std
         xy = xy + noise * (conf > 0)
 
-    return torch.cat([xy, conf], dim=-1)   # (B, 17, 3)
+    return add_cam(torch.cat([xy, conf], dim=-1), inputs_b, device)   # (B, 17, 3) hoac (B, 17, 6)
+
+
+def add_cam(cond, inputs_b, device):
+    """Neu dataset tra cam_bbox (DATASET.lift_cam_bbox): ghep 3 so vao moi khop -> (B, 17, 6)."""
+    if 'cam_bbox' in inputs_b:
+        cam = inputs_b['cam_bbox'].to(device).float()[:, None, :].expand(-1, cond.shape[1], -1)
+        cond = torch.cat([cond, cam], dim=-1)
+    return cond
 
 
 def make_gt3d(targets_b, device):
@@ -289,6 +297,7 @@ def evaluate(model, loader, h36m_regressor, device, desc='Val', seed=0):
             inputs_b['joints'][..., :2].float(),
             inputs_b['joints_mask'].float(),
         ], dim=-1).to(device)   # (B, 17, 3)
+        xy_conf = add_cam(xy_conf, inputs_b, device)
 
         # GT
         if 'orig_joint_cam' in targets_b:
@@ -352,6 +361,7 @@ def save_ckpt(path, model, optimizer, epoch, best_val, dl_cfg, ema=None, step=0)
             'skel_attn': bool(getattr(dl_cfg, 'skel_attn', False)),
             'mask_token': bool(getattr(dl_cfg, 'mask_token', False)),
             'self_cond': bool(getattr(dl_cfg, 'self_cond', False)),
+            'cam_cond': bool(getattr(dl_cfg, 'cam_cond', False)),
             'ema_decay': float(getattr(dl_cfg, 'ema_decay', 0.0)),
         },
     }, path)
@@ -431,6 +441,7 @@ def main():
         skel_attn=getattr(dl_cfg, 'skel_attn', False),
         mask_token=getattr(dl_cfg, 'mask_token', False),
         self_cond=getattr(dl_cfg, 'self_cond', False),
+        cam_cond=getattr(dl_cfg, 'cam_cond', False),
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -451,7 +462,8 @@ def main():
     log(f'ema_decay={getattr(dl_cfg, "ema_decay", 0.0)} | occ_aug_prob={getattr(dl_cfg, "occ_aug_prob", 0.0)} | '
         f'soft_conf={cfg.DATASET.lift_soft_conf} | conf_attn={getattr(dl_cfg, "conf_attn", False)} | '
         f'skel_attn={getattr(dl_cfg, "skel_attn", False)} | mask_token={getattr(dl_cfg, "mask_token", False)} | '
-        f'self_cond={getattr(dl_cfg, "self_cond", False)} | drop_rate={getattr(dl_cfg, "drop_rate", 0.0)} | '
+        f'self_cond={getattr(dl_cfg, "self_cond", False)} | cam_cond={getattr(dl_cfg, "cam_cond", False)} '
+        f'(lift_cam_bbox={cfg.DATASET.lift_cam_bbox}) | drop_rate={getattr(dl_cfg, "drop_rate", 0.0)} | '
         f'dataset_ratio={list(getattr(dl_cfg, "dataset_ratio", []))} | balance_datasets={getattr(dl_cfg, "balance_datasets", True)}')
 
     start_epoch = 0
