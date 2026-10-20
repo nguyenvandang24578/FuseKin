@@ -17,6 +17,7 @@ from utils.smpl import SMPL
 from utils.preprocessing import load_img, process_bbox, augmentation, compute_iou, load_img_from_lmdb
 # from utils.vis import vis_bbox, render_mesh
 from utils.transforms import world2cam, cam2pixel, pixel2cam, transform_joint_to_other_db
+from utils.lift_pseudo3d import lift_pseudo3d_sample, load_halpe_into_datalist
 
 
 
@@ -37,6 +38,9 @@ class MSCOCO(torch.utils.data.Dataset):
         self.coco_skeleton = ( (1, 2), (0, 1), (0, 2), (2, 4), (1, 3), (6, 8), (8, 10), (5, 7), (7, 9), (12, 14), (14, 16), (11, 13), (13, 15), (5, 6), (11, 12) )
         self.coco_flip_pairs = ( (1, 2), (3, 4), (5, 6), (7, 8), (9, 10), (11, 12), (13, 14), (15, 16) )
         self.coco_joint_regressor = np.load(osp.join(cfg.DATASET.jotr_data_root, 'MSCOCO', 'J_regressor_coco_hip_smpl.npy'))
+        # Cho lifter (cfg.DATASET.lift_only) + wrapper Human36M17Dataset: GT 3D H36M-17 tu mesh NeuralAnnot
+        self.h36m_joint_regressor = np.load(osp.join(cfg.DATASET.jotr_data_root, 'Human36M', 'J_regressor_h36m_correct.npy'))
+        self.halpe26_conf_thr = cfg.DATASET.halpe26_conf_thr
 
         # smpl skeleton
         self.smpl = SMPL()
@@ -51,6 +55,9 @@ class MSCOCO(torch.utils.data.Dataset):
         self.face_kps_vertex = self.smpl.face_kps_vertex
 
         self.datalist = self.load_data()
+        if cfg.DATASET.lift_only and self.data_split == 'train':
+            # Lifter: chi giu nguoi co NeuralAnnot + Halpe-26 (tools/extract_halpe26_coco.py --dataset mscoco)
+            self.datalist = load_halpe_into_datalist(self, 'MSCOCO', self.datalist, 'smpl_param', cfg.DATASET.jotr_data_root)
         print("coco data len: ", len(self.datalist))
 
     def add_pelvis(self, joint_coord):
@@ -101,6 +108,7 @@ class MSCOCO(torch.utils.data.Dataset):
                         smpl_param = None
 
                     tmplist.append({
+                        'ann_id': aid,
                         'img_path': img_path,
                         'img_shape': (height, width),
                         'bbox': bbox,
@@ -230,6 +238,10 @@ class MSCOCO(torch.utils.data.Dataset):
         if cfg.update_bbox:
             height, width = img_shape
             bbox = process_bbox(data['tight_bbox'], width, height)
+        if cfg.DATASET.lift_only and self.data_split == 'train':
+            # Lifter: 2D Halpe + pseudo-GT 3D NeuralAnnot, khong doc anh
+            data['bbox'] = bbox
+            return lift_pseudo3d_sample(self, data, data['smpl_param']['smpl_param'], data['smpl_param']['cam_param'])
         # image load and affine transform
         # import pdb;pdb.set_trace()
         img = load_img(img_path)
