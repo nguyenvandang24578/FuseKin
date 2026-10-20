@@ -16,7 +16,6 @@ from utils.smpl import SMPL
 from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch_image, augmentation, load_img_from_lmdb, augmentation_noimg
 from utils.transforms import world2cam, cam2pixel, pixel2cam, rigid_align, transform_joint_to_other_db
 from utils.h36m_adapter import halpe26_to_human36m
-from utils.cam_bbox import cam_bbox_feat
 # from utils.vis import vis_mesh, save_obj
 
 
@@ -360,9 +359,6 @@ class Human36M(torch.utils.data.Dataset):
             else:
                 in_xy, in_mask = gt_joint_img[:, :2], joint_trunc
             inputs = {'img': img, 'joints': in_xy.astype(np.float32), 'joints_mask': in_mask.astype(np.float32)}
-            if cfg.DATASET.lift_cam_bbox:
-                # vi tri bbox so voi camera (CLIFF) -> lifter biet goc nghieng camera
-                inputs['cam_bbox'] = cam_bbox_feat(bbox, cam_param, img_shape, False, rot)
             targets = {'orig_joint_cam': (h36m_joint_cam / 1000).astype(np.float32),  # milimeter to meter
                        'orig_joint_img': gt_joint_img}                              # GT 2D (vd compare_motionbert_gt2d.py)
             meta_info = {'orig_joint_valid': h36m_joint_valid, 'orig_joint_trunc': joint_trunc,
@@ -448,9 +444,6 @@ class Human36M(torch.utils.data.Dataset):
                 [0, 0, 1]], dtype=np.float32)
                 h36m_joint_cam = np.dot(rot_aug_mat, h36m_joint_cam.transpose(1,0)).transpose(1,0) / 1000 # milimeter to meter
                 inputs = {'img': img, 'joints': input_h36m_joint_img[:, :2].astype(np.float32), 'joints_mask': joint_mask.astype(np.float32)}
-                if cfg.DATASET.lift_cam_bbox:
-                    # vi tri bbox so voi camera (CLIFF) -> lifter biet goc nghieng camera
-                    inputs['cam_bbox'] = cam_bbox_feat(bbox, cam_param, img_shape, do_flip, rot)
                 targets = {'orig_joint_img': h36m_joint_img.astype(np.float32), 'orig_joint_cam': h36m_joint_cam.astype(np.float32)}
                 meta_info = {'orig_joint_valid': h36m_joint_valid.astype(np.float32), 'orig_joint_trunc': h36m_joint_trunc.astype(np.float32), 'is_3D': float(True),
                              'img_path': img_path, 'img2bb_trans': img2bb_trans.astype(np.float32)}  # de ve hinh

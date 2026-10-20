@@ -17,7 +17,6 @@ from utils.smpl import SMPL
 from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch_image, augmentation, compute_iou, load_img_from_lmdb, augmentation_noimg
 from utils.transforms import world2cam, cam2pixel, pixel2cam, rigid_align, transform_joint_to_other_db
 from utils.h36m_adapter import halpe26_to_human36m
-from utils.cam_bbox import cam_bbox_feat
 # from utils.vis import vis_keypoints, vis_mesh, save_obj, vis_keypoints_with_skeleton, vis_bbox
 import transforms3d
 
@@ -379,9 +378,6 @@ class MuCo(torch.utils.data.Dataset):
             if h36m_in_mask is None:
                 h36m_in_mask = h36m_trunc
             inputs = {'img': img, 'joints': h36m_input[:, :2].astype(np.float32), 'joints_mask': h36m_in_mask.astype(np.float32)}
-            if cfg.DATASET.lift_cam_bbox:
-                # vi tri bbox so voi camera (CLIFF) -> lifter biet goc nghieng camera
-                inputs['cam_bbox'] = cam_bbox_feat(bbox, cam_param, img_shape, do_flip, rot)
             targets = {'orig_joint_img': h36m_img.astype(np.float32), 'orig_joint_cam': h36m_cam.astype(np.float32)}
             meta_info = {'orig_joint_valid': h36m_valid.astype(np.float32), 'orig_joint_trunc': h36m_trunc.astype(np.float32), 'is_3D': float(True),
                          'img_path': img_path, 'img2bb_trans': img2bb_trans.astype(np.float32)}  # de ve hinh

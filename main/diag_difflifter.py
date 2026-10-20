@@ -42,12 +42,48 @@ from tqdm import tqdm
 # Import qua 'core.*' / 'utils.*' (KHONG qua 'lib.core.*') de dung chung 1 module config voi dataset.
 from core.config import update_config, cfg
 from utils.jotr_dataset import get_train_dataset, get_test_dataset
-from models.diff_lifter import DiffLifter, aggregate_jpma
+from models.diff_lifter import DiffLifter
 
 JOINT_NAMES = ['Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso',
                'Neck', 'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist',
                'R_Shoulder', 'R_Elbow', 'R_Wrist']
 LIMBS = {'R_leg': [1, 2, 3], 'L_leg': [4, 5, 6], 'L_arm': [11, 12, 13], 'R_arm': [14, 15, 16]}
+
+
+def aggregate_jpma(all_preds, xy_conf):
+    """
+    [Chi dung de PHAN TICH trong script nay, KHONG phai 1 phan cua DiffLifter]
+    Gop K gia thuyet THEO TUNG KHOP bang do khop 2D (y tuong JPMA cua D3DP, ban weak-perspective).
+      all_preds: (B, K, J, 3) root-relative, met
+      xy_conf:   (B, J, 3) [x, y, conf] toa do crop [-1, 1]
+    1) Khop scale s + offset t (least squares, chi tren khop nhin ro) tu (X, Y) cua pose TRUNG BINH sang 2D.
+    2) Moi khop nhin ro: chon gia thuyet co loi chieu 2D nho nhat. Khop mat: lay trung binh K.
+    Da thu lam cach gop mac dinh cua model (xem lich su thi nghiem v3) va KEM HON mean -> chi con dung
+    o day de so sanh them luc chan doan, khong dua vao model.
+    """
+    B, K, J, _ = all_preds.shape
+    mean = all_preds.mean(dim=1)
+    if K == 1:
+        return mean
+    p2d = xy_conf[..., :2]
+    w = (xy_conf[..., 2] > 0).float()
+    P = mean[..., :2]
+    wsum = w.sum(dim=1).clamp(min=1.0)[:, None, None]
+    Pm = (w[..., None] * P).sum(dim=1, keepdim=True) / wsum
+    pm = (w[..., None] * p2d).sum(dim=1, keepdim=True) / wsum
+    Pc, pc = P - Pm, p2d - pm
+    num = (w * (Pc * pc).sum(-1)).sum(dim=1)
+    den = (w * (Pc ** 2).sum(-1)).sum(dim=1).clamp(min=1e-8)
+    s = (num / den)[:, None, None]
+    t = pm - s * Pm
+    proj = s[:, None] * all_preds[..., :2] + t[:, None]
+    err = torch.norm(proj - p2d[:, None], dim=-1)
+    best = err.argmin(dim=1)
+    idx = best[:, None, :, None].expand(B, 1, J, 3)
+    sel = torch.gather(all_preds, 1, idx).squeeze(1)
+    out = torch.where((w > 0)[..., None], sel, mean)
+    return out - out[:, 0:1, :]
+
 
 # (S, K, eta): S = so buoc DDIM, K = so gia thuyet, eta = muc ngau nhien cua DDIM
 SWEEP = [(1, 1, 1.0), (1, 5, 1.0), (3, 5, 1.0), (5, 1, 1.0), (5, 5, 1.0), (5, 5, 0.0),
@@ -107,10 +143,7 @@ def pa_mpjpe_batch(pred, gt):
 
 def make_cond(inp, device):
     """Dieu kien 2D: [x_norm, y_norm, mask] giong finetune_difflifter.evaluate. (B, 17, 3)"""
-    c = torch.cat([inp['joints'][..., :2].float(), inp['joints_mask'].float()], dim=-1).to(device)
-    if 'cam_bbox' in inp:   # DATASET.lift_cam_bbox: ghep 3 so cam_bbox vao moi khop -> (B, 17, 6)
-        c = torch.cat([c, inp['cam_bbox'].float().to(device)[:, None, :].expand(-1, c.shape[1], -1)], dim=-1)
-    return c
+    return torch.cat([inp['joints'][..., :2].float(), inp['joints_mask'].float()], dim=-1).to(device)
 
 
 def get_gt(targets, reg, device):
@@ -182,14 +215,9 @@ def make_loader(name, args, shuffle=False, seed=0):
 
 def build_model(ckpt, device):
     dc = ckpt['difflift_cfg']
-    # aggregate luon 'mean' o day: diag tu tinh ca mean lan JPMA tu K gia thuyet
     model = DiffLifter(num_joints=17, embed_dim=dc['embed_dim'], depth=dc['depth'], num_heads=dc['num_heads'],
                        timesteps=dc['timesteps'], sampling_timesteps=dc['sampling_timesteps'],
-                       num_proposals=dc['num_proposals'], scale=dc['scale'], drop_path_rate=0.0,
-                       cond_mode=dc.get('cond_mode', 'input'), aggregate='mean',
-                       conf_attn=dc.get('conf_attn', False), skel_attn=dc.get('skel_attn', False),
-                       mask_token=dc.get('mask_token', False), self_cond=dc.get('self_cond', False),
-                       cam_cond=dc.get('cam_cond', False)).to(device)
+                       num_proposals=dc['num_proposals'], scale=dc['scale'], drop_path_rate=0.0).to(device)
     model.load_state_dict(ckpt['model_state'], strict=True)
     model.eval()
     return model
@@ -429,7 +457,7 @@ def report_limb_drop(model, cache, seed, tag='sampler mac dinh', agg='mean', cor
                 if cfg.DATASET.lift_soft_conf:
                     c2[:, idx, 2] = torch.clamp(cond[:, idx, 2], max=cfg.DATASET.halpe26_conf_thr + 0.05)
             else:
-                c2[:, idx, :3] = 0   # chi xoa x, y, conf (giu cam_bbox)
+                c2[:, idx, :3] = 0   # xoa x, y, conf cua chi (toan bo dieu kien 2D cua chi do)
             pd = sample(model, c2, bi, seed)
             ed = torch.norm(agg_pose(pd, c2, agg) - gt, dim=-1)
             sd = spread_of(pd)

@@ -2,7 +2,6 @@
 Mau cho LIFTER (cfg.DATASET.lift_only) tu bo 2D-only co pseudo-GT 3D NeuralAnnot (MSCOCO, CrowdPose).
   2D dau vao : Halpe-26 (doi H36M-17), lat + affine giong Human36M._halpe_input
   GT 3D      : SMPL NeuralAnnot -> mesh (met, he camera) -> H36M regressor -> root-relative -> xoay aug
-  cam_bbox   : neu cfg.DATASET.lift_cam_bbox (camera = cam_param cua NeuralAnnot, la camera UOC LUONG)
 Tra ve (inputs, targets, meta) cung bo key voi nhanh lift_only cua Human36M / MuCo.
 """
 import numpy as np
@@ -10,7 +9,6 @@ import torch
 
 from core.config import cfg
 from utils.preprocessing import augmentation_noimg
-from utils.cam_bbox import cam_bbox_feat
 
 H36M_FLIP_PAIRS = ((1, 4), (2, 5), (3, 6), (14, 11), (15, 12), (16, 13))
 
@@ -54,8 +52,6 @@ def lift_pseudo3d_sample(ds, data, smpl_param, cam_param):
     j3d = np.dot(rot_aug_mat, j3d.transpose(1, 0)).transpose(1, 0).astype(np.float32)
 
     inputs = {'img': torch.zeros(1), 'joints': xy, 'joints_mask': mask}
-    if cfg.DATASET.lift_cam_bbox:
-        inputs['cam_bbox'] = cam_bbox_feat(bbox, cam_param, img_shape, do_flip, rot)
     targets = {'orig_joint_img': np.zeros((17, 3), dtype=np.float32), 'orig_joint_cam': j3d}
     meta = {'orig_joint_valid': np.ones((17, 1), dtype=np.float32),
             'orig_joint_trunc': np.ones((17, 1), dtype=np.float32),

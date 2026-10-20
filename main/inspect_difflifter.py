@@ -112,7 +112,7 @@ def spearman(a, b):
 
 
 # ------------------------------------------------------------------
-# Quy dao DDIM: chep DUNG logic DiffLifter.forward_inference (co self_cond), them ghi lai tung buoc
+# Quy dao DDIM: chep DUNG logic DiffLifter.forward_inference, them ghi lai tung buoc
 # ------------------------------------------------------------------
 @torch.no_grad()
 def ddim_traj(model, xy_conf, gen):
@@ -120,13 +120,11 @@ def ddim_traj(model, xy_conf, gen):
     T, S, eta, sc = model.num_timesteps, model.sampling_timesteps, model.ddim_sampling_eta, model.scale
     times = list(reversed(torch.linspace(-1, T - 1, steps=S + 1).int().tolist()))
     x = torch.randn(B, K, J, 3, device=xy_conf.device, generator=gen)
-    x0s, x_sc = [], None
+    x0s = []
     for time, time_next in zip(times[:-1], times[1:]):
         t_cond = torch.full((B,), time, device=xy_conf.device, dtype=torch.long)
         x_in = x.clamp(-1.1 * sc, 1.1 * sc) / sc
-        pred_x0 = model._denoise(xy_conf, x_in, t_cond, x_sc)
-        if getattr(model, 'self_cond', False):
-            x_sc = pred_x0
+        pred_x0 = model._denoise(xy_conf, x_in, t_cond)
         x0s.append(pred_x0)
         p_sc = (pred_x0 * sc).clamp(-1.1 * sc, 1.1 * sc)
         if time_next < 0:
@@ -142,10 +140,7 @@ def ddim_traj(model, xy_conf, gen):
 
 
 def make_cond(inp, device):
-    c = torch.cat([inp['joints'][..., :2].float(), inp['joints_mask'].float()], dim=-1).to(device)
-    if 'cam_bbox' in inp:
-        c = torch.cat([c, inp['cam_bbox'].float().to(device)[:, None, :].expand(-1, c.shape[1], -1)], dim=-1)
-    return c
+    return torch.cat([inp['joints'][..., :2].float(), inp['joints_mask'].float()], dim=-1).to(device)
 
 
 def corrupt_arm(cond):
