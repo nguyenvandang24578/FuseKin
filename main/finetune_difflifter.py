@@ -423,7 +423,8 @@ def main():
         sampling_timesteps=dl_cfg.sampling_timesteps,
         num_proposals=dl_cfg.num_proposals,
         scale=dl_cfg.scale,
-        drop_path_rate=0.1,
+        drop_path_rate=getattr(dl_cfg, 'drop_path_rate', 0.1),
+        drop_rate=getattr(dl_cfg, 'drop_rate', 0.0),
         cond_mode=getattr(dl_cfg, 'cond_mode', 'input'),
         aggregate=getattr(dl_cfg, 'aggregate', 'mean'),
         conf_attn=getattr(dl_cfg, 'conf_attn', False),
@@ -450,7 +451,8 @@ def main():
     log(f'ema_decay={getattr(dl_cfg, "ema_decay", 0.0)} | occ_aug_prob={getattr(dl_cfg, "occ_aug_prob", 0.0)} | '
         f'soft_conf={cfg.DATASET.lift_soft_conf} | conf_attn={getattr(dl_cfg, "conf_attn", False)} | '
         f'skel_attn={getattr(dl_cfg, "skel_attn", False)} | mask_token={getattr(dl_cfg, "mask_token", False)} | '
-        f'self_cond={getattr(dl_cfg, "self_cond", False)} | balance_datasets={getattr(dl_cfg, "balance_datasets", True)}')
+        f'self_cond={getattr(dl_cfg, "self_cond", False)} | drop_rate={getattr(dl_cfg, "drop_rate", 0.0)} | '
+        f'dataset_ratio={list(getattr(dl_cfg, "dataset_ratio", []))} | balance_datasets={getattr(dl_cfg, "balance_datasets", True)}')
 
     start_epoch = 0
     step = 0
@@ -489,14 +491,30 @@ def main():
         log(f'# train {name}: {len(ds)}')
 
     balance = getattr(dl_cfg, 'balance_datasets', True)
-    train_dataset = train_sets[0] if len(train_sets) == 1 else \
-        MultipleDatasets(train_sets, make_same_len=balance)
+    ratio = list(getattr(dl_cfg, 'dataset_ratio', []))
+    sampler = None
+    if ratio:
+        # Tron theo ti le: noi cac tap (khong lap), moi mau co trong so = ti le tap / so mau tap
+        assert len(ratio) == len(train_sets), f'dataset_ratio {ratio} phai co {len(train_sets)} phan tu'
+        train_dataset = MultipleDatasets(train_sets, make_same_len=False)
+        rs = np.asarray(ratio, dtype=np.float64) / float(sum(ratio))
+        weights = np.concatenate([np.full(len(ds), r / len(ds)) for ds, r in zip(train_sets, rs)])
+        n_ep = int(getattr(dl_cfg, 'samples_per_epoch', 0)) or len(train_dataset)
+        sampler = torch.utils.data.WeightedRandomSampler(torch.as_tensor(weights), num_samples=n_ep,
+                                                         replacement=True)
+        for name, ds, r in zip(train_names, train_sets, rs):
+            log(f'# ti le {name}: {r:.2f} -> ~{r * n_ep / len(ds):.1f} lan / epoch')
+        log(f'# mau / epoch: {n_ep}')
+    else:
+        train_dataset = train_sets[0] if len(train_sets) == 1 else \
+            MultipleDatasets(train_sets, make_same_len=balance)
     log(f'# train total: {len(train_dataset)}')
 
     train_loader = DataLoader(
         dataset=train_dataset,
         batch_size=dl_cfg.batch_size,
-        shuffle=True,
+        shuffle=sampler is None,
+        sampler=sampler,
         num_workers=cfg.DATASET.workers,
         pin_memory=True,
         persistent_workers=cfg.DATASET.workers > 0,

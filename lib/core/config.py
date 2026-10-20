@@ -429,6 +429,12 @@ cfg.DIFFLIFT.self_cond = False        # self-conditioning: buoc DDIM sau nhin du
 cfg.DIFFLIFT.epoch_eval_sets = []     # danh gia MOI epoch, vd ['3dpw']
 cfg.DIFFLIFT.full_eval_sets = []      # danh gia moi full_eval_freq epoch, vd ['Human36M', '3dpw-oc', '3dpw-pc']
 cfg.DIFFLIFT.full_eval_freq = 5
+# Ti le tron dataset moi epoch (theo thu tu train_list), vd [0.4, 0.4, 0.2]. [] = TAT (dung balance_datasets).
+# Bat -> lay mau co hoan lai theo ti le, khong lap 3DPW-train ~14 lan/epoch nhu balance.
+cfg.DIFFLIFT.dataset_ratio = []
+cfg.DIFFLIFT.samples_per_epoch = 0    # so mau moi epoch khi dung dataset_ratio (0 = tong so mau cac tap)
+cfg.DIFFLIFT.drop_rate = 0.0          # dropout trong attention/MLP cua denoiser (chong overfit)
+cfg.DIFFLIFT.drop_path_rate = 0.1     # stochastic depth (truoc day co dinh 0.1)
 
 """ Diffusion (SMPL_HyperDiff) """
 cfg.DIFF = edict()

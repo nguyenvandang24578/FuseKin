@@ -413,6 +413,7 @@ class DiffLifter(nn.Module):
     def __init__(self, num_joints=17, embed_dim=256, depth=4, num_heads=8,
                  timesteps=1000, sampling_timesteps=5, num_proposals=5,
                  scale=1.0, drop_path_rate=0.1, cond_mode='input', aggregate='mean', conf_attn=False,
+                 drop_rate=0.0,
                  skel_attn=False, mask_token=False, self_cond=False):
         super().__init__()
 
@@ -456,6 +457,7 @@ class DiffLifter(nn.Module):
             depth=depth,
             num_heads=num_heads,
             drop_path_rate=drop_path_rate,
+            drop_rate=drop_rate,
             cond_mode=cond_mode,
             conf_attn=conf_attn,
             skel_attn=skel_attn,
