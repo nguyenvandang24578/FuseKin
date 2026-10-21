@@ -198,13 +198,19 @@ cfg.MODEL.motionbert_2d_rootrel = False
 # [] (mac dinh): khong xoa gi (hanh vi cu).
 cfg.MODEL.motionbert_drop_joints = []
 
-# Bo lift 2D->3D cho Student: 'motionbert' (mac dinh) | 'pmce' (GraphormerNet, co dac trung anh SPIN global).
+# Bo lift 2D->3D cho Student: 'motionbert' (mac dinh) | 'pmce' (GraphormerNet, co dac trung anh SPIN global)
+#   | 'diffusion' (DiffLifter, main/finetune_difflifter.py; xem difflift_* ben duoi).
 # PMCE nhan 2D pixel ANH GOC chuan hoa X/w*2-[1,h/w] (inputs['joints_raw']) + dac trung anh; tra 3D (mm->m).
 # PMCE 2D KHONG xoay theo augmentation -> khi dung pmce PHAI dat DATASET.no_rot_aug: True de 3D GT khong xoay.
 cfg.MODEL.pose_lifter = 'motionbert'
 cfg.MODEL.pmce_checkpoint = ''   # checkpoint PMCE (model_state_dict / epoch_*.bin cua finetune_pmce.py)
 cfg.MODEL.pmce_dim = 256   # embed_dim cua PMCE GraphormerNet (TACH khoi hpe_dim cua fusion)
 cfg.MODEL.pmce_dep = 3
+# DiffLifter (pose_lifter = 'diffusion'): dong bang, nhan [x, y, conf] khung crop [-1, 1] + inputs['cam_bbox'].
+# Kien truc doc tu difflift_cfg trong checkpoint. DATASET.lift_soft_conf PHAI giong luc train lifter (r25_cam: True).
+cfg.MODEL.difflift_checkpoint = ''
+cfg.MODEL.difflift_steps = 1   # S buoc DDIM; 1 = du doan 1 buoc (tot nhat cho MPJPE, diag muc F)
+cfg.MODEL.difflift_k = 1       # K gia thuyet, gop trung binh
 
 # ---- Teacher: ep Teacher phai dung anh ----
 # (A) Tron GT voi joint MotionBERT lift tu 2D: input = (1-a)*GT + a*lift, a ~ U(0, alpha_max) moi mau luc train.

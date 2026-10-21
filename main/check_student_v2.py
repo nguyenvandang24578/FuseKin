@@ -64,7 +64,7 @@ def make_batch(B):
     return img, joints, mask, gt3d
 
 
-def fwd(model, img, joints, mask, is_train, gt3d=None, hint_on=None, raw=None):
+def fwd(model, img, joints, mask, is_train, gt3d=None, hint_on=None, raw=None, cam=None):
     """Goi model dung nhu Trainer / Tester: Student nhan 2D; T-hint nhan GT 3D + 2D (+ hint_on)."""
     if IS_THINT:
         if hint_on is not None:
@@ -73,7 +73,10 @@ def fwd(model, img, joints, mask, is_train, gt3d=None, hint_on=None, raw=None):
     # lifter PMCE can joints_raw; chua truyen thi dung tam joints (chi de smoke-test shape/finite)
     if getattr(model, 'use_pmce', False) and raw is None:
         raw = joints
-    return model(img, joints, is_train=is_train, joints_mask=mask, pose_2d_raw=raw)
+    # lifter DiffLifter can cam_bbox; chua truyen thi dung tam 0 (chi de smoke-test shape/finite)
+    if getattr(model, 'use_diff', False) and cam is None:
+        cam = torch.zeros(img.shape[0], 3, device=img.device)
+    return model(img, joints, is_train=is_train, joints_mask=mask, pose_2d_raw=raw, cam_bbox=cam)
 
 
 def main():
@@ -205,7 +208,9 @@ def main():
                     gt = torch.einsum('jk,bkc->bjc', reg, mesh)
                     gt = gt - gt[:, 0:1]
                 with torch.no_grad():
-                    outs = [fwd(model, img, j2, jm, False, gt, hint_on=h, raw=jraw) for h in ((1.0, 0.0) if IS_THINT else (None,))]
+                    cam = inputs['cam_bbox'].to(DEVICE).float() if 'cam_bbox' in inputs else None
+                    outs = [fwd(model, img, j2, jm, False, gt, hint_on=h, raw=jraw, cam=cam)
+                            for h in ((1.0, 0.0) if IS_THINT else (None,))]
                 fin = all(torch.isfinite(o['smpl_mesh_cam']).all().item() for o in outs)
                 rng = (j2[..., :2].min().item(), j2[..., :2].max().item())
                 tag = ' (CO + KHONG goi y)' if IS_THINT else ''

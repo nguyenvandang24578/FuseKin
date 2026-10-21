@@ -1126,9 +1126,11 @@ class Student_Trainer:
 
             # Feed 2D pose to model (which routes to MotionBERT / PMCE in Student mode)
             input_pose2d_raw = inputs['joints_raw'].cuda().float() if 'joints_raw' in inputs else None
+            input_cam_bbox = inputs['cam_bbox'].cuda().float() if 'cam_bbox' in inputs else None   # DiffLifter
             model_output = self.model(
                 input_image, input_pose2d, is_train=True,
-                gt_joints_3d=gt_pose_input, joints_mask=joints_mask, pose_2d_raw=input_pose2d_raw
+                gt_joints_3d=gt_pose_input, joints_mask=joints_mask, pose_2d_raw=input_pose2d_raw,
+                cam_bbox=input_cam_bbox
             )
 
             pred_mesh = model_output['smpl_mesh_cam']

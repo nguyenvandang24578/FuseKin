@@ -8,6 +8,7 @@ from core.config import cfg
 from models import Multimodel
 from models.backbones.resnet import ResNetBackbone
 from models.DSTformer import DSTformer
+from models.diff_lifter import DiffLifter
 from models.teacher_student import Teacher, Student   # model end-to-end moi (khong con SPIN)
 from utils.h36m_adapter import drop_joints_2d, h36m_joint_indices
 
@@ -67,6 +68,9 @@ class ARTS(nn.Module):
         # Bo lift: 'pmce' (GraphormerNet co dac trung anh) thay MotionBERT khi Student.
         self.use_pmce = (self.mode == "student" and cfg.MODEL.get('pose_lifter', 'motionbert') == 'pmce')
         self.pmce_lifter = None
+        # Bo lift: 'diffusion' (DiffLifter, dong bang) thay MotionBERT khi Student.
+        self.use_diff = (self.mode == "student" and cfg.MODEL.get('pose_lifter', 'motionbert') == 'diffusion')
+        self.diff_lifter = None
         if self.use_pmce:
             from models.PoseEstimation import get_model as _get_pmce_model
             self.pose_lifter = None   # khong dung MotionBERT khi lifter = PMCE
@@ -74,6 +78,9 @@ class ARTS(nn.Module):
                 num_joint=num_joint, embed_dim=cfg.MODEL.get('pmce_dim', 256),
                 depth=cfg.MODEL.get('pmce_dep', 3), pretrained=False)
             self._load_pmce_weights()
+        elif self.use_diff:
+            self.pose_lifter = None   # khong dung MotionBERT khi lifter = DiffLifter
+            self.diff_lifter = self._build_diff_lifter()
         elif self.mode != "teacher" or self.teacher_lift or self.teacher_hint:
             self.pose_lifter = DSTformer(
                 norm_layer=partial(nn.LayerNorm, eps=1e-6),
@@ -149,8 +156,26 @@ class ARTS(nn.Module):
         missing, unexpected = self.pmce_lifter.load_state_dict(sd, strict=False)
         print(f"Load PMCE ({path}) xong. Thieu: {len(missing)} {missing[:3]}. Thua: {len(unexpected)} {unexpected[:3]}.")
 
+    def _build_diff_lifter(self):
+        """DiffLifter tu checkpoint finetune_difflifter.py (model_state = trong so EMA, difflift_cfg = kien truc)."""
+        path = cfg.MODEL.get('difflift_checkpoint', '')
+        assert path, "pose_lifter='diffusion' can cfg.MODEL.difflift_checkpoint"
+        ck = torch.load(path, map_location='cpu', weights_only=False)
+        dc = ck['difflift_cfg']
+        m = DiffLifter(num_joints=17, embed_dim=dc['embed_dim'], depth=dc['depth'], num_heads=dc['num_heads'],
+                       timesteps=dc['timesteps'], sampling_timesteps=int(cfg.MODEL.get('difflift_steps', 1)),
+                       num_proposals=int(cfg.MODEL.get('difflift_k', 1)), scale=dc['scale'], drop_path_rate=0.0)
+        missing = m.load_weights(ck['model_state'])
+        print(f"Load DiffLifter ({path}) epoch {ck.get('epoch')} | S={m.sampling_timesteps} K={m.num_proposals}"
+              + (f" | [CANH BAO] checkpoint khong co camera: thieu {missing}" if missing else ''))
+        if bool(dc.get('soft_conf', False)) != bool(cfg.DATASET.lift_soft_conf):
+            print(f"[CANH BAO] DiffLifter train voi soft_conf={dc.get('soft_conf')} nhung "
+                  f"DATASET.lift_soft_conf={cfg.DATASET.lift_soft_conf} -> conf dau vao khac luc train lifter")
+        return m
+
     def freeze_backbone_and_pose_lifter(self):
-        for module in (self.backbone, self.pose_lifter, getattr(self, 'pmce_lifter', None)):
+        for module in (self.backbone, self.pose_lifter, getattr(self, 'pmce_lifter', None),
+                       getattr(self, 'diff_lifter', None)):
             if module is not None:
                 for param in module.parameters():
                     param.requires_grad = False
@@ -163,6 +188,8 @@ class ARTS(nn.Module):
             self.pose_lifter.eval()
         if getattr(self, 'pmce_lifter', None) is not None:
             self.pmce_lifter.eval()
+        if getattr(self, 'diff_lifter', None) is not None:
+            self.diff_lifter.eval()   # luon eval: DiffLifter.forward chon nhanh suy dien theo self.training
         return self
 
     def get_image_features(self, image):
@@ -216,6 +243,19 @@ class ARTS(nn.Module):
         pred = self.pmce_lifter(xs, feat)                             # (B, 17, 3) milimet
         return pred / 1000.0                                          # -> met
 
+    def lift_diffusion(self, pose_2d, joints_mask, cam_bbox):
+        """DiffLifter: pose_2d (B,17,2|3) khung crop [-1,1] (Human36M17Dataset), joints_mask (B,17,1) conf,
+        cam_bbox (B,3). Dau vao giong het finetune_difflifter.evaluate. Tra (B,17,3) met, root-relative."""
+        p2 = pose_2d[:, 0] if pose_2d.dim() == 4 else pose_2d
+        xy = p2[..., :2].float()
+        conf = joints_mask.to(xy.device).float().reshape(xy.shape[0], xy.shape[1], 1)
+        xy = xy * (conf > 0)                                  # khop mask = 0 -> (0, 0) giong luc train lifter
+        cam = cam_bbox.to(xy.device).float()[:, None, :].expand(-1, xy.shape[1], -1)
+        gen = torch.Generator(device=xy.device)
+        gen.manual_seed(0)                                    # nhieu DDIM co dinh -> ket qua lap lai duoc
+        mean_pose, _, _ = self.diff_lifter(torch.cat([xy, conf, cam], dim=-1), generator=gen)
+        return mean_pose - mean_pose[:, 0:1, :]
+
     def _pe2d_kwargs(self, pose_2d, joints_mask=None):
         """Toa do 2D (CUNG 2D dua vao MotionBERT) + mask cho PE vi tri trong fusion (PLAN_STUDENT_V2).
         Tra {} khi joint_pe2d tat -> goi smpl_model nhu cu."""
@@ -223,7 +263,7 @@ class ARTS(nn.Module):
             return {}
         p2 = pose_2d[:, 0] if pose_2d.dim() == 4 else pose_2d            # (B, J, 2|3)
         if joints_mask is not None:
-            m = joints_mask
+            m = (joints_mask > 0).to(p2.dtype)                             # nhi phan (soft conf -> 0/1)
         elif p2.shape[-1] >= 3:
             m = (p2[..., 2:3] > 0).to(p2.dtype)                            # cot 3 = conf / mask
         else:
@@ -298,12 +338,17 @@ class ARTS(nn.Module):
             result['lifted_joints_3d'] = lifted         # (B, 17, 3) joint MotionBERT lift
         return result
 
-    def forward_student(self, image, pose_2d, is_train, gt_pose_3d=None, alpha=1.0, joints_mask=None, pose_2d_raw=None):
+    def forward_student(self, image, pose_2d, is_train, gt_pose_3d=None, alpha=1.0, joints_mask=None, pose_2d_raw=None,
+                        cam_bbox=None):
         with torch.no_grad():
             feature_map, global_feature = self.get_image_features(image)
             if self.use_pmce:
                 assert pose_2d_raw is not None, "lifter=PMCE can pose_2d_raw (inputs['joints_raw'])"
                 pose_3d = self.lift_pmce(pose_2d_raw, joints_mask, global_feature)
+            elif self.use_diff:
+                assert cam_bbox is not None and joints_mask is not None, \
+                    "lifter=diffusion can joints_mask + inputs['cam_bbox']"
+                pose_3d = self.lift_diffusion(pose_2d, joints_mask, cam_bbox)
             else:
                 # MotionBERT finetune ra milimet, lift_2d_to_3d đã đổi về mét (root-relative bên dưới)
                 pose_3d = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask)
@@ -354,13 +399,13 @@ class ARTS(nn.Module):
     def forward(self, image, joints, is_train=True, use_gt_3d=False,
                 gt_pose_6d=None, kp2d=None, kp_conf=None,
                 pose_valid_mask=None, gt_joints_3d=None, alpha=1.0, joints_mask=None,
-                pose_2d=None, lift_alpha=None, hint_on=None, pose_2d_raw=None):
+                pose_2d=None, lift_alpha=None, hint_on=None, pose_2d_raw=None, cam_bbox=None):
         if self.mode == "teacher":
             return self.forward_teacher(image, joints, is_train, pose_2d=pose_2d,
                                         joints_mask=joints_mask, lift_alpha=lift_alpha, hint_on=hint_on)
         if self.mode == "student":
             return self.forward_student(image, joints, is_train, gt_pose_3d=gt_joints_3d, alpha=alpha,
-                                        joints_mask=joints_mask, pose_2d_raw=pose_2d_raw)
+                                        joints_mask=joints_mask, pose_2d_raw=pose_2d_raw, cam_bbox=cam_bbox)
         return self.forward_arts(
             image, joints, is_train, use_gt_3d,
             gt_pose_6d=gt_pose_6d, kp2d=kp2d, kp_conf=kp_conf,
