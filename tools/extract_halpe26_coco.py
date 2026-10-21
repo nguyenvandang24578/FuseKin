@@ -4,7 +4,7 @@ Cung model + cach lam voi tools/extract_halpe26_muco.py. Chay trong moi truong `
 
 Chi trich nguoi CO pseudo-GT 3D NeuralAnnot (lifter chi dung duoc nhung nguoi nay):
   mscoco   : person_keypoints_train2017.json, iscrowd = 0, num_keypoints > 0, ann_id co trong MSCOCO_train_SMPL_NeuralAnnot.json
-  crowdpose: crowdpose_train.json, keypoints khac 0, ann_id co trong CrowdPose_train_SMPL_NeuralAnnot.json va fit_err <= 5
+  crowdpose: crowdpose_train.json, keypoints khac 0, ann_id co trong CrowdPose_train_SMPL_NeuralAnnot.json (khong loc fit_err)
 Bbox    : bbox GT (xywh) cua tung nguoi (giong 3DPW / MuCo). Nhieu nguoi / anh -> chay 1 lan cho ca anh.
 Dau ra  : <out_dir>/MSCOCO_train_halpe26.npz hoac CrowdPose_train_halpe26.npz
             ann_id : (N,)       int64
@@ -35,7 +35,7 @@ CFG = {
     'mscoco': dict(name='MSCOCO', ann='annotations/person_keypoints_train2017.json',
                    neural='annotations/MSCOCO_train_SMPL_NeuralAnnot.json', img_dir='images/train2017', fit_thr=None),
     'crowdpose': dict(name='CrowdPose', ann='annotations/crowdpose_train.json',
-                      neural='annotations/CrowdPose_train_SMPL_NeuralAnnot.json', img_dir='images', fit_thr=5.0),
+                      neural='annotations/CrowdPose_train_SMPL_NeuralAnnot.json', img_dir='images', fit_thr=None),
 }
 
 

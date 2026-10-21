@@ -1,0 +1,92 @@
+# =====================================================================
+# finetune_difflifter_r25_cp: GIONG r25 (depth 8, ratio deu 25%, khong balance). Khac:
+#   (1) DU LIEU: CrowdPose da sua loc fit_err (280 -> ~35k nguoi). Can trich Halpe lai truoc:
+#       python tools/extract_halpe26_coco.py --dataset crowdpose
+#   (2) eval S=1, K=1 [chi doi cach do]. So voi r25 bang so S=1 cua r25: 79.73 mm (diag, best ep6).
+# =====================================================================
+# FuseKin -- DiffLifter (ban CLEAN, chi 1 cau hinh duy nhat)
+#
+# Dang sau khi don code (so voi lich su v2..v5_nopw/v5_coco trong CLAUDE.md muc 7):
+#   - Da BO HAN (khong phai default-off) cac co kien truc: cond_mode='adaln', conf_attn, skel_attn,
+#     mask_token, self_cond, cam_cond/cam_bbox, aggregate='jpma'. Model (lib/models/diff_lifter.py) gio
+#     chi con 1 duong xu ly: 2D [x, y, conf] noi vao input O LOP DAU, qua N block Transformer thuong,
+#     khong co if/else kien truc nao khac. Giong cach HyperDiff / D3DP goc dua 2D vao denoiser.
+#   - Ly do: v4_cam (6 co cong don) van KHONG vuot PMCE baseline (75.3mm) tren 3dpw test, trong khi
+#     HyperDiff dat SOTA voi input/kien truc don gian hon nhieu -> phuc tap khong chung minh duoc gia tri.
+#
+#   - Da doi chieu voi code HyperDiff (common/diffusionpose.py, common/loss.py): loss (L2-norm MPJPE
+#     tren x0, khong binh phuong), chuoi diffusion (cosine schedule, pred_x0, clamp [-1.1*scale,1.1*scale]
+#     roi chia scale truoc khi vao mang, DDIM) va cach tiem condition (2D noi vao input O 1 LOP DUY NHAT,
+#     khong phai moi layer) cua ta DA KHOP voi HyperDiff tu sau lan don code tren -- khong can sua code model.
+#     Khac HyperDiff o: (1) backbone GCN+self-attn (SpatialMixSTE) thay HyperGCN -- dung y; (2) scale=3.0
+#     thay 1.0 vi GT 3D cua ta don vi met std~0.29 (scale=1 lam nhieu lan at tin hieu, da kiem o diag muc E),
+#     day van la "cung 1 cong thuc dung scale" chi khac hang so hieu chuan theo don vi du lieu; (3) K=5 thay
+#     300 -- 300 la mac dinh goc cho setting NHIEU FRAME video cua HyperDiff, K=5 da du cho lifter single-frame
+#     va dung dung lich su thi nghiem (xem CLAUDE.md muc 7), doi K=300 se lam eval cham ~60x ma khong co ly do.
+#
+# Du lieu: giao thuc JOTR (KHONG dung 3dpw-train) + MSCOCO/CrowdPose (pseudo-GT NeuralAnnot), danh gia
+# tren 3dpw/H36M/OC/PC. CAN truoc: tools/extract_halpe26_coco.py --dataset mscoco / crowdpose
+# (dang trich xuat, file MSCOCO_train_halpe26.npz / CrowdPose_train_halpe26.npz CHUA CO -> chua chay duoc).
+#
+# Train 30 epoch, eval H36M/3dpw-oc/3dpw-pc moi 5 epoch (full_eval_freq), chon best theo 3dpw-val.
+# lr_decay doi 0.95 -> 0.975 de giu ti le lr_cuoi/lr_dau ~giong ban 15 epoch truoc (0.95^15 ~ 0.975^30 ~ 0.46),
+# tranh lr roi qua thap o nua sau khi train dai gap doi.
+#
+# Chay:
+#   python main/finetune_difflifter.py --cfg config/finetune_difflifter_r25_cp.yaml --gpu 0
+# =====================================================================
+
+DATASET:
+  lift_only: True
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']
+  test_list: ['3dpw', 'Human36M', '3dpw-oc', '3dpw-pc']
+  pw3d_2d_source: 'halpe26'
+  h36m_2d_source: 'halpe26'
+  muco_2d_source: 'halpe26'
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: True
+  workers: 8
+  no_rot_aug: False
+
+DIFFLIFT:
+  # Model (SpatialMixSTE: cond 2D noi o input, khong adaLN/conf_attn/skel_attn/mask_token/self_cond/cam_cond)
+  embed_dim: 256
+  depth: 8
+  num_heads: 8
+  drop_rate: 0.1
+  drop_path_rate: 0.1
+
+  # Diffusion -- da khop voi HyperDiff (cosine schedule, pred_x0, clamp+scale, DDIM); scale/K khac co ly do (xem tren)
+  timesteps: 1000
+  sampling_timesteps: 1     # CHI anh huong eval: du doan 1 buoc (tot nhat cho MPJPE, tat dinh)
+  num_proposals: 1          # CHI anh huong eval. Can K gia thuyet (diag/FuseKin) -> dat lai khi goi model
+  scale: 3.0
+
+  # Training
+  val_set: '3dpw-val'
+  save_dir: 'experiment/finetune_difflifter_r25_cp'
+  epochs: 15
+  lr: 0.0003
+  lr_decay: 0.975
+  weight_decay: 0.01
+  batch_size: 512
+  save_freq: 5
+  iters_per_epoch: 0
+  print_freq: 50
+  balance_datasets: False
+  dataset_ratio: [0.25, 0.25, 0.25, 0.25]   # Human36M, MuCo, MSCOCO, CrowdPose
+  samples_per_epoch: 512000
+  resume: ''
+  ema_decay: 0.999
+
+  # Danh gia them trong luc train (chi log)
+  epoch_eval_sets: ['3dpw']
+  full_eval_sets: ['Human36M', '3dpw-oc', '3dpw-pc']
+  full_eval_freq: 5
+
+  # Occlusion augmentation (giu nguyen -> can thiet cho detector that, khac H36M sach cua HyperDiff)
+  joint_drop_prob: 0.05
+  limb_drop_prob: 0.05
+  jitter_std: 0.02
+  occ_aug_prob: 0.15
+  occ_shift_std: 0.15

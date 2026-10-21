@@ -115,11 +115,11 @@ class CrowdPose(torch.utils.data.Dataset):
                         joint_valid = (joint_img[:, 2].copy().reshape(-1, 1) > 0).astype(np.float32)
                         joint_img[:, 2] = joint_valid[:, 0]  # for posefix, only good for 2d datasets
 
+                        # Khong loc theo fit_err (giong MSCOCO). Nguong cu 'fit_err > 5' bo 99.2% nguoi
+                        # (fit_err train: p1=5.7, p50=13.9, p90=29.3, p99=54.8 -> don vi khong phai pixel heatmap).
+                        # JOTR goc ('< 5 -> bo') cung giu ~99% nguoi.
                         if str(aid) in smpl_params:
                             smpl_param = smpl_params[str(aid)]
-                            # Bo fit XAU (sai so lon). Truoc day viet '<' nen bo nham fit TOT.
-                            if smpl_param['fit_err'] > self.fitting_thr:
-                                smpl_param = None
                         else:
                             smpl_param = None
 
