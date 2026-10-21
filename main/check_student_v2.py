@@ -169,7 +169,10 @@ def main():
             moved = fwd(model, img, j2, mask, False, gt3d, hint_on=0.0)['smpl_mesh_cam']
             all_ok &= ok((moved - base).abs().max().item() > 0, 'doi 2D 1 khop -> dau ra doi (PE2D + MotionBERT co noi)')
             feat, _ = model.get_image_features(img)
-            p3 = model.lift_2d_to_3d(joints, joints_mask=mask)
+            if getattr(model, 'use_diff', False):   # lifter DiffLifter (pose_lifter = None)
+                p3 = model.lift_diffusion(joints, mask, torch.zeros(joints.shape[0], 3, device=joints.device))
+            else:
+                p3 = model.lift_2d_to_3d(joints, joints_mask=mask)
             p3 = p3 - p3[:, 0:1]
             o_a = sm(joints=p3, img_feats=feat, is_train=False, joints_2d=joints[..., :2], joints_2d_mask=mask)
             o_b = sm(joints=p3, img_feats=feat, is_train=False, joints_2d=j2[..., :2], joints_2d_mask=mask)
