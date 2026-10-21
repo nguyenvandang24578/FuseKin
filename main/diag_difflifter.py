@@ -115,6 +115,8 @@ def parse_args():
     p.add_argument('--stats_sets', type=str, default='Human36M,MuCo,3dpw-train')
     p.add_argument('--stats_batches', type=int, default=30)
     p.add_argument('--skip_stats', action='store_true')
+    p.add_argument('--cam_test_sets', type=str, default='3dpw-val,3dpw,3dpw-oc,3dpw-pc,Human36M',
+                   help='Tap test de so phan bo cam_bbox voi tap train (muc A)')
     p.add_argument('--skip_sweep', action='store_true')
     p.add_argument('--seed', type=int, default=0)
     return p.parse_args()
@@ -245,7 +247,7 @@ def report_stats(args):
         try:
             ds = get_train_dataset(name, None)
             loader = DataLoader(ds, batch_size=512, shuffle=True, num_workers=cfg.DATASET.workers)
-            g3, xy2, mk = [], [], []
+            g3, xy2, mk, cb = [], [], [], []
             for bi, (inp, tgt, meta) in enumerate(loader):
                 if bi >= args.stats_batches:
                     break
@@ -253,6 +255,7 @@ def report_stats(args):
                 g3.append(g - g[:, :1])
                 xy2.append(inp['joints'][..., :2].float())
                 mk.append(inp['joints_mask'].float()[..., 0])
+                cb.append(inp['cam_bbox'].float())
             g = torch.cat(g3)
             xy = torch.cat(xy2)
             m = torch.cat(mk)
@@ -267,8 +270,31 @@ def report_stats(args):
             v = xy[m > 0]
             log(f'  2D (chuan hoa): mean={v.mean(0).tolist()} | std={v.std(0).tolist()} '
                 f'| ti le |x|>1={(v.abs() > 1).float().mean().item():.4f} | ti le khop mask=0={(m == 0).float().mean().item():.3f}')
+            log_cam_stats(name, torch.cat(cb))
         except Exception as e:
             log(f'[{name}] LOI: {type(e).__name__}: {e}')
+
+    # cam_bbox o tap test: so voi tap train -> phat hien tap test nam ngoai phan bo camera da hoc
+    for name in [s.strip() for s in args.cam_test_sets.split(',') if s.strip()]:
+        try:
+            ds = get_test_dataset(name, None)
+            loader = DataLoader(ds, batch_size=512, shuffle=True, num_workers=cfg.DATASET.workers)
+            cb = []
+            for bi, (inp, tgt, meta) in enumerate(loader):
+                if bi >= args.stats_batches:
+                    break
+                cb.append(inp['cam_bbox'].float())
+            log_cam_stats(f'test {name}', torch.cat(cb))
+        except Exception as e:
+            log(f'[test {name}] LOI: {type(e).__name__}: {e}')
+
+
+def log_cam_stats(name, cb):
+    """cb: (N, 3) cam_bbox = [(cx-px)/f, (cy-py)/f, size/f]. In p5 / p50 / p95 tung kenh."""
+    q = torch.tensor([0.05, 0.5, 0.95])
+    parts = [f'{k}: ' + '/'.join(f'{x:+.2f}' for x in torch.quantile(cb[:, i], q).tolist())
+             for i, k in enumerate(('dx', 'dy', 'size'))]
+    log(f'  [{name}] cam_bbox p5/p50/p95 (n={cb.shape[0]}): ' + ' | '.join(parts))
 
 
 # ============================================================
