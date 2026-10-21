@@ -4,7 +4,8 @@ DiffLifter: ban don gian (lean) cho single-frame 2D->3D lifting bang diffusion.
   - Diffusion framework giong D3DP (cosine schedule, DDIM, pred_x0)
   - Denoiser: SpatialMixSTE -- Transformer spatial-only, 2D [x, y, conf] noi vao input 1 LAN duy nhat
     (giong HyperDiff / D3DP goc: khong adaLN, khong bias attention theo cau truc xuong,
-    khong mask token, khong self-conditioning, khong cam_bbox). Khong co co kien truc nao khac TAT/BAT.
+    khong mask token, khong self-conditioning). Khong co co kien truc nao TAT/BAT.
+  - Camera (cam_bbox, kieu CLIFF): thong tin CA NGUOI -> cam_mlp -> cong vao moi token khop giong timestep
 """
 
 import math
@@ -137,7 +138,10 @@ class SinusoidalPositionEmbeddings(nn.Module):
 class SpatialMixSTE(nn.Module):
     """
     Spatial-only Transformer denoiser.
-    in_chans=3: [x_norm, y_norm, conf/mask]
+    in_chans=3: [x_norm, y_norm, conf/mask] cua tung khop
+    Dieu kien x_2d co in_chans + 3 kenh: 3 kenh cuoi = cam_bbox [(cx-px)/f, (cy-py)/f, size/f], lap cho moi khop.
+    cam_bbox la thong tin ca nguoi -> cam_mlp -> 1 vector cong vao moi token (giong timestep), lop cuoi khoi tao 0
+    (luc dau model y het ban khong camera; checkpoint cu nap duoc, xem DiffLifter.load_weights).
     embed_dim_ratio: hidden dim
     depth: so STE blocks
     2D duoc noi vao input CHI O LOP DAU (giong D3DP goc / HyperDiff), khong bom lai o block sau.
@@ -164,6 +168,15 @@ class SpatialMixSTE(nn.Module):
             nn.Linear(embed_dim_ratio * 2, embed_dim_ratio),
         )
 
+        # Camera embedding (cam_bbox, 3 so) -> cong vao moi token khop, giong time_mlp
+        self.cam_mlp = nn.Sequential(
+            nn.Linear(3, embed_dim_ratio),
+            nn.GELU(),
+            nn.Linear(embed_dim_ratio, embed_dim_ratio),
+        )
+        nn.init.zeros_(self.cam_mlp[-1].weight)
+        nn.init.zeros_(self.cam_mlp[-1].bias)
+
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
         self.STEblocks = nn.ModuleList([
             Block(dim=embed_dim_ratio, num_heads=num_heads, mlp_ratio=mlp_ratio,
@@ -183,13 +196,15 @@ class SpatialMixSTE(nn.Module):
 
     def forward(self, x_2d, x_3d, t):
         """
-        Train:  x_2d (B,17,3), x_3d (B,17,3),   t (B,)  -> (B,17,3)
-        Infer:  x_2d (B,17,3), x_3d (B,K,17,3), t (B,)  -> (B,K,17,3)
-        x_2d = [x_norm, y_norm, conf]
+        Train:  x_2d (B,17,6), x_3d (B,17,3),   t (B,)  -> (B,17,3)
+        Infer:  x_2d (B,17,6), x_3d (B,K,17,3), t (B,)  -> (B,K,17,3)
+        x_2d = [x_norm, y_norm, conf, cam_bbox(3)]  (B,17,6)
         """
         inference_mode = x_3d.dim() == 4  # (B,K,17,3)
-        assert x_2d.shape[-1] == self.in_chans, \
-            f'dieu kien 2D co {x_2d.shape[-1]} kenh, mo hinh can {self.in_chans}'
+        assert x_2d.shape[-1] == self.in_chans + 3, \
+            f'dieu kien co {x_2d.shape[-1]} kenh, mo hinh can {self.in_chans} + 3 (cam_bbox)'
+        cam = x_2d[..., self.in_chans:].mean(dim=1)      # (B,3) -- giong nhau o moi khop
+        x_2d = x_2d[..., :self.in_chans]                  # (B,17,3)
 
         if inference_mode:
             B, K, N, _ = x_3d.shape
@@ -197,6 +212,7 @@ class SpatialMixSTE(nn.Module):
             x = torch.cat([x_2d_exp, x_3d], dim=-1)               # (B,K,17,6)
             x = x.reshape(B * K, N, x.shape[-1])
             t_exp = t.unsqueeze(1).expand(-1, K).reshape(B * K)    # (B*K,)
+            cam = cam.unsqueeze(1).expand(-1, K, -1).reshape(B * K, 3)
         else:
             B, N, _ = x_3d.shape
             x = torch.cat([x_2d, x_3d], dim=-1)                   # (B,17,6)
@@ -208,6 +224,7 @@ class SpatialMixSTE(nn.Module):
         x = x + self.Spatial_pos_embed
         time_embed = self.time_mlp(t_exp)                # (..., embed_dim)
         x = x + time_embed[:, None, :]                   # broadcast len 17 joints
+        x = x + self.cam_mlp(cam)[:, None, :]            # camera: thong tin ca nguoi, cung cach voi t
         x = self.pos_drop(x)
 
         # --- Chi Spatial Attention (khong TTE, khong dieu kien lai 2D) ---
@@ -286,6 +303,15 @@ class DiffLifter(nn.Module):
         )
 
     # ------------------------------------------------------------------
+    # Nap trong so: cho phep checkpoint truoc khi co camera (thieu denoiser.cam_mlp.* -> giu 0 = khong dung camera)
+    # ------------------------------------------------------------------
+    def load_weights(self, state_dict):
+        missing, unexpected = self.load_state_dict(state_dict, strict=False)
+        assert not unexpected, f'key thua trong checkpoint: {unexpected}'
+        assert all(k.startswith('denoiser.cam_mlp.') for k in missing), f'thieu key: {missing}'
+        return missing
+
+    # ------------------------------------------------------------------
     # Forward diffusion: q(x_t | x_0)
     # ------------------------------------------------------------------
     def q_sample(self, x_start, t, noise=None):
@@ -312,7 +338,7 @@ class DiffLifter(nn.Module):
     # ------------------------------------------------------------------
     def forward_train(self, xy_conf, pose_3d):
         """
-        xy_conf: (B, 17, 3)  [x_norm, y_norm, conf]  -- dau vao 2D + occlusion
+        xy_conf: (B, 17, 6)  [x_norm, y_norm, conf, cam_bbox(3)]  -- dau vao 2D + occlusion + camera
         pose_3d: (B, 17, 3)  GT 3D root-relative, met
         Returns: pred_x0 (B, 17, 3)  -- du doan toa do 3D
         """
@@ -339,7 +365,7 @@ class DiffLifter(nn.Module):
     @torch.no_grad()
     def forward_inference(self, xy_conf, generator=None):
         """
-        xy_conf: (B, 17, 3)
+        xy_conf: (B, 17, 6)  [x_norm, y_norm, conf, cam_bbox(3)]
         generator: torch.Generator (tuy chon) -> nhieu co dinh, eval lap lai duoc giua cac epoch
         Returns:
             mean_pose: (B, 17, 3)  -- trung binh K hypotheses, root-rel, met

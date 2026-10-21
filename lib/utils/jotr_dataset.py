@@ -29,7 +29,7 @@ class Human36M17Dataset(Dataset):
         'lift_pose3d_valid', 'reg_pose3d_valid',
     }
     # Cac key giu lai khi cfg.DATASET.lift_only (train/eval MotionBERT)
-    LIFT_INPUT_KEYS = {'img', 'joints', 'joints_mask'}
+    LIFT_INPUT_KEYS = {'img', 'joints', 'joints_mask', 'cam_bbox'}
     LIFT_TARGET_KEYS_TRAIN = {'orig_joint_img', 'orig_joint_cam'}
     # 3DPW: mesh (+ orig_joint_img neu cfg.DATASET.pw3d_test_gt2d); Human36M test: joint mocap.
     # Moi tap test co loader rieng -> giu them key khong lam hong collate.

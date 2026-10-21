@@ -1,7 +1,10 @@
 """
 Mau cho LIFTER (cfg.DATASET.lift_only) tu bo 2D-only co pseudo-GT 3D NeuralAnnot (MSCOCO, CrowdPose).
   2D dau vao : Halpe-26 (doi H36M-17), lat + affine giong Human36M._halpe_input
-  GT 3D      : SMPL NeuralAnnot -> mesh (met, he camera) -> H36M regressor -> root-relative -> xoay aug
+  GT 3D      : SMPL NeuralAnnot -> mesh (met, he camera) -> H36M regressor -> root-relative
+               -> view_rot (camera AO tai tam bbox -> camera uoc luong est_cam) -> xoay aug
+  cam_bbox   : tinh theo est_cam (f = duong cheo anh, princpt = tam anh), KHONG dung cam_param NeuralAnnot
+               (do la camera ao tai tam bbox tung nguoi -> dac trung ~ hang so)
 Tra ve (inputs, targets, meta) cung bo key voi nhanh lift_only cua Human36M / MuCo.
 """
 import numpy as np
@@ -9,6 +12,7 @@ import torch
 
 from core.config import cfg
 from utils.preprocessing import augmentation_noimg
+from utils.cam_bbox import cam_bbox_feat, est_cam, view_rot
 
 H36M_FLIP_PAIRS = ((1, 4), (2, 5), (3, 6), (14, 11), (15, 12), (16, 13))
 
@@ -46,12 +50,17 @@ def lift_pseudo3d_sample(ds, data, smpl_param, cam_param):
     mesh, _, _, _ = ds.get_smpl_coord(smpl_param, cam_param, do_flip, img_shape)    # (6890, 3) met
     j3d = np.dot(ds.h36m_joint_regressor, mesh).astype(np.float32)                    # (17, 3)
     j3d = j3d - j3d[0:1]                                                                # root = Pelvis
+    # NeuralAnnot fit nhu camera nhin THANG vao nguoi -> xoay sang camera uoc luong (nguoi lech tam -> nhin cheo)
+    cam = est_cam(img_shape)
+    dx, dy, _ = cam_bbox_feat(bbox, cam, img_shape, do_flip, 0.0)                      # tam bbox (da lat), chua xoay aug
+    j3d = np.dot(view_rot(dx, dy), j3d.transpose(1, 0)).transpose(1, 0)
     rot_aug_mat = np.array([[np.cos(np.deg2rad(-rot)), -np.sin(np.deg2rad(-rot)), 0],
                             [np.sin(np.deg2rad(-rot)), np.cos(np.deg2rad(-rot)), 0],
                             [0, 0, 1]], dtype=np.float32)
     j3d = np.dot(rot_aug_mat, j3d.transpose(1, 0)).transpose(1, 0).astype(np.float32)
 
-    inputs = {'img': torch.zeros(1), 'joints': xy, 'joints_mask': mask}
+    inputs = {'img': torch.zeros(1), 'joints': xy, 'joints_mask': mask,
+              'cam_bbox': cam_bbox_feat(bbox, cam, img_shape, do_flip, rot)}
     targets = {'orig_joint_img': np.zeros((17, 3), dtype=np.float32), 'orig_joint_cam': j3d}
     meta = {'orig_joint_valid': np.ones((17, 1), dtype=np.float32),
             'orig_joint_trunc': np.ones((17, 1), dtype=np.float32),

@@ -148,11 +148,17 @@ def occ_corrupt(xy, conf, dl_cfg):
     return xy, conf
 
 
+def cat_cam(xy_conf, inputs_b):
+    """Noi cam_bbox (B, 3) vao moi khop -> dieu kien (B, 17, 6) = [x, y, conf, cam_bbox]."""
+    cam = inputs_b['cam_bbox'].to(xy_conf.device).float()
+    return torch.cat([xy_conf, cam[:, None, :].expand(-1, xy_conf.shape[1], -1)], dim=-1)
+
+
 def make_xy_conf(inputs_b, device, dl_cfg):
     """
     Lay xy_conf tu batch:
-      xy_conf: (B, 17, 3) = [x_norm, y_norm, conf]
-    Va ap dung occlusion augmentation khi train.
+      xy_conf: (B, 17, 6) = [x_norm, y_norm, conf, cam_bbox(3)]
+    Va ap dung occlusion augmentation khi train (chi tren x, y, conf; cam_bbox giu nguyen).
     """
     joints = inputs_b['joints'].to(device).float()     # (B, 17, 3): [x, y, mask]
     xy   = joints[..., :2]                             # (B, 17, 2)
@@ -187,7 +193,7 @@ def make_xy_conf(inputs_b, device, dl_cfg):
         noise = torch.randn_like(xy) * jitter_std
         xy = xy + noise * (conf > 0)
 
-    return torch.cat([xy, conf], dim=-1)   # (B, 17, 3)
+    return cat_cam(torch.cat([xy, conf], dim=-1), inputs_b)   # (B, 17, 6)
 
 
 def make_gt3d(targets_b, device):
@@ -225,7 +231,7 @@ def train_epoch(model, loader, optimizer, device, dl_cfg, epoch, ema=None, step0
         if iters > 0 and i >= iters:
             break
 
-        xy_conf = make_xy_conf(inputs_b, device, dl_cfg)  # (B,17,3)
+        xy_conf = make_xy_conf(inputs_b, device, dl_cfg)  # (B,17,6)
         gt_3d   = make_gt3d(targets_b, device)             # (B,17,3)
 
         # --- Forward + loss ---
@@ -289,6 +295,7 @@ def evaluate(model, loader, h36m_regressor, device, desc='Val', seed=0):
             inputs_b['joints'][..., :2].float(),
             inputs_b['joints_mask'].float(),
         ], dim=-1).to(device)   # (B, 17, 3)
+        xy_conf = cat_cam(xy_conf, inputs_b)   # (B, 17, 6)
 
         # GT
         if 'orig_joint_cam' in targets_b:
@@ -358,9 +365,9 @@ def load_ckpt(path, model, optimizer=None, device='cpu', ema=None):
         model.load_state_dict(ckpt['raw_model_state'])
         ema.load_state_dict(ckpt['model_state'])
     else:
-        model.load_state_dict(ckpt['model_state'])
+        model.load_weights(ckpt['model_state'])
         if ema is not None:
-            ema.load_state_dict(ckpt['model_state'])
+            ema.load_weights(ckpt['model_state'])
     if optimizer is not None and 'optimizer_state' in ckpt:
         optimizer.load_state_dict(ckpt['optimizer_state'])
     return ckpt.get('epoch', 0), ckpt.get('best_val_mpjpe', float('inf'))

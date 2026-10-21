@@ -142,8 +142,9 @@ def pa_mpjpe_batch(pred, gt):
 
 
 def make_cond(inp, device):
-    """Dieu kien 2D: [x_norm, y_norm, mask] giong finetune_difflifter.evaluate. (B, 17, 3)"""
-    return torch.cat([inp['joints'][..., :2].float(), inp['joints_mask'].float()], dim=-1).to(device)
+    """Dieu kien: [x_norm, y_norm, mask, cam_bbox(3)] giong finetune_difflifter.evaluate. (B, 17, 6)"""
+    cam = inp['cam_bbox'].float()[:, None, :].expand(-1, inp['joints'].shape[1], -1)
+    return torch.cat([inp['joints'][..., :2].float(), inp['joints_mask'].float(), cam], dim=-1).to(device)
 
 
 def get_gt(targets, reg, device):
@@ -218,7 +219,7 @@ def build_model(ckpt, device):
     model = DiffLifter(num_joints=17, embed_dim=dc['embed_dim'], depth=dc['depth'], num_heads=dc['num_heads'],
                        timesteps=dc['timesteps'], sampling_timesteps=dc['sampling_timesteps'],
                        num_proposals=dc['num_proposals'], scale=dc['scale'], drop_path_rate=0.0).to(device)
-    model.load_state_dict(ckpt['model_state'], strict=True)
+    model.load_weights(ckpt['model_state'])   # checkpoint truoc khi co camera: cam_mlp = 0
     model.eval()
     return model
 
