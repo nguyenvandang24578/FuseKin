@@ -271,12 +271,24 @@ def main():
             # ---------------- Student ----------------
             if student is not None:
                 feat_s, _ = student.get_image_features(img)
-                pose_3d = student.lift_2d_to_3d(joints2d, joints_mask=joints_mask)
+                # Chon lifter dung loai (MotionBERT / DiffLifter / PMCE)
+                if getattr(student, 'use_diff', False):
+                    cam_bbox = inputs.get('cam_bbox', torch.zeros(img.shape[0], 3)).to(DEVICE).float()
+                    pose_3d = student.lift_diffusion(joints2d, joints_mask, cam_bbox)
+                    lifter_name = 'DiffLifter'
+                elif getattr(student, 'use_pmce', False):
+                    joints_raw = inputs.get('joints_raw', joints2d).to(DEVICE).float()
+                    global_feat = student.get_image_features(img)[1]
+                    pose_3d = student.lift_pmce(joints_raw, joints_mask, global_feat)
+                    lifter_name = 'PMCE'
+                else:
+                    pose_3d = student.lift_2d_to_3d(joints2d, joints_mask=joints_mask)
+                    lifter_name = 'MotionBERT'
                 pose_3d = pose_3d - pose_3d[:, 0:1]
-                name = 'Student' + (' S-hint' if getattr(student, 'student_hint', False) else '') + ' (joint MotionBERT)'
+                name = 'Student' + (' S-hint' if getattr(student, 'student_hint', False) else '') + f' (joint {lifter_name})'
                 results.setdefault(name, new_cond())
                 inp_err.setdefault(name, []).append((torch.norm(pose_3d - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu())
-                # Student v2 (joint_pe2d): truyen CUNG 2D dua vao MotionBERT cho PE vi tri trong fusion
+                # Student v2 (joint_pe2d): truyen CUNG 2D dua vao lifter cho PE vi tri trong fusion
                 run_three(student, pose_3d, feat_s, results[name], reg, gt_mesh,
                           **student._pe2d_kwargs(joints2d, joints_mask))
 
