@@ -9,6 +9,7 @@ from models import Multimodel
 from models.backbones.resnet import ResNetBackbone
 from models.DSTformer import DSTformer
 from models.diff_lifter import DiffLifter
+from models.hyp_selector import HypSelector
 from models.teacher_student import Teacher, Student   # model end-to-end moi (khong con SPIN)
 from utils.h36m_adapter import drop_joints_2d, h36m_joint_indices
 
@@ -71,6 +72,11 @@ class ARTS(nn.Module):
         # Bo lift: 'diffusion' (DiffLifter, dong bang) thay MotionBERT khi Student.
         self.use_diff = (self.mode == "student" and cfg.MODEL.get('pose_lifter', 'motionbert') == 'diffusion')
         self.diff_lifter = None
+        # Chon gia thuyet DiffLifter theo tung khop bang anh (co hoc, KHONG dong bang)
+        self.diff_select = self.use_diff and bool(cfg.MODEL.get('difflift_select', False))
+        self.hyp_selector = HypSelector(num_joints=num_joint, img_dim=2048,
+                                        dim=int(cfg.MODEL.get('difflift_select_dim', 256))) \
+            if self.diff_select else None
         if self.use_pmce:
             from models.PoseEstimation import get_model as _get_pmce_model
             self.pose_lifter = None   # khong dung MotionBERT khi lifter = PMCE
@@ -243,17 +249,22 @@ class ARTS(nn.Module):
         pred = self.pmce_lifter(xs, feat)                             # (B, 17, 3) milimet
         return pred / 1000.0                                          # -> met
 
-    def lift_diffusion(self, pose_2d, joints_mask, cam_bbox):
+    def lift_diffusion(self, pose_2d, joints_mask, cam_bbox, all_hyp=False):
         """DiffLifter: pose_2d (B,17,2|3) khung crop [-1,1] (Human36M17Dataset), joints_mask (B,17,1) conf,
-        cam_bbox (B,3). Dau vao giong het finetune_difflifter.evaluate. Tra (B,17,3) met, root-relative."""
+        cam_bbox (B,3). Dau vao giong het finetune_difflifter.evaluate. Tra (B,17,3) met, root-relative
+        (trung binh K gia thuyet), hoac ca K gia thuyet (B,K,17,3) neu all_hyp."""
         p2 = pose_2d[:, 0] if pose_2d.dim() == 4 else pose_2d
         xy = p2[..., :2].float()
         conf = joints_mask.to(xy.device).float().reshape(xy.shape[0], xy.shape[1], 1)
         xy = xy * (conf > 0)                                  # khop mask = 0 -> (0, 0) giong luc train lifter
         cam = cam_bbox.to(xy.device).float()[:, None, :].expand(-1, xy.shape[1], -1)
-        gen = torch.Generator(device=xy.device)
-        gen.manual_seed(0)                                    # nhieu DDIM co dinh -> ket qua lap lai duoc
-        mean_pose, _, _ = self.diff_lifter(torch.cat([xy, conf, cam], dim=-1), generator=gen)
+        gen = None
+        if not (self.training and self.diff_select):          # chon gia thuyet luc train: nhieu ngau nhien (da dang)
+            gen = torch.Generator(device=xy.device)
+            gen.manual_seed(0)                                # nhieu DDIM co dinh -> ket qua lap lai duoc
+        mean_pose, _, hyp = self.diff_lifter(torch.cat([xy, conf, cam], dim=-1), generator=gen)
+        if all_hyp:
+            return hyp - hyp[:, :, 0:1, :]
         return mean_pose - mean_pose[:, 0:1, :]
 
     def _pe2d_kwargs(self, pose_2d, joints_mask=None):
@@ -340,6 +351,7 @@ class ARTS(nn.Module):
 
     def forward_student(self, image, pose_2d, is_train, gt_pose_3d=None, alpha=1.0, joints_mask=None, pose_2d_raw=None,
                         cam_bbox=None):
+        hyp = None
         with torch.no_grad():
             feature_map, global_feature = self.get_image_features(image)
             if self.use_pmce:
@@ -348,7 +360,11 @@ class ARTS(nn.Module):
             elif self.use_diff:
                 assert cam_bbox is not None and joints_mask is not None, \
                     "lifter=diffusion can joints_mask + inputs['cam_bbox']"
-                pose_3d = self.lift_diffusion(pose_2d, joints_mask, cam_bbox)
+                if self.diff_select:
+                    hyp = self.lift_diffusion(pose_2d, joints_mask, cam_bbox, all_hyp=True)   # (B,K,17,3)
+                    pose_3d = hyp.mean(dim=1)                                                 # chi de log
+                else:
+                    pose_3d = self.lift_diffusion(pose_2d, joints_mask, cam_bbox)
             else:
                 # MotionBERT finetune ra milimet, lift_2d_to_3d đã đổi về mét (root-relative bên dưới)
                 pose_3d = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask)
@@ -356,6 +372,12 @@ class ARTS(nn.Module):
             # student_3d_rootrel=False: giu nguyen toa do tuyet doi trong cam-space, model hoc context day du.
             if cfg.MODEL.get('student_3d_rootrel', True):
                 pose_3d = pose_3d - pose_3d[:, 0:1, :]        # root-relative
+
+        sel_w = None
+        if hyp is not None:
+            # Chon gia thuyet theo tung khop bang anh (CO gradient vao hyp_selector; hyp, feature_map khong grad)
+            p2 = pose_2d[:, 0] if pose_2d.dim() == 4 else pose_2d
+            pose_3d, sel_w = self.hyp_selector(hyp, feature_map, p2[..., :2], joints_mask)
 
         result = self.smpl_model(
             joints=pose_3d,
@@ -366,6 +388,9 @@ class ARTS(nn.Module):
         )
         result['privileged_3d'] = self.privileged_joint_head(result['feat_joint'])
         result['lifted_joints_3d'] = pose_3d   # joint dua vao student (tuyet doi hoac root-rel tuy flag)
+        if sel_w is not None:
+            result['hyp_select_3d'] = pose_3d  # pose da chon (co grad) -> loss phu trong Student_Trainer
+            result['hyp_select_w'] = sel_w     # (B, K, 17) trong so softmax theo K
         return result
 
     def forward_arts(self, image, pose_input, is_train, use_gt_3d=False,

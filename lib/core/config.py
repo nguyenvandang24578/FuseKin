@@ -211,6 +211,12 @@ cfg.MODEL.pmce_dep = 3
 cfg.MODEL.difflift_checkpoint = ''
 cfg.MODEL.difflift_steps = 1   # S buoc DDIM; 1 = du doan 1 buoc (tot nhat cho MPJPE, diag muc F)
 cfg.MODEL.difflift_k = 1       # K gia thuyet, gop trung binh
+# Chon gia thuyet THEO TUNG KHOP bang anh (lib/models/hyp_selector.py, cach A'). Mac dinh TAT.
+#   Bat: dat difflift_steps / difflift_k = so buoc / so gia thuyet sinh ra (vd 5 / 20). Luc train nhieu DDIM ngau nhien.
+#   Loss phu: MPJPE(pose da chon, GT 3D) * difflift_select_w (cong vao loss Student).
+cfg.MODEL.difflift_select = False
+cfg.MODEL.difflift_select_dim = 256
+cfg.MODEL.difflift_select_w = 1.0
 
 # ---- Teacher: ep Teacher phai dung anh ----
 # (A) Tron GT voi joint MotionBERT lift tu 2D: input = (1-a)*GT + a*lift, a ~ U(0, alpha_max) moi mau luc train.

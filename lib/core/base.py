@@ -1333,6 +1333,11 @@ class Student_Trainer:
             else:
                 loss = 0.5 * hard_loss + 0.5 * kd_loss + privileged_loss
             # loss = hard_loss
+            # Chon gia thuyet DiffLifter (MODEL.difflift_select): MPJPE(pose da chon, GT 3D) tren khop hop le
+            if 'hyp_select_3d' in model_output:
+                _serr = torch.norm(model_output['hyp_select_3d'] - gt_pose_input, dim=-1)   # (B, J) met
+                hyp_sel_loss = ((_serr * valid_joint).sum(-1) / n_valid).mean()
+                loss = loss + float(cfg.MODEL.get('difflift_select_w', 1.0)) * hyp_sel_loss
 
             # update weights
             self.optimizer.zero_grad()
