@@ -545,7 +545,7 @@ class FusionPose2Mesh(nn.Module):
     # --------------------------------------------------------
     def forward(self, joints, img_feats, is_train=True,
                 gt_pose_6d=None, kp2d=None, kp_conf=None, pose_valid_mask=None,
-                return_features=False, hint_z=None, joints_2d=None, joints_2d_mask=None):
+                return_features=False, hint_z=None, joints_2d=None, joints_2d_mask=None, extra_tok=None):
         """
         Args:
             joints   : (B, J, 3) root-relative, don vi met (GT cho teacher, nhieu cho student)
@@ -553,6 +553,8 @@ class FusionPose2Mesh(nn.Module):
             gt_pose_6d, kp2d, kp_conf, pose_valid_mask: chi dung khi refiner='diffusion'
             return_features: tra them feature trung gian cho KD
             joints_2d, joints_2d_mask: (B, J, 2) trong [-1, 1] + mask, chi dung khi joint_pe2d
+            extra_tok: (B, J, C) | None -- cong vao token khop truoc cross-attn (cung cho voi goi y),
+                       vd do trai gia thuyet DiffLifter (ARTS, MODEL.difflift_spread)
         """
         B = img_feats.shape[0]
         device = img_feats.device
@@ -568,6 +570,8 @@ class FusionPose2Mesh(nn.Module):
         hint_tok = None
         if hint_z is not None and self.hint_proj is not None:
             hint_tok = self.hint_proj(hint_z).view(B, self.num_joint, self.embed_dim)
+        if extra_tok is not None:
+            hint_tok = extra_tok if hint_tok is None else hint_tok + extra_tok
 
         # 1. Fusion
         fus = self.fusion(joints, img_feats, return_features=return_features, hint_tok=hint_tok, **fus_kw)

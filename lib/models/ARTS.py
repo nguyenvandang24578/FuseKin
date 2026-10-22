@@ -77,6 +77,14 @@ class ARTS(nn.Module):
         self.hyp_selector = HypSelector(num_joints=num_joint, img_dim=2048,
                                         dim=int(cfg.MODEL.get('difflift_select_dim', 256))) \
             if self.diff_select else None
+        # (1) augmentation bang gia thuyet luc train; (2) do trai gia thuyet vao token khop
+        self.diff_aug_prob = float(cfg.MODEL.get('difflift_aug_prob', 0.0)) if self.use_diff else 0.0
+        self.diff_spread = self.use_diff and bool(cfg.MODEL.get('difflift_spread', False))
+        self.spread_proj = None
+        if self.diff_spread:
+            self.spread_proj = nn.Linear(3, embed_dim)       # std (x, y, z) tung khop -> token, khoi tao 0
+            nn.init.zeros_(self.spread_proj.weight)
+            nn.init.zeros_(self.spread_proj.bias)
         if self.use_pmce:
             from models.PoseEstimation import get_model as _get_pmce_model
             self.pose_lifter = None   # khong dung MotionBERT khi lifter = PMCE
@@ -249,7 +257,7 @@ class ARTS(nn.Module):
         pred = self.pmce_lifter(xs, feat)                             # (B, 17, 3) milimet
         return pred / 1000.0                                          # -> met
 
-    def lift_diffusion(self, pose_2d, joints_mask, cam_bbox, all_hyp=False):
+    def lift_diffusion(self, pose_2d, joints_mask, cam_bbox, all_hyp=False, random_noise=False):
         """DiffLifter: pose_2d (B,17,2|3) khung crop [-1,1] (Human36M17Dataset), joints_mask (B,17,1) conf,
         cam_bbox (B,3). Dau vao giong het finetune_difflifter.evaluate. Tra (B,17,3) met, root-relative
         (trung binh K gia thuyet), hoac ca K gia thuyet (B,K,17,3) neu all_hyp."""
@@ -259,13 +267,23 @@ class ARTS(nn.Module):
         xy = xy * (conf > 0)                                  # khop mask = 0 -> (0, 0) giong luc train lifter
         cam = cam_bbox.to(xy.device).float()[:, None, :].expand(-1, xy.shape[1], -1)
         gen = None
-        if not (self.training and self.diff_select):          # chon gia thuyet luc train: nhieu ngau nhien (da dang)
+        if not (random_noise or (self.training and self.diff_select)):   # luc train cac nhanh moi: nhieu ngau nhien
             gen = torch.Generator(device=xy.device)
             gen.manual_seed(0)                                # nhieu DDIM co dinh -> ket qua lap lai duoc
         mean_pose, _, hyp = self.diff_lifter(torch.cat([xy, conf, cam], dim=-1), generator=gen)
         if all_hyp:
             return hyp - hyp[:, :, 0:1, :]
         return mean_pose - mean_pose[:, 0:1, :]
+
+    def _diff_hyp(self, pose_2d, joints_mask, cam_bbox, steps, k, random_noise):
+        """K gia thuyet DiffLifter voi S / K tam thoi (khong doi cau hinh S, K chinh). (B, K, 17, 3) root-rel."""
+        dl = self.diff_lifter
+        old = (dl.sampling_timesteps, dl.num_proposals)
+        dl.sampling_timesteps, dl.num_proposals = int(steps), int(k)
+        try:
+            return self.lift_diffusion(pose_2d, joints_mask, cam_bbox, all_hyp=True, random_noise=random_noise)
+        finally:
+            dl.sampling_timesteps, dl.num_proposals = old
 
     def _pe2d_kwargs(self, pose_2d, joints_mask=None):
         """Toa do 2D (CUNG 2D dua vao MotionBERT) + mask cho PE vi tri trong fusion (PLAN_STUDENT_V2).
@@ -352,6 +370,7 @@ class ARTS(nn.Module):
     def forward_student(self, image, pose_2d, is_train, gt_pose_3d=None, alpha=1.0, joints_mask=None, pose_2d_raw=None,
                         cam_bbox=None):
         hyp = None
+        spread = None
         with torch.no_grad():
             feature_map, global_feature = self.get_image_features(image)
             if self.use_pmce:
@@ -365,6 +384,17 @@ class ARTS(nn.Module):
                     pose_3d = hyp.mean(dim=1)                                                 # chi de log
                 else:
                     pose_3d = self.lift_diffusion(pose_2d, joints_mask, cam_bbox)
+                if self.training and self.diff_aug_prob > 0:
+                    # (1) moi mau voi xac suat p: thay pose S=1 bang 1 gia thuyet ngau nhien
+                    h1 = self._diff_hyp(pose_2d, joints_mask, cam_bbox, cfg.MODEL.get('difflift_aug_steps', 5), 1,
+                                        random_noise=True)[:, 0]
+                    use = torch.rand(h1.shape[0], device=h1.device) < self.diff_aug_prob
+                    pose_3d = torch.where(use[:, None, None], h1, pose_3d)
+                if self.diff_spread:
+                    # (2) do trai giua K gia thuyet, theo tung truc: (B, 17, 3) met
+                    hk = self._diff_hyp(pose_2d, joints_mask, cam_bbox, cfg.MODEL.get('difflift_spread_steps', 5),
+                                        cfg.MODEL.get('difflift_spread_k', 20), random_noise=self.training)
+                    spread = hk.std(dim=1)
             else:
                 # MotionBERT finetune ra milimet, lift_2d_to_3d đã đổi về mét (root-relative bên dưới)
                 pose_3d = self.lift_2d_to_3d(pose_2d, joints_mask=joints_mask)
@@ -379,12 +409,17 @@ class ARTS(nn.Module):
             p2 = pose_2d[:, 0] if pose_2d.dim() == 4 else pose_2d
             pose_3d, sel_w = self.hyp_selector(hyp, feature_map, p2[..., :2], joints_mask)
 
+        extra = {}
+        if spread is not None:
+            extra['extra_tok'] = self.spread_proj(spread * 10.0)   # std ~ vai cm -> ~0.5; co grad vao spread_proj
+
         result = self.smpl_model(
             joints=pose_3d,
             img_feats=feature_map,
             is_train=is_train,
             return_features=True,
             **self._pe2d_kwargs(pose_2d, joints_mask),
+            **extra,
         )
         result['privileged_3d'] = self.privileged_joint_head(result['feat_joint'])
         result['lifted_joints_3d'] = pose_3d   # joint dua vao student (tuyet doi hoac root-rel tuy flag)

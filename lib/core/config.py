@@ -214,6 +214,15 @@ cfg.MODEL.difflift_k = 1       # K gia thuyet, gop trung binh
 # Chon gia thuyet THEO TUNG KHOP bang anh (lib/models/hyp_selector.py, cach A'). Mac dinh TAT.
 #   Bat: dat difflift_steps / difflift_k = so buoc / so gia thuyet sinh ra (vd 5 / 20). Luc train nhieu DDIM ngau nhien.
 #   Loss phu: MPJPE(pose da chon, GT 3D) * difflift_select_w (cong vao loss Student).
+# (1) Augmentation bang gia thuyet: LUC TRAIN, moi mau voi xac suat difflift_aug_prob thay pose S=1 bang
+#     1 gia thuyet ngau nhien (difflift_aug_steps buoc DDIM). Luc test van S=1. 0 = TAT.
+cfg.MODEL.difflift_aug_prob = 0.0
+cfg.MODEL.difflift_aug_steps = 5
+# (2) Do trai gia thuyet: sinh difflift_spread_k gia thuyet (difflift_spread_steps buoc) -> std theo truc tung khop
+#     (B, 17, 3) -> Linear (khoi tao 0) -> cong vao token khop truoc fusion. Pose dua vao van S=1. Mac dinh TAT.
+cfg.MODEL.difflift_spread = False
+cfg.MODEL.difflift_spread_steps = 5
+cfg.MODEL.difflift_spread_k = 20
 cfg.MODEL.difflift_select = False
 cfg.MODEL.difflift_select_dim = 256
 cfg.MODEL.difflift_select_w = 1.0
