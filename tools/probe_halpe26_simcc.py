@@ -13,6 +13,7 @@ https://github.com/Tau-J/rtmlib/blob/main/rtmlib/tools/pose_estimation/rtmpose.p
 Vi du:
   python tools/probe_halpe26_simcc.py --cfg config/probe_halpe26_simcc.yaml --inspect_only
   python tools/probe_halpe26_simcc.py --cfg config/probe_halpe26_simcc.yaml --split validation
+  python tools/probe_halpe26_simcc.py --cfg config/probe_halpe26_simcc_temperatures.yaml --out_dir output/probe_halpe26_simcc_temperatures
 """
 import argparse
 import inspect
@@ -30,7 +31,8 @@ from extract_halpe26_3dpw import build_model, draw, HALPE26_SKELETON
 
 # Giu dong bo voi nhom HALPE_SIMCC trong lib/core/config.py.
 DEFAULTS = dict(enabled=False, max_people=32, vis_num=8, seed=42,
-                split_ratio=2.0, normalization='softmax', temperature=1.0)
+                split_ratio=2.0, normalization='softmax', temperature=1.0,
+                from_npz='', temperatures=[])
 VIS_JOINTS = [(9, 'L_Wrist'), (10, 'R_Wrist'), (15, 'L_Ankle'), (16, 'R_Ankle')]
 COLORS = [(40, 70, 230), (220, 100, 30), (70, 170, 50), (190, 60, 170)]
 
@@ -50,6 +52,8 @@ def parse_args():
     p.add_argument('--vis_num', type=int, default=None)
     p.add_argument('--temperature', type=float, default=None)
     p.add_argument('--normalization', choices=['softmax', 'positive_mass'], default=None)
+    p.add_argument('--from_npz', default=None, help='Doc raw da luu, khong chay detector')
+    p.add_argument('--temperatures', type=float, nargs='+', default=None, help='So sanh T khi dung --from_npz')
     p.add_argument('--overwrite', action='store_true', help='Cho phep ghi de dau ra probe cung split')
     return p.parse_args()
 
@@ -69,7 +73,7 @@ def load_settings(args):
         raise ValueError(f'Key HALPE_SIMCC khong ho tro: {sorted(unknown)}')
     settings = dict(DEFAULTS)
     settings.update(section)
-    for name in ('max_people', 'vis_num', 'temperature', 'normalization'):
+    for name in ('max_people', 'vis_num', 'temperature', 'normalization', 'from_npz', 'temperatures'):
         if getattr(args, name) is not None:
             settings[name] = getattr(args, name)
     if not isinstance(settings['enabled'], bool) or not settings['enabled']:
@@ -85,6 +89,19 @@ def load_settings(args):
             raise ValueError(f'{name} phai huu han va > 0')
     if settings['normalization'] not in ('softmax', 'positive_mass'):
         raise ValueError('normalization chi nhan softmax hoac positive_mass')
+    if not isinstance(settings['from_npz'], str):
+        raise ValueError('from_npz phai la duong dan chuoi, hoac rong de trich moi')
+    values = settings['temperatures']
+    if not isinstance(values, (list, tuple)):
+        raise ValueError('temperatures phai la danh sach')
+    if any(isinstance(v, bool) for v in values):
+        raise ValueError('temperature khong duoc la boolean')
+    values = [float(v) for v in values]
+    if any(not np.isfinite(v) or v <= 0 for v in values) or len(set(values)) != len(values):
+        raise ValueError('temperatures phai huu han, > 0 va khong trung nhau')
+    settings['temperatures'] = values
+    if values and (not settings['from_npz'] or settings['normalization'] != 'softmax'):
+        raise ValueError('Quet temperatures can from_npz va normalization=softmax')
     return settings
 
 
@@ -276,9 +293,115 @@ def save_visualization(path, image, record, probs, settings, seed):
         raise IOError(f'Khong ghi duoc anh: {path}')
 
 
+def replot_saved(args, settings):
+    # Nhanh CPU: doc raw, khong build_model va khong doc annotation/GT.
+    required = ('simcc_x', 'simcc_y', 'kpts', 'center', 'scale', 'input_size_wh',
+                'ann_id', 'file_name')
+    with np.load(settings['from_npz'], allow_pickle=False) as archive:
+        missing = set(required) - set(archive.files)
+        if missing:
+            raise ValueError(f'NPZ thieu key: {sorted(missing)}')
+        arrays = {key: archive[key].copy() for key in required}
+        if 'split_ratio' not in archive.files:
+            raise ValueError('NPZ thieu split_ratio de doi bin ve pixel')
+        ratio = float(np.asarray(archive['split_ratio']).item())
+    if not np.isfinite(ratio) or ratio <= 0:
+        raise ValueError('split_ratio trong NPZ khong hop le')
+    raw_x, raw_y = arrays['simcc_x'], arrays['simcc_y']
+    if raw_x.ndim != 3 or raw_y.ndim != 3 or raw_x.shape[:2] != raw_y.shape[:2]:
+        raise ValueError('SimCC trong NPZ can dang (N,26,L), cung N va so khop')
+    count, joints = raw_x.shape[:2]
+    if count == 0 or joints != 26 or raw_x.shape[-1] < 2 or raw_y.shape[-1] < 2:
+        raise ValueError('NPZ rong hoac khong phai Halpe-26 SimCC')
+    shapes = dict(kpts=(count, 26, 3), center=(count, 2), scale=(count, 2),
+                  input_size_wh=(count, 2), ann_id=(count,), file_name=(count,))
+    for key, shape in shapes.items():
+        if arrays[key].shape != shape:
+            raise ValueError(f'{key}: can {shape}, nhan {arrays[key].shape}')
+    for key in ('simcc_x', 'simcc_y', 'kpts', 'center', 'scale', 'input_size_wh'):
+        if not np.isfinite(arrays[key]).all():
+            raise ValueError(f'{key} co NaN/Inf')
+    if (arrays['scale'] <= 0).any() or (arrays['input_size_wh'] <= 0).any():
+        raise ValueError('scale/input_size phai > 0')
+    if not np.allclose(arrays['input_size_wh'] * ratio, [raw_x.shape[-1], raw_y.shape[-1]]):
+        raise ValueError('Shape raw khong khop input_size/split_ratio trong NPZ')
+    count = min(count, settings['max_people'])
+    # Giu cung nguoi va seed cho cac T, chi thay doi phep chuan hoa.
+    arrays = {key: value[:count] for key, value in arrays.items()}
+    temperatures = settings['temperatures'] or [settings['temperature']]
+    summary_path = osp.join(args.out_dir, 'temperature_sweep_summary.json')
+    folders = [osp.join(args.out_dir, f'T{value:g}'.replace('.', 'p')) for value in temperatures]
+    if not args.overwrite:
+        for path in [summary_path] + folders:
+            if osp.exists(path):
+                raise FileExistsError(f'Dau ra da co: {path}. Doi --out_dir hoac dung --overwrite.')
+    os.makedirs(args.out_dir, exist_ok=True)
+    report = dict(source_npz=osp.abspath(settings['from_npz']), settings=settings,
+                  used_people=count, split_ratio_from_npz=ratio,
+                  note='Chi so sanh temperature tren cung raw. Chua hieu chuan bang GT.', results=[])
+    print('[REPLOT] Doc SimCC da luu; khong nap RTMPose/ONNX, khong can GPU.')
+    print('T | median std X/Y (px) | median H X/Y | median peak X/Y')
+    for temperature, folder in zip(temperatures, folders):
+        local = dict(settings, temperature=temperature, split_ratio=ratio)
+        if settings['vis_num']:
+            os.makedirs(folder, exist_ok=True)
+        sigma_all, entropy_all, peak_all, image_missing = [], [], [], []
+        written = 0
+        for index in range(count):
+            record = {key: values[index] for key, values in arrays.items()}
+            probs = [normalize_simcc(record[key], local) for key in ('simcc_x', 'simcc_y')]
+            factors = record['scale'] / record['input_size_wh'] / ratio
+            stats = [distribution_stats(prob, factors[a]) for a, prob in enumerate(probs)]
+            sigma = np.stack([s[0] for s in stats], axis=-1)
+            entropy = np.stack([s[1] for s in stats], axis=-1)
+            sigma_all.append(sigma)
+            entropy_all.append(entropy)
+            peak_all.append(np.stack([p.max(axis=-1) for p in probs], axis=-1))
+            if index < settings['vis_num']:
+                image_path = osp.join(args.data_root, str(record['file_name']))
+                image = cv2.imread(image_path)
+                if image is None:
+                    image_missing.append(image_path)
+                    continue
+                record.update(sigma_image_px=sigma, entropy_norm=entropy)
+                name = f'ann{int(record["ann_id"])}.png'
+                save_visualization(osp.join(folder, name), image, record, probs, local,
+                                   (settings['seed'] + index) % (2 ** 32))
+                written += 1
+        sigma_all, entropy_all = np.stack(sigma_all), np.stack(entropy_all)
+        result = dict(temperature=temperature,
+                      sigma_image_px_median_xy=np.median(sigma_all, axis=(0, 1)).tolist(),
+                      entropy_norm_median_xy=np.median(entropy_all, axis=(0, 1)).tolist(),
+                      peak_probability_median_xy=np.median(np.stack(peak_all), axis=(0, 1)).tolist(),
+                      images_written=written, missing_images=image_missing, vis_dir=folder)
+        # Score detector khong phai nhan visibility; chi tach nhom de tham khao.
+        result['by_detector_score'] = {}
+        for label, mask in [('score_le_0p3', arrays['kpts'][..., 2] <= 0.3),
+                            ('score_gt_0p3', arrays['kpts'][..., 2] > 0.3)]:
+            result['by_detector_score'][label] = dict(n_joints=int(mask.sum()))
+            if mask.any():
+                result['by_detector_score'][label].update(
+                    sigma_image_px_median_xy=np.median(sigma_all[mask], axis=0).tolist(),
+                    entropy_norm_median_xy=np.median(entropy_all[mask], axis=0).tolist())
+        report['results'].append(result)
+        print(f'{temperature:g} | {result["sigma_image_px_median_xy"]} | '
+              f'{result["entropy_norm_median_xy"]} | {result["peak_probability_median_xy"]}')
+        if image_missing:
+            print(f'[CANH BAO] Thieu {len(image_missing)} anh de ve; kiem tra --data_root.')
+    with open(summary_path, 'w' if args.overwrite else 'x', encoding='utf-8') as f:
+        json.dump(report, f, indent=2)
+    print(f'[OK] {summary_path}')
+    print('[LUU Y] Giam T lam phan bo sac hon; khong tu dong chung minh uncertainty dung hon.')
+
+
 def main():
     args = parse_args()
     settings = load_settings(args)
+    if settings['from_npz']:
+        if args.inspect_only:
+            raise ValueError('inspect_only kiem tra ONNX; khong dung chung voi from_npz')
+        replot_saved(args, settings)
+        return
     stem = f'3DPW_{args.split}_halpe26_simcc_probe'
     npz_path = osp.join(args.out_dir, stem + '.npz')
     summary_path = osp.join(args.out_dir, stem + '_summary.json')

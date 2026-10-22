@@ -128,6 +128,9 @@ cfg.HALPE_SIMCC.seed = 42
 cfg.HALPE_SIMCC.split_ratio = 2.0
 cfg.HALPE_SIMCC.normalization = 'softmax'
 cfg.HALPE_SIMCC.temperature = 1.0
+# Doc lai raw da luu de so sanh temperature, mac dinh TAT (duong dan rong).
+cfg.HALPE_SIMCC.from_npz = ''
+cfg.HALPE_SIMCC.temperatures = []
 # 3DPW test: tra them GT 2D (targets['orig_joint_img'] H36M-17, khung output_hm_shape) + meta orig_joint_valid/trunc.
 # Chi de phan tich sai so 2D dau vao; evaluate() khong dung. Mac dinh TAT = hanh vi cu.
 cfg.DATASET.pw3d_test_gt2d = False

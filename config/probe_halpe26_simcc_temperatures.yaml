@@ -1,0 +1,12 @@
+# Chi doc lai raw SimCC, khong nap RTMPose/ONNX va khong can GPU.
+# So sanh do sac cua phan bo; CHUA phai hieu chuan uncertainty bang GT.
+HALPE_SIMCC:
+  enabled: True
+  max_people: 32
+  vis_num: 8
+  seed: 42
+  split_ratio: 2.0
+  normalization: 'softmax'
+  temperature: 1.0
+  from_npz: 'output/probe_halpe26_simcc/3DPW_validation_halpe26_simcc_probe.npz'
+  temperatures: [1.0, 0.1, 0.05]
