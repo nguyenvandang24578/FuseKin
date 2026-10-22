@@ -35,6 +35,8 @@ parser.add_argument('--S', type=int, default=5, help='so buoc DDIM khi sinh gia 
 parser.add_argument('--K', type=int, default=20, help='so gia thuyet')
 parser.add_argument('--batch_size', type=int, default=32)
 parser.add_argument('--max_batches', type=int, default=0, help='>0: chi chay N batch dau (thu nhanh)')
+parser.add_argument('--lift_only', action='store_true',
+                    help='chi do loi pose dua vao fusion (khong chay FuseKin) -> dung duoc cho 3dpw-train-noaug')
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
@@ -52,6 +54,7 @@ from funcs_utils import check_data_pararell
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 VARIANTS = ['S=1 (nhu luc train)', f'trung binh K={args.K} (S={args.S})', 'oracle ca tu the',
             'oracle tung khop', 'GT 3D']
+SEL = 'HypSelector (da hoc)'
 
 
 def lifter_cond(pose_2d, joints_mask, cam_bbox):
@@ -73,6 +76,8 @@ def main():
     print(f'===> nap {args.ckpt} (epoch {ck.get("epoch")}) | thieu {len(missing)} | thua {len(unexpected)}')
     model.eval()
     dl = model.diff_lifter
+    if getattr(model, 'diff_select', False):
+        VARIANTS.insert(2, SEL)      # Student train voi HypSelector -> do them pose da chon
 
     ds = get_test_dataset(args.set, None)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=cfg.DATASET.workers)
@@ -103,7 +108,10 @@ def main():
         err = torch.norm(hyp - gt[:, None], dim=-1)                              # (B, K, 17)
         best_pose = hyp[torch.arange(hyp.shape[0]), err.mean(-1).argmin(1)]     # (B, 17, 3)
         best_joint = torch.gather(hyp, 1, err.argmin(1)[:, None, :, None].expand(-1, 1, -1, 3))[:, 0]
-        poses = dict(zip(VARIANTS, [p_s1, hyp.mean(1), best_pose, best_joint, gt]))
+        poses = {VARIANTS[0]: p_s1, VARIANTS[1]: hyp.mean(1)}
+        if SEL in VARIANTS:
+            poses[SEL] = model.hyp_selector(hyp, model.get_image_features(img)[0], pose_2d[..., :2], mask)[0]
+        poses.update({'oracle ca tu the': best_pose, 'oracle tung khop': best_joint, 'GT 3D': gt})
 
         feature_map, _ = model.get_image_features(img)
         pe = model._pe2d_kwargs(pose_2d, mask)
@@ -111,6 +119,8 @@ def main():
         for name, p3 in poses.items():
             p3 = p3 - p3[:, 0:1]
             lift_err[name].append(torch.norm(p3 - gt, dim=-1).mean(-1).cpu())
+            if args.lift_only:
+                continue
             out = model.smpl_model(joints=p3, img_feats=feature_map, is_train=False, return_features=True, **pe)
             pred_mesh = out['smpl_mesh_cam'].cpu().numpy()
             res = ds.evaluate([{'smpl_mesh_cam': pred_mesh[i], 'smpl_mesh_cam_target': target_mesh[i]}
