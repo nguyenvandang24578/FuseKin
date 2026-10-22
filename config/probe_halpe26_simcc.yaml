@@ -1,0 +1,14 @@
+# Chi trich thu phan bo 2D, chua train DiffLifter/GMM.
+# Chay trong moi truong pose2d tu thu muc goc FuseKin:
+# python tools/probe_halpe26_simcc.py --cfg config/probe_halpe26_simcc.yaml --split validation
+HALPE_SIMCC:
+  enabled: True
+  max_people: 32
+  vis_num: 8
+  seed: 42
+  split_ratio: 2.0
+  # P = softmax(raw / temperature), chi de xem, CHUA hieu chuan xac suat.
+  # positive_mass: raw / sum(raw), chi dung khi raw khong am va tong > 0.
+  # File npz luon luu raw float32 de sau nay chuan hoa lai khong can chay detector.
+  normalization: 'softmax'
+  temperature: 1.0
