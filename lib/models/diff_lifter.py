@@ -4,7 +4,9 @@ DiffLifter: ban don gian (lean) cho single-frame 2D->3D lifting bang diffusion.
   - Diffusion framework giong D3DP (cosine schedule, DDIM, pred_x0)
   - Denoiser: SpatialMixSTE -- Transformer spatial-only, 2D [x, y, conf] noi vao input 1 LAN duy nhat
     (giong HyperDiff / D3DP goc: khong adaLN, khong bias attention theo cau truc xuong,
-    khong mask token, khong self-conditioning). Khong co co kien truc nao TAT/BAT.
+    khong mask token, khong self-conditioning).
+  - gcn_attn=True: GCN skeleton va attention song song, noi dac trung -> projection -> MLP
+    (y tuong FMPose3D, giu pre-LN/residual cua baseline; khong doi diffusion thanh flow matching).
   - Camera (cam_bbox, kieu CLIFF): thong tin CA NGUOI -> cam_mlp -> cong vao moi token khop giong timestep
 """
 
@@ -116,6 +118,59 @@ class Block(nn.Module):
 H36M_PARENTS = [-1, 0, 1, 2, 0, 4, 5, 0, 7, 8, 9, 8, 11, 12, 8, 14, 15]
 
 
+class SkeletonGCN(nn.Module):
+    """GCN 1-hop: ReLU(A_norm @ X @ W), canh xuong hai chieu va self-loop."""
+
+    def __init__(self, dim, num_joints=17, drop=0.):
+        super().__init__()
+        if num_joints != len(H36M_PARENTS):
+            raise ValueError('SkeletonGCN chi ho tro skeleton H36M-17')
+        adj = torch.eye(num_joints, dtype=torch.float32)
+        for joint, parent in enumerate(H36M_PARENTS):
+            if parent >= 0:
+                adj[joint, parent] = 1.
+                adj[parent, joint] = 1.
+        inv_sqrt_degree = adj.sum(dim=-1).rsqrt()
+        adj = inv_sqrt_degree[:, None] * adj * inv_sqrt_degree[None, :]
+        # Do thi co dinh: tu dung lai khi nap model, khong dua vao EMA trong so.
+        self.register_buffer('adj_norm', adj, persistent=False)
+        self.proj = nn.Linear(dim, dim, bias=False)
+        self.act = nn.ReLU()
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x):
+        # x: (B,17,D), adj_norm: (17,17); giu nguyen chieu dac trung D.
+        x = self.adj_norm @ self.proj(x)
+        return self.drop(self.act(x))
+
+
+class ParallelGCNAttnBlock(Block):
+    """Hai nhanh cung nhan LN(x); concat -> projection -> residual -> FFN.
+
+    Ban dieu chinh tu y tuong FMPose3D, giu pre-LN/residual/FFN cua baseline.
+    Moi nhanh tra D kenh; noi thanh 2D roi chieu ve D, khong doi embed_dim.
+    """
+
+    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None,
+                 drop=0., attn_drop=0., drop_path=0., act_layer=nn.GELU,
+                 norm_layer=nn.LayerNorm, num_joints=17):
+        super().__init__(dim=dim, num_heads=num_heads, mlp_ratio=mlp_ratio,
+                         qkv_bias=qkv_bias, qk_scale=qk_scale, drop=drop,
+                         attn_drop=attn_drop, drop_path=drop_path,
+                         act_layer=act_layer, norm_layer=norm_layer)
+        self.gcn = SkeletonGCN(dim, num_joints=num_joints, drop=drop)
+        self.fusion = nn.Sequential(nn.Linear(dim * 2, dim), nn.Dropout(drop))
+
+    def forward(self, x):
+        h = self.norm1(x)
+        # Hai nhanh doc lap: GCN cuc bo theo xuong, attention toan bo 17 khop.
+        local = self.gcn(h)
+        global_feat = self.attn(h)
+        fused = self.fusion(torch.cat([local, global_feat], dim=-1))
+        x = x + self.drop_path(fused)
+        return x + self.drop_path(self.mlp(self.norm2(x)))
+
+
 class SinusoidalPositionEmbeddings(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -137,20 +192,20 @@ class SinusoidalPositionEmbeddings(nn.Module):
 
 class SpatialMixSTE(nn.Module):
     """
-    Spatial-only Transformer denoiser.
+    Spatial-only denoiser: Transformer, hoac GCN + attention song song khi gcn_attn=True.
     in_chans=3: [x_norm, y_norm, conf/mask] cua tung khop
     Dieu kien x_2d co in_chans + 3 kenh: 3 kenh cuoi = cam_bbox [(cx-px)/f, (cy-py)/f, size/f], lap cho moi khop.
     cam_bbox la thong tin ca nguoi -> cam_mlp -> 1 vector cong vao moi token (giong timestep), lop cuoi khoi tao 0
     (luc dau model y het ban khong camera; checkpoint cu nap duoc, xem DiffLifter.load_weights).
     embed_dim_ratio: hidden dim
-    depth: so STE blocks
+    depth: so STE blocks; gcn_attn=False giu nguyen block va key checkpoint cu.
     2D duoc noi vao input CHI O LOP DAU (giong D3DP goc / HyperDiff), khong bom lai o block sau.
     """
 
     def __init__(self, num_joints=17, in_chans=3, embed_dim_ratio=256, depth=4,
                  num_heads=8, mlp_ratio=2., qkv_bias=True, qk_scale=None,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
-                 norm_layer=None):
+                 norm_layer=None, gcn_attn=False):
         super().__init__()
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
         self.in_chans = in_chans
@@ -178,10 +233,13 @@ class SpatialMixSTE(nn.Module):
         nn.init.zeros_(self.cam_mlp[-1].bias)
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
+        block_cls = ParallelGCNAttnBlock if gcn_attn else Block
+        block_kwargs = {'num_joints': num_joints} if gcn_attn else {}
         self.STEblocks = nn.ModuleList([
-            Block(dim=embed_dim_ratio, num_heads=num_heads, mlp_ratio=mlp_ratio,
+            block_cls(dim=embed_dim_ratio, num_heads=num_heads, mlp_ratio=mlp_ratio,
                   qkv_bias=qkv_bias, qk_scale=qk_scale, drop=drop_rate,
-                  attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer)
+                  attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer,
+                  **block_kwargs)
             for i in range(depth)
         ])
         self.Spatial_norm = norm_layer(embed_dim_ratio)
@@ -227,7 +285,7 @@ class SpatialMixSTE(nn.Module):
         x = x + self.cam_mlp(cam)[:, None, :]            # camera: thong tin ca nguoi, cung cach voi t
         x = self.pos_drop(x)
 
-        # --- Chi Spatial Attention (khong TTE, khong dieu kien lai 2D) ---
+        # --- Spatial blocks (khong TTE, khong dieu kien lai 2D) ---
         for blk in self.STEblocks:
             x = blk(x)
         x = self.Spatial_norm(x)
@@ -246,7 +304,7 @@ class SpatialMixSTE(nn.Module):
 
 class DiffLifter(nn.Module):
     """
-    Single-frame 2D->3D Diffusion Lifter (ban lean, khong co co kien truc phu).
+    Single-frame 2D->3D Diffusion Lifter.
     Tai dung diffusion framework cua D3DP (pred_x0, cosine schedule, DDIM).
     Backbone: SpatialMixSTE (bo Temporal branch cua MixSTE2).
 
@@ -260,16 +318,18 @@ class DiffLifter(nn.Module):
         num_proposals:     K hypotheses khi inference (mac dinh 5), gop bang trung binh
         scale:             he so scale 3D truoc khi them noise
         drop_rate, drop_path_rate: dropout / stochastic depth
+        gcn_attn:          bat block GCN + attention song song (mac dinh TAT)
     """
 
     def __init__(self, num_joints=17, embed_dim=256, depth=4, num_heads=8,
                  timesteps=1000, sampling_timesteps=5, num_proposals=5,
-                 scale=1.0, drop_rate=0.0, drop_path_rate=0.1):
+                 scale=1.0, drop_rate=0.0, drop_path_rate=0.1, gcn_attn=False):
         super().__init__()
 
         self.num_joints = num_joints
         self.num_proposals = num_proposals
         self.scale = scale
+        self.gcn_attn = bool(gcn_attn)
 
         # --- Diffusion schedule (giong D3DP hoan toan) ---
         betas = cosine_beta_schedule(timesteps)
@@ -300,6 +360,7 @@ class DiffLifter(nn.Module):
             num_heads=num_heads,
             drop_path_rate=drop_path_rate,
             drop_rate=drop_rate,
+            gcn_attn=self.gcn_attn,
         )
 
     # ------------------------------------------------------------------

@@ -1,0 +1,61 @@
+# Baseline: config/finetune_difflifter_r25_cam.yaml.
+# Chi doi backbone: gcn_attn=True; thu muc ket qua rieng, train tu dau.
+# Moi block: LN -> [GCN skeleton || attention] -> concat(2D) -> Linear(D)
+# -> residual -> LN -> MLP -> residual. D=256, depth=8 nhu baseline.
+# Lay y tuong song song tu FMPose3D; giu nguyen diffusion pred_x0 + DDIM,
+# dieu kien 2D/conf/camera, du lieu, augmentation va lich train cua r25_cam.
+# GCN: canh xuong H36M-17 hai chieu + self-loop, chuan hoa doi xung.
+# So tham so tang do them GCN va fusion; khong phai so sanh cung so tham so.
+# Chon best theo 3dpw-val; danh gia bang best_epoch.bin.
+# Chay: python main/finetune_difflifter.py --cfg config/finetune_difflifter_r25_cam_gcn_attn.yaml --gpu 0
+
+DATASET:
+  lift_only: True
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']
+  test_list: ['3dpw', 'Human36M', '3dpw-oc', '3dpw-pc']
+  pw3d_2d_source: 'halpe26'
+  h36m_2d_source: 'halpe26'
+  muco_2d_source: 'halpe26'
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: True
+  workers: 8
+  no_rot_aug: False
+
+DIFFLIFT:
+  gcn_attn: True
+  embed_dim: 256
+  depth: 8
+  num_heads: 8
+  drop_rate: 0.1
+  drop_path_rate: 0.1
+
+  timesteps: 1000
+  sampling_timesteps: 1
+  num_proposals: 1
+  scale: 3.0
+
+  val_set: '3dpw-val'
+  save_dir: 'experiment/finetune_difflifter_r25_cam_gcn_attn'
+  epochs: 15
+  lr: 0.0003
+  lr_decay: 0.975
+  weight_decay: 0.01
+  batch_size: 512
+  save_freq: 5
+  iters_per_epoch: 0
+  print_freq: 50
+  balance_datasets: False
+  dataset_ratio: [0.25, 0.25, 0.25, 0.25]
+  samples_per_epoch: 512000
+  resume: ''
+  ema_decay: 0.999
+
+  epoch_eval_sets: ['3dpw']
+  full_eval_sets: ['Human36M', '3dpw-oc', '3dpw-pc']
+  full_eval_freq: 5
+
+  joint_drop_prob: 0.05
+  limb_drop_prob: 0.05
+  jitter_std: 0.02
+  occ_aug_prob: 0.15
+  occ_shift_std: 0.15

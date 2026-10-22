@@ -178,7 +178,8 @@ class ARTS(nn.Module):
         dc = ck['difflift_cfg']
         m = DiffLifter(num_joints=17, embed_dim=dc['embed_dim'], depth=dc['depth'], num_heads=dc['num_heads'],
                        timesteps=dc['timesteps'], sampling_timesteps=int(cfg.MODEL.get('difflift_steps', 1)),
-                       num_proposals=int(cfg.MODEL.get('difflift_k', 1)), scale=dc['scale'], drop_path_rate=0.0)
+                       num_proposals=int(cfg.MODEL.get('difflift_k', 1)), scale=dc['scale'], drop_path_rate=0.0,
+                       gcn_attn=bool(dc.get('gcn_attn', False)))
         missing = m.load_weights(ck['model_state'])
         print(f"Load DiffLifter ({path}) epoch {ck.get('epoch')} | S={m.sampling_timesteps} K={m.num_proposals}"
               + (f" | [CANH BAO] checkpoint khong co camera: thieu {missing}" if missing else ''))

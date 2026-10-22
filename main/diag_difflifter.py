@@ -220,7 +220,8 @@ def build_model(ckpt, device):
     dc = ckpt['difflift_cfg']
     model = DiffLifter(num_joints=17, embed_dim=dc['embed_dim'], depth=dc['depth'], num_heads=dc['num_heads'],
                        timesteps=dc['timesteps'], sampling_timesteps=dc['sampling_timesteps'],
-                       num_proposals=dc['num_proposals'], scale=dc['scale'], drop_path_rate=0.0).to(device)
+                       num_proposals=dc['num_proposals'], scale=dc['scale'], drop_path_rate=0.0,
+                       gcn_attn=bool(dc.get('gcn_attn', False))).to(device)
     model.load_weights(ckpt['model_state'])   # checkpoint truoc khi co camera: cam_mlp = 0
     model.eval()
     return model

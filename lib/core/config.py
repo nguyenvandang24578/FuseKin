@@ -422,6 +422,7 @@ cfg.DIFFLIFT = edict()
 cfg.DIFFLIFT.embed_dim = 256           # chieu an Transformer (D3DP goc = 512)
 cfg.DIFFLIFT.depth = 4                 # so Spatial Attention blocks (D3DP goc = 8)
 cfg.DIFFLIFT.num_heads = 8
+cfg.DIFFLIFT.gcn_attn = False          # GCN skeleton + attention song song; TAT = backbone cu
 cfg.DIFFLIFT.timesteps = 1000          # T diffusion timesteps khi train
 cfg.DIFFLIFT.sampling_timesteps = 5   # S DDIM steps khi inference
 cfg.DIFFLIFT.num_proposals = 5        # K hypotheses khi inference

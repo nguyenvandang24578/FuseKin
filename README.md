@@ -1,157 +1,90 @@
-This is the offical Pytorch implementation of the paper:"
-<div align="center">
+# FuseKin
 
-  <h1 align="center">ARTS: Semi-Analytical Regressor using Disentangled Skeletal Representations for Human Mesh Recovery from Videos (ACM MM 2024)</h1>
-</div>
-<h4 align="center" style="text-decoration: none;">
-  <a href="https://github.com/TangTao-PKU", target="_blank"><b>Tao Tang</b></a>,
-  <a href="https://scholar.google.com/citations?hl=zh-CN&user=4CQKG8oAAAAJ", target="_blank"><b>Hong Liu</b></a>,
-  <a href="https://kasvii.github.io/", target="_blank"><b>Yingxuan You</b></a>,
-  <a href="https://scholar.google.com/citations?user=PjBAErYAAAAJ&hl=zh-CN&oi=sra", target="_blank"><b>Ti Wang</b></a>,
-  <a href="https://vegetebird.github.io/", target="_blank"><b>Wenhao Li</b></a>,
-</h4>
-<h4 align="center">
-  <a href="https://arxiv.org/pdf/2410.15582", target="_blank">arXiv</a> /
-  <a href="https://dl.acm.org/doi/abs/10.1145/3664647.3680881", target="_blank">paper</a> 
-</h4>
+Dự án nghiên cứu khôi phục mesh người từ một ảnh: kết hợp đặc trưng ảnh với pose 3D được nâng từ keypoint 2D. Hướng đang phát triển là **DiffLifter đa giả thuyết + Student v2**.
 
-<p align="center">
-    <img src="assets/ARTS_overview.jpg" /> 
-</p>
+Cập nhật: **2026-10-22**, đối chiếu với source và cấu hình local. Trạng thái train trên server lấy từ thông tin người dùng cung cấp.
 
-<p align="center">
-  <img src="assets/arts_demo1.gif" height="105" /> 
-  <img src="assets/arts_demo2.gif" height="105" /> 
-  <img src="assets/arts_demo3.gif" height="105" /> 
-  <img src="assets/arts_demo4.gif" height="105" /> 
-</p>
+## Tài liệu
 
+| File | Đọc khi cần |
+|---|---|
+| [01_PROJECT_CONTEXT.md](01_PROJECT_CONTEXT.md) | Kiến trúc, dữ liệu, quy ước, cấu hình và giới hạn hiện tại |
+| [experiment.md](experiment.md) | Kết quả, trạng thái thí nghiệm và bước tiếp theo |
+| [AGENTS.md](AGENTS.md) | Quy tắc làm việc cho AI/cộng tác viên |
 
-## Preparation
+Mỗi nội dung có một nơi chính để cập nhật. README của các repo tham khảo trong thư mục con được giữ riêng.
 
-1. Install dependencies. This project is developed on Ubuntu 18.04 with NVIDIA 3090 GPUs. We recommend you to use an [Anaconda](https://www.anaconda.com/) virtual environment.
+## Pipeline hiện tại
+
+1. RTMPose cung cấp Halpe-26; adapter đổi về 17 khớp H36M.
+2. DiffLifter nhận 2D, confidence và thông tin bbox/camera, sinh pose 3D hoặc nhiều giả thuyết.
+3. ResNet-50 pretrained SPIN cung cấp đặc trưng ảnh; backbone và lifter được đóng băng khi train Student.
+4. Student v2 kết hợp token ảnh và token khớp, dự đoán pose/shape/camera rồi dựng mesh SMPL.
+
+Teacher/KD, MotionBERT và PMCE vẫn có trong source để đối chiếu. Chúng không phải hướng thí nghiệm chính của đợt hiện tại.
+
+## Trạng thái hiện tại
+
+- `train_student_v2_diff_aug.yml`: người dùng đang train trên server; chưa có kết quả cuối được cung cấp.
+- `finetune_difflifter_r25_cam_gcn_attn.yaml`: đã thêm denoiser GCN + attention song song; chưa chạy train/test.
+- Prior nhiễu có điều kiện từ SimCC/GMM: tạm hoãn. Code probe SimCC được giữ để nghiên cứu sau.
+- Các YAML Student diffusion đang dùng (`diff`, `diff_aug`, `diff_sel`) hiện chọn best trên **3DPW test**, dù một số comment còn ghi val. Lifter chọn best theo `3dpw-val`; chi tiết trong [bối cảnh dự án](01_PROJECT_CONTEXT.md#6-giao-thức-và-chọn-checkpoint).
+
+## Cấu trúc chính
+
+| Đường dẫn | Vai trò |
+|---|---|
+| `lib/models/diff_lifter.py` | Diffusion 2D→3D và denoiser |
+| `lib/models/ARTS.py` | Wrapper backbone/lifter/Teacher/Student |
+| `lib/models/teacher_student.py` | Fusion và các head SMPL |
+| `lib/models/hyp_selector.py` | Chọn/gộp giả thuyết theo từng khớp bằng ảnh |
+| `lib/core/config.py`, `lib/core/base.py` | Config, trainer và evaluator |
+| `lib/utils/jotr_dataset.py`, `lib/utils/lift_pseudo3d.py` | Adapter H36M-17 và pseudo-GT cho lifter |
+| `data_final/` | Dataset loader và dữ liệu theo đường dẫn cấu hình |
+| `config/`, `main/`, `tools/` | YAML thí nghiệm, train/eval, trích keypoint/chẩn đoán |
+
+## Lệnh chạy trên server
+
+Chạy từ thư mục gốc repo, trong môi trường đã chuẩn bị dữ liệu, SMPL và checkpoint. Không đổi tên `data_final` thành `data` theo README ARTS cũ. Kiểm tra đường dẫn thực trong YAML/loader; dữ liệu lifter MSCOCO/CrowdPose cần cả Halpe và NeuralAnnot.
+
+Train **lifter GCN + attention mới**, khởi tạo từ đầu:
+
 ```bash
-# Create a conda environment.
-conda create -n arts python=3.8
-conda activate arts
-
-# Install PyTorch >= 1.2 according to your GPU driver.
-conda install pytorch==1.10.0 torchvision==0.11.0 torchaudio==0.10.0 cudatoolkit=11.3 -c pytorch -c conda-forge
-
-# Install other dependencies.
-sh requirements.sh
-```
-2. Prepare SMPL layer. 
-- For the SMPL layer, We used [smplpytorch](https://github.com/gulvarol/smplpytorch). The repo is already included in `./smplpytorch` folder.
-- Download `basicModel_f_lbs_10_207_0_v1.0.0.pkl`, `basicModel_m_lbs_10_207_0_v1.0.0.pkl`, and `basicModel_neutral_lbs_10_207_0_v1.0.0.pkl` from [SMPL](https://smpl.is.tue.mpg.de/downloads) (female & male) and [SMPL](http://smplify.is.tue.mpg.de/) (neutral) to `./smplpytorch/smplpytorch/native/models`.
-
-## Implementation
-### Data Preparation
-Rename the `./data_final` to the `./data`. And the `./data` directory structure should follow the below hierarchy. Download all the processed annotation files from [OneDrive](https://1drv.ms/f/s!Alg46BPWJg_XgVf-q5qKdkalhgOj?e=LmGZ8n)
-```
-${Project}  
-|-- data  
-|   |-- base_data
-|   |   |-- J_regressor_extra.npy
-|   |   |-- mesh_downsampling.npz
-|   |   |-- smpl_mean_params.npz
-|   |   |-- smpl_mean_vertices.npy
-|   |   |-- SMPL_NEUTRAL.pkl
-|   |   |-- spin_model_checkpoint.pth.tar
-|   |-- COCO  
-|   |   |-- coco_data  
-|   |   |-- __init__.py
-|   |   |-- dataset.py
-|   |   |-- J_regressor_coco.npy
-|   |-- Human36M  
-|   |   |-- h36m_data  
-|   |   |-- __init__.py
-|   |   |-- dataset.py 
-|   |   |-- J_regressor_h36m_correct.npy
-|   |   |-- noise_stats.py
-|   |-- MPII  
-|   |   |-- mpii_data  
-|   |   |-- __init__.py
-|   |   |-- dataset.py
-|   |-- MPII3D
-|   |   |-- mpii3d_data  
-|   |   |-- __init__.py
-|   |   |-- dataset.py
-|   |-- PW3D 
-|   |   |-- pw3d_data
-|   |   |-- __init__.py
-|   |   |-- dataset.py
-|   |-- multiple_datasets.py
+python main/finetune_difflifter.py --cfg config/finetune_difflifter_r25_cam_gcn_attn.yaml --gpu 0
 ```
 
-## Quick Demo
-1. Install [ViTPose](https://github.com/ViTAE-Transformer/ViTPose). ARTS uses the off-the-shift 2D pose detectors to detect persons from images. Here we take and install ViTPose. 
+Đánh giá lifter tốt nhất:
+
 ```bash
-git clone https://github.com/open-mmlab/mmcv.git
-cd mmcv
-git checkout v1.3.9
-MMCV_WITH_OPS=1 pip install -e .
-(or pip install mmcv-full==1.5.0 -f https://download.openmmlab.com/mmcv/dist/cu113/torch1.10.0/index.html)
-cd ..
-git clone https://github.com/ViTAE-Transformer/ViTPose.git
-cd ViTPose
-pip install -v -e .
+python main/finetune_difflifter.py --cfg config/finetune_difflifter_r25_cam_gcn_attn.yaml --gpu 0 --eval_only --ckpt experiment/finetune_difflifter_r25_cam_gcn_attn/best_epoch.bin
 ```
-2. Download the pre-trained ViTPose model `vitpose-h-multi-coco.pth` from [OneDrive](https://1drv.ms/f/s!Alg46BPWJg_Xgj6Zim2WCoF5SnbL?e=dtnem2). Put it below `./pose_detector` folder.
-3. Download the pre-trained ARTS model `ARTS_Demo_Model` and `ARTS_PoseEstimation` from [GoogleDrive](https://drive.google.com/drive/folders/1txQWReexVOLjpmgi426vMCw0Itq4K6C0?usp=sharing). Put it below `./experiment` folder.
-4. Prepare the input video `*.mp4` and put it below `./demo` folder. 
-5. Run. The output is at `./output` folder.
+
+Phân tích lỗi và trực quan hóa lifter:
+
 ```bash
-# Change 'sample_video' to your video name.
-sh ./main/demo.sh 
-or
-python ./main/run_demo.py --vid_file demo/sample_video.mp4 --gpu 0
+python main/inspect_difflifter.py --cfg config/finetune_difflifter_r25_cam_gcn_attn.yaml --gpu 0 --ckpt experiment/finetune_difflifter_r25_cam_gcn_attn/best_epoch.bin
 ```
 
-### Train
-Stage 1 : Train the 3D pose estimation.
+Lệnh tạo một run Student augmentation mới, tương ứng YAML đang được người dùng train:
+
 ```bash
-# Human3.6M
-bash train_pose_h36m.sh
-
-# 3DPW
-bash train_pose_3dpw.sh
+python main/train.py --cfg config/train_student_v2_diff_aug.yml --exp_name student_v2_diff_aug --gpu 0
 ```
 
-Stage 2: To train the all network for final mesh. Configs of the experiments can be found and edited in `./config` folder. Change `posenet_path` in `./config/train_mesh_*.yml` to the path of the pre-trained pose model.
+Đánh giá mesh của run có tên như lệnh trên:
+
 ```bash
-# Human3.6M
-bash train_mesh_h36m.sh
-
-# 3DPW & MPII3D
-bash train_mesh_3dpw.sh
+python main/test_ckpt.py --cfg config/train_student_v2_diff_aug.yml --ckpt experiment/student_v2_diff_aug/checkpoint/best.pth.tar --test_list 3dpw --gpu 0
 ```
 
-### Test
-To test on a pre-trained pose estimation model (Stage 1). Download the pre-trained ARTS model `ARTS_Demo_Model`(3DPW Dataset) and `ARTS_PoseEstimation`(3DPW Dataset) from [GoogleDrive](https://drive.google.com/drive/folders/1txQWReexVOLjpmgi426vMCw0Itq4K6C0?usp=sharing). Put it below `./experiment` folder.
-```bash
-# Human3.6M
-bash test_pose_h36m.sh
+`--exp_name` phải là tên mới khi tạo run mới; dùng đúng tên và `--resume_training` khi tiếp tục run đã có. Đường dẫn checkpoint thực phụ thuộc tên run. Không dùng số MPJPE 17 khớp của lifter để so trực tiếp với số 14 khớp của mesh.
 
-# 3DPW
-bash test_pose_3dpw.sh
-```
+## Nguồn gốc và ghi nhận
 
-To test on a pre-trained mesh model (Stage 2).
-```bash
-# Human3.6M
-bash test_mesh_h36m.sh
+FuseKin phát triển từ ARTS, sử dụng/tham khảo MotionBERT, PMCE, D3DP và HyperDiff. Denoiser mới lấy ý tưởng hai nhánh song song từ [FMPose3D](https://github.com/AdaptiveMotorControlLab/FMPose3D); phần sinh pose vẫn là diffusion, chưa chuyển sang flow matching.
 
-# 3DPW
-bash test_mesh_3dpw.sh
+README này mô tả FuseKin hiện tại, không phải bản phát hành chính thức của ARTS. Khi công bố kết quả, ghi nhận các thành phần kế thừa và tuân thủ giấy phép tương ứng. Công trình ARTS gốc:
 
-# MPII3D
-bash test_mesh_mpii3d.sh
-```
-Change the `weight_path` in the corresponding `./config/test_*.yml` to your model path.
-
-## Citation
-Cite as below if you find this repository is helpful to your project:
 ```bibtex
 @inproceedings{tang2024arts,
   title={ARTS: Semi-Analytical Regressor using Disentangled Skeletal Representations for Human Mesh Recovery from Videos},
@@ -161,9 +94,3 @@ Cite as below if you find this repository is helpful to your project:
   year={2024}
 }
 ```
-
-
-## Acknowledgement
-This repo is extended from the excellent work [PMCE](https://github.com/kasvii/PMCE), [Pose2Mesh](https://github.com/hongsukchoi/Pose2Mesh_RELEASE), [TCMR](https://github.com/hongsukchoi/TCMR_RELEASE). We thank the authors for releasing the codes.
-
-

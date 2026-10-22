@@ -348,6 +348,7 @@ def save_ckpt(path, model, optimizer, epoch, best_val, dl_cfg, ema=None, step=0)
             'embed_dim': dl_cfg.embed_dim,
             'depth':     dl_cfg.depth,
             'num_heads': dl_cfg.num_heads,
+            'gcn_attn':  model.gcn_attn,
             'timesteps': dl_cfg.timesteps,
             'sampling_timesteps': dl_cfg.sampling_timesteps,
             'num_proposals': dl_cfg.num_proposals,
@@ -360,6 +361,11 @@ def save_ckpt(path, model, optimizer, epoch, best_val, dl_cfg, ema=None, step=0)
 
 def load_ckpt(path, model, optimizer=None, device='cpu', ema=None):
     ckpt = torch.load(path, map_location=device)
+    # Khong nap nham backbone attention cu vao thi nghiem GCN (va nguoc lai).
+    ckpt_gcn_attn = bool(ckpt.get('difflift_cfg', {}).get('gcn_attn', False))
+    if ckpt_gcn_attn != model.gcn_attn:
+        raise ValueError(f'Checkpoint gcn_attn={ckpt_gcn_attn}, model gcn_attn={model.gcn_attn}; '
+                         'can dung YAML cung kien truc, thi nghiem moi train tu dau')
     if ema is not None and 'raw_model_state' in ckpt:
         # resume co EMA: model = trong so goc, ema = trong so EMA
         model.load_state_dict(ckpt['raw_model_state'])
@@ -411,7 +417,7 @@ def main():
     log(f'embed_dim={dl_cfg.embed_dim} | depth={dl_cfg.depth} | '
         f'T={dl_cfg.timesteps} | S={dl_cfg.sampling_timesteps} | K={dl_cfg.num_proposals}')
     log(f'lr={dl_cfg.lr} | batch={dl_cfg.batch_size} | epochs={dl_cfg.epochs}')
-    log(f'scale={dl_cfg.scale}')
+    log(f'scale={dl_cfg.scale} | gcn_attn={dl_cfg.gcn_attn}')
 
     # --- Model ---
     model = DiffLifter(
@@ -425,6 +431,7 @@ def main():
         scale=dl_cfg.scale,
         drop_path_rate=getattr(dl_cfg, 'drop_path_rate', 0.1),
         drop_rate=getattr(dl_cfg, 'drop_rate', 0.0),
+        gcn_attn=dl_cfg.gcn_attn,
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

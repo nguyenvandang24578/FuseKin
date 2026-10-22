@@ -1,5 +1,10 @@
 data/
 *.md
+# Tai lieu chinh cua FuseKin can duoc dua len Git.
+!/README.md
+!/AGENTS.md
+!/01_PROJECT_CONTEXT.md
+!/experiment.md
 *.pt
 *.pth
 *.weights
