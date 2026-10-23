@@ -235,7 +235,7 @@ Người dùng muốn giữ spread và chuyển sang train KD, chỉnh tín hi�
 
 Đối chứng cần thiết: spread + KD feature đồng đều, so với cùng cấu hình spread + KD có trọng số; giữ cùng seed/khởi tạo/loss/lịch train và tập chọn best, đặc biệt không bật init_student_from_teacher ở một run mà tắt ở run kia. Giữ spread trong cả hai run là lựa chọn thí nghiệm, chưa khẳng định spread có lợi; sau KD vẫn so real/off/shuffle để xem nhánh spread có được dùng hơn không. Tín hiệu Teacher dùng GT không luôn suy ra được từ ảnh bị che và 2D hỏng; Teacher tốt hơn không bảo đảm Student sao chép được toàn bộ feature đặc quyền.
 
-## 11. Spread + KD feature E1 - đã chuẩn bị YAML, chờ chạy (2026-10-23)
+## 11. Spread + KD feature E1 - đã có log người dùng gửi (2026-10-23)
 
 Người dùng duyệt chuẩn bị bản spread + KD hiện có làm đối chứng trước. YAML mới: `config/train_student_kd_e1_v2_diff_spread.yml`, run dự kiến `student_kd_e1_v2_diff_spread`, seed lệnh chạy 123. So với `train_student_kd_e1_v2_diff.yml`, chỉ thêm spread=True, steps=5, k=20; mọi giá trị cấu hình E1 còn lại được giữ nguyên. Không sửa loss/trainer/kiến trúc hay YAML cũ, không chạy code dự án tại local.
 
@@ -243,4 +243,46 @@ Giữ pose chính S=1/K=1; Teacher GT checkpoint theo E1; Student `smpl_model` k
 
 Đối chứng trực tiếp để tách tác động thêm spread là E1 diffusion có cùng seed, khởi tạo Teacher, dữ liệu, lịch train và evaluator. So với run spread-only trước đó còn khác cả KD và khởi tạo Teacher, không quy chênh lệch riêng cho loss KD. Bản KD có trọng số về sau cần giữ nguyên cấu hình/khởi tạo của YAML mới này và chỉ đổi luật trọng số.
 
-Giữ train 3DPW-train, chọn best theo 3DPW test như run hiện có, nên chỉ coi là kết quả phát triển. Chưa có log train hoặc kết quả mới; lệnh chạy ở README. Thư mục kết quả mới do trainer tạo trên server khi chạy, không tạo thư mục rỗng ở local.
+Giữ train 3DPW-train, chọn best theo 3DPW test như run hiện có, nên chỉ coi là kết quả phát triển. Trạng thái lúc tạo YAML là chờ chạy; log người dùng gửi sau đó được ghi bên dưới. Lệnh chạy ở README. Thư mục kết quả mới do trainer tạo trên server khi chạy, không tạo thư mục rỗng ở local.
+
+### Kết quả KD người dùng báo và rà soát source
+
+Người dùng báo best theo `['3dpw']`: **MPJPE 77.12 / MPVPE 93.73 mm**. Theo mạch trao đổi đây là bản spread + KD E1; chưa có YAML sao lưu của run, epoch, seed, PA-MPJPE, đường dẫn checkpoint hoặc log loss để xác nhận độc lập. So với scratch có spread 77.594 / 94.169, giảm khoảng **0.474 / 0.439 mm**; một run chưa đủ kết luận mức cải thiện ổn định hoặc tác dụng riêng của KD.
+
+Rà soát tĩnh `Student_Trainer.train/_kd_dist/_ensure_projectors`, `ARTS.forward_student/forward_teacher`, fusion và optimizer: không thấy Student bị detach ngoài ý muốn trong đường E1 mặc định v1. Backbone/lifter đóng băng có chủ đích; `spread_proj` nằm ngoài no_grad, feature sau fusion đi vào projector KD và loss.backward; projector được thêm vào optimizer. Teacher eval/no_grad và target feature detach là đúng. Đây là kiểm tra source, chưa phải kiểm chứng gradient lúc chạy.
+
+Các yếu tố cần tách khi so sánh:
+
+- Scratch (`student_use_kd=False`) thực tế dùng `0.5*hard_loss + privileged_loss`; E1 feat dùng `1.0*hard_loss + 1.0*kd_loss + privileged_loss`. Vì vậy không chỉ thêm loss KD, mà còn đổi tỷ lệ hard/privileged. Hard loss đi qua AWL học được, không thể quy ngay mức chênh metric cho một hệ số.
+- E1 khởi tạo `smpl_model` từ Teacher, scratch không dùng Teacher. Chưa có đối chứng cùng khởi tạo/hệ số loss để tách tác dụng của KD.
+- YAML spread+KD local hiện có `lr_step=[5,10,15,22,27]`, khác bản lúc tạo `[15,22,27]` và khác YAML scratch spread hiện tại. Với scheduler MultiStepLR đang gọi cuối epoch, nếu run mới dùng đúng lịch local này, epoch 11-15 có LR 2.5e-5 thay vì 1e-4 của scratch, cuối lịch cũng thấp hơn bốn lần. Chưa xác nhận YAML thật trên server; không kết luận việc giảm LR sớm là nguyên nhân. Không sửa lịch/run hiện có.
+- Feature KD cân đều các khớp GT hợp lệ (`fit_joint_trunc * is_valid_fit`), không theo lỗi mesh Student hoặc độ tốt tương đối của Teacher; KD global lấy mean token. Chưa có cơ chế ưu tiên ca khó mà Teacher làm tốt hơn. Mask KD là mask GT, không phải mask confidence Halpe.
+- `_kd_dist` so sánh feature sau LayerNorm qua Linear học được; KD loss nhỏ chưa chứng minh mesh gần Teacher hoặc fusion dùng ảnh nhiều hơn. Khả năng projector hấp thụ khác biệt và gradient KD yếu/xung đột với hard loss mới là giả thuyết, cần log/đo gradient, chưa kết luận từ source.
+
+Ưu tiên tiếp theo: xác minh YAML của run và đọc log đầu/giữa/cuối gồm J/G KD, hard_total, privileged, LR, epoch best và AWL; đối chiếu sai số từng mẫu/nhóm khó của checkpoint KD với scratch trước khi quy kết trung bình hoặc tăng lambda. Nếu bổ sung chẩn đoán, đo gradient KD/hard ở fusion và spread cùng chất lượng Teacher/Student trên cùng GT; chưa viết/chạy chẩn đoán này, chưa đổi luật trọng số KD. Giữ giới hạn giao thức chọn best trên 3DPW test.
+
+### Bổ sung log epoch 14-22: sửa cách đọc mốc best
+
+Người dùng gửi log liên tục epoch 14-22. Trong đoạn này, epoch **18** đồng thời tốt nhất cả MPJPE và MPVPE: **76.76 / 51.03 / 93.57 mm** (MPJPE14 / PA-MPJPE / MPVPE). Epoch 20 là **77.12 / 51.33 / 93.73**, không phải best của đoạn. Mốc epoch 18 giảm khoảng 0.834 / 2.156 / 0.599 mm so với scratch spread trong inspector (77.594 / 53.186 / 94.169); đây là đối chiếu số log, chưa chạy lại hai checkpoint cùng evaluator. Chưa có log trước epoch 14, sau epoch 22 hoặc header TEST CUOI xác nhận best.pth.tar toàn run.
+
+Đã đối chiếu `_select_errors` và `main/train.py`: dòng `chon best theo` in metric của epoch hiện tại và tên tập dùng chọn checkpoint, không báo best tích lũy hoặc xác nhận vừa ghi best.pth.tar. `is_best` chỉ bật khi MPJPE hoặc MPVPE lập mức thấp mới so với toàn bộ lịch sử. Epoch 19-22 không vượt epoch 18 ở cả hai metric, nên không thay best bằng các epoch này theo code hiện tại. Best toàn run còn phụ thuộc epoch ngoài đoạn log.
+
+Diễn biến KD trung bình: epoch 14 J=0.0272, G=0.0111 (tổng 0.0383); epoch 18 J=0.0248, G=0.0092 (0.0340); epoch 22 J=0.0244, G=0.0090 (0.0334). Có giảm rồi chậm lại trong đoạn này; chưa biết diễn biến giai đoạn đầu. P khoảng 2.08 không được cộng vào loss vì kd_w_proj=0, không phải KD đang chịu sai số 2.08. nw=1 và adaptive w=1 đúng với E1 không cân ca khó. Lift error khoảng 79.4 mm là lỗi đầu vào DiffLifter đóng băng, không phải lỗi mesh Student; nhãn MotionBERT trong log là tên cũ, việc lift error không giảm không chứng minh KD không học.
+
+LR epoch 15=2.5e-5, epoch 16-22=1.25e-5, phù hợp lịch giảm sớm trong YAML local, nhưng chưa có YAML sao lưu run để xác nhận toàn bộ config. Sau khi giảm LR, epoch 18 vẫn cải thiện, nên log không chứng minh LR nhỏ là nguyên nhân KD kém. Từ epoch 18-22, train KD/hard tổng giảm nhẹ còn metric đánh giá dao động (MPJPE 76.76-78.40); không thấy dấu hiệu loss nổ/NaN trong đoạn.
+
+AWL tăng trọng số mesh 2.756->3.892 và joint3D 2.826->4.108 (epoch14->22). Tổng loss có thành phần `log(1+p^2)` của AWL không phụ thuộc output model, vì vậy không được lấy KD~0.03 chia total~2.4 để kết luận gradient KD chỉ 1% hoặc chắc chắn quá yếu. Cần đo norm/hướng gradient trên cùng tham số và so feature trước/sau projector để kiểm tra giả thuyết này; chưa đo/chưa code thêm. Không tự tăng lambda, bật proj KD hoặc đổi lịch dựa riêng vào các độ lớn loss khác loại.
+
+Bước tiếp: xác nhận epoch và kết quả TEST CUOI của best checkpoint; so sai số từng mẫu/nhóm khó KD với scratch và Teacher để biết lợi ích có tập trung đúng ca khó. Chỉ bổ sung chẩn đoán gradient hoặc đổi trọng số KD trong phạm vi được duyệt; chưa sửa source/YAML train của run này.
+
+## 12. So scratch/KD trên cùng mẫu - đã code, chờ chạy (2026-10-23)
+
+Người dùng đồng ý tạm dừng train để so các checkpoint hiện có; epoch 18 đang là ứng viên best theo log đã gửi, chưa đọc trực tiếp checkpoint server. Người dùng yêu cầu rà `./main` trước khi thêm file. Đã đọc `compare_students.py`, đường chạy của `compare_teacher_student.py`, `diagnose_kd.py`, `kd_feature_analysis.py`, `compare_checkpoint_drift.py` và inspector hiện tại. `compare_students.py` có metric tổng nhiều Student, các công cụ feature cũ còn giả định MotionBERT/T-hint hoặc gọi forward thiếu cam_bbox/đường spread; không dùng nguyên trạng để kết luận thí nghiệm này.
+
+Đã mở rộng **`main/inspect_student_spread.py --mode compare`**, không tạo file Python mới. Chạy hai Student spread với YAML riêng và Teacher GT trên cùng loader, strict load, ghi epoch và tùy chọn `--expected_epoch 18`. Dùng lại evaluator mesh 14 khớp của dataset, helper capture/visual hiện có. Mỗi YAML bắt đầu từ config default độc lập, cfg đúng được kích hoạt khi build/forward; không trộn key Teacher vào Student. Kiểm tra pose S1/std hai Student giống nhau trong 1e-6 mét và GT input Teacher khớp trong 0.001 mm. Không sửa source train, YAML cũ hoặc các YAML JOTR người dùng đang tạo.
+
+Đầu ra: `compare_log.txt`, `summary.json`, `samples.csv`, `groups.csv`, ba YAML sao lưu, `overview.png`, `vis/` cạnh checkpoint KD trong thư mục mới. Gain = lỗi scratch - KD, dương là KD tốt hơn. Nhóm Q1–Q4 và 10% khó nhất cố định theo MPJPE scratch, thêm nhóm theo số keypoint thiếu và nhóm Teacher tốt hơn scratch >1 mm. Báo mean/median gain, phân vị 10/90, tỷ lệ tốt/xấu hơn ngưỡng mô tả 1 mm cho MPJPE/PA-MPJPE/MPVPE. Không suy ý nghĩa thống kê từ một run hoặc coi frame độc lập.
+
+Visual: GT/scratch/KD/Teacher trước/ngang; ba ID #2749/#8785/#17500, mẫu cải thiện/xấu đi nhiều và mẫu ngẫu nhiên trong 10% khó. Mode compare dùng `--sample_ids` để chọn thêm hình, vẫn eval cả tập. Chọn hình sau khi có metric toàn lượt, nạp lại nguyên batch gốc để không đổi seed DDIM theo vị trí; xác minh ảnh/ann_id và metric replay trong 0.01 mm. Chỉ giữ mesh theo batch, không giữ mesh toàn tập. `--num_vis 0` bỏ matplotlib/hình; `--max_batches` phải được đọc là kết quả tập con.
+
+Lệnh chính xác ở README, theo tên run đã chuẩn bị; người dùng cần dùng YAML thực tế của checkpoint nếu đã đổi lịch trên server. **Mới code và rà source/diff, chưa chạy/import/kiểm cú pháp Python hoặc đánh giá trên GPU.** Phép so này vẫn còn khác khởi tạo Teacher, hệ số hard loss và lịch LR giữa hai run; chỉ đo lợi ích tổng của bản KD. Teacher GT là oracle. Các checkpoint chọn theo 3DPW test chỉ phục vụ phân tích phát triển, không chọn/tinh chỉnh model tiếp bằng test. Chưa thay luật trọng số KD, chưa train biến thể mới.

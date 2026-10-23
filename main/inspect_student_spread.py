@@ -10,9 +10,12 @@ Mesh dung dataset.evaluate (14 khop); chan doan lifter dung H36M-17, bo pelvis.
 Them --mode teacher voi --cfg/--ckpt cua Teacher GT de kiem tra anh + GT 3D.
 --sample_ids la chi so sample 0-based cua cung split; --spread_csv xac minh
 ann_id/anh va in metric Student cu tren dung mau. Mac dinh van la spread.
+--mode compare so scratch/KD tren cung batch, kem Teacher GT, bang nhom kho va hinh.
 """
 import argparse
 import csv
+import copy
+from contextlib import contextmanager
 import json
 import os
 import random
@@ -27,8 +30,8 @@ for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description='Chan doan Student spread hoac Teacher GT, khong train')
-    p.add_argument('--mode', choices=['spread', 'teacher'], default='spread')
+    p = argparse.ArgumentParser(description='Chan doan spread/Teacher GT hoac so scratch-KD, khong train')
+    p.add_argument('--mode', choices=['spread', 'teacher', 'compare'], default='spread')
     p.add_argument('--cfg', required=True)
     p.add_argument('--ckpt', required=True)
     p.add_argument('--gpu', default='0', help='mot GPU, giong cau hinh eval batch=32')
@@ -38,17 +41,34 @@ def parse_args():
     p.add_argument('--max_batches', type=int, default=0, help='0: toan tap; >0: chi chan doan tap con')
     p.add_argument('--seed', type=int, default=0, help='chon donor shuffle va mau ngau nhien; lifter giu seed eval=0')
     p.add_argument('--num_vis', type=int, default=4,
-                   help='so mau moi nhom: improved/worsened/random; teacher: worst/best/random; 0: bo hinh')
+                   help='so mau moi nhom; compare: improved/worsened/hard_random va fixed; 0: bo hinh')
     p.add_argument('--out_dir', default='', help='mac dinh tao thu muc moi canh checkpoint')
     p.add_argument('--sample_ids', type=int, nargs='+', default=None,
-                   help='chi cho mode teacher: chi danh gia cac chi so sample 0-based nay')
+                   help='teacher: chi eval cac sample nay; compare: them vao hinh, van eval ca tap')
     p.add_argument('--spread_csv', default='',
                    help='chi cho mode teacher: samples.csv cua spread, xac minh dung anh/ann_id va so metric')
+    p.add_argument('--baseline_cfg', default='', help='compare: YAML scratch da train')
+    p.add_argument('--baseline_ckpt', default='', help='compare: best.pth.tar cua scratch')
+    p.add_argument('--teacher_cfg', default='', help='compare: YAML Teacher GT da train')
+    p.add_argument('--teacher_ckpt', default='', help='compare: best.pth.tar cua Teacher GT')
+    p.add_argument('--gain_threshold', type=float, default=1.0,
+                   help='compare: nguong mo ta tot/xau hon, mm; khong phai kiem dinh thong ke')
+    p.add_argument('--expected_epoch', type=int, default=None,
+                   help='compare: dung neu epoch checkpoint KD khac gia tri nay')
     args = p.parse_args()
     if ',' in args.gpu or args.batch_size < 0 or args.workers < 0 or args.max_batches < 0 or args.num_vis < 0:
         p.error('Dung mot GPU; cac so luong phai >= 0')
-    if args.mode != 'teacher' and (args.sample_ids is not None or args.spread_csv):
-        p.error('--sample_ids/--spread_csv chi dung cho --mode teacher')
+    if args.spread_csv and args.mode != 'teacher':
+        p.error('--spread_csv chi dung cho --mode teacher')
+    if args.sample_ids is not None and args.mode not in ('teacher', 'compare'):
+        p.error('--sample_ids chi dung cho --mode teacher/compare')
+    compare_paths = (args.baseline_cfg, args.baseline_ckpt, args.teacher_cfg, args.teacher_ckpt)
+    if args.mode == 'compare' and not all(compare_paths):
+        p.error('compare can baseline_cfg/baseline_ckpt/teacher_cfg/teacher_ckpt; cfg/ckpt la KD')
+    if args.mode != 'compare' and (any(compare_paths) or args.expected_epoch is not None):
+        p.error('Cac co baseline/teacher/expected_epoch chi dung cho --mode compare')
+    if not 0 < args.gain_threshold < float('inf'):
+        p.error('--gain_threshold phai huu han va >0')
     return args
 
 
@@ -608,6 +628,406 @@ def inspect_teacher(args):
     log(f'Ket qua: {out_dir}')
 
 
+def read_compare_config(path, defaults):
+    import yaml
+    from core.config import _update_dict
+
+    snapshot = copy.deepcopy(defaults)
+    with open(path, encoding='utf-8-sig') as f:
+        values = yaml.safe_load(f)
+    if not isinstance(values, dict):
+        raise ValueError(f'YAML khong hop le: {path}')
+    # Moi YAML bat dau tu default, khong ke thua key cua model vua nap.
+    _update_dict(snapshot, values)
+    snapshot.DATASET.lift_only = False
+    snapshot.render = False
+    snapshot.vis = False
+    return snapshot
+
+
+@contextmanager
+def compare_config(snapshot):
+    # ARTS va dataset doc cfg toan cuc ca khi forward; phai khoi phuc sau moi luot.
+    previous = dict(cfg)
+    cfg.clear()
+    cfg.update(copy.deepcopy(snapshot))
+    try:
+        yield
+    finally:
+        cfg.clear()
+        cfg.update(previous)
+
+
+def summarize_compare(rows, args, out_dir, log):
+    n = len(rows)
+    errors = np.array([row['scratch_mpjpe'] for row in rows])
+    order = np.argsort(errors, kind='mergesort')
+    all_ids = np.arange(n)
+    groups = {'all': all_ids}
+    for q, ids in enumerate(np.array_split(order, 4), 1):
+        groups[f'Q{q}_scratch_error'] = ids
+        for i in ids:
+            rows[i]['scratch_error_quartile'] = q
+    hard = order[-max(1, int(np.ceil(n * 0.1))):]
+    hard_set = set(hard.tolist())
+    groups['hardest_10pct_scratch'] = hard
+    missing = np.array([row['missing_2d'] for row in rows])
+    for name, condition in (('missing_0', missing == 0), ('missing_1_4', (missing >= 1) & (missing <= 4)),
+                            ('missing_5_8', (missing >= 5) & (missing <= 8)), ('missing_9_17', missing >= 9)):
+        groups[name] = all_ids[condition]
+    opportunity = np.array([row['scratch_mpjpe'] - row['teacher_mpjpe'] > args.gain_threshold for row in rows])
+    groups['teacher_better_than_scratch'] = all_ids[opportunity]
+    groups['hard10_teacher_better'] = hard[opportunity[hard]]
+    groups['teacher_not_better_than_scratch'] = all_ids[~opportunity]
+    for i, row in enumerate(rows):
+        row['hardest_10pct_scratch'] = int(i in hard_set)
+        row['teacher_better_than_scratch'] = int(opportunity[i])
+    records = []
+    for name, ids in groups.items():
+        if not len(ids):
+            continue
+        record = {'group': name, 'n': len(ids)}
+        for metric in METRICS:
+            for model in ('scratch', 'kd', 'teacher'):
+                record[f'{model}_{metric}'] = float(np.mean([rows[i][f'{model}_{metric}'] for i in ids]))
+            gains = np.array([rows[i][f'gain_{metric}'] for i in ids])
+            record[f'gain_{metric}_mean'] = float(gains.mean())
+            record[f'gain_{metric}_median'] = float(np.median(gains))
+            record[f'gain_{metric}_p10'] = float(np.percentile(gains, 10))
+            record[f'gain_{metric}_p90'] = float(np.percentile(gains, 90))
+            record[f'improved_{metric}_pct'] = float(100 * np.mean(gains > args.gain_threshold))
+            record[f'worsened_{metric}_pct'] = float(100 * np.mean(gains < -args.gain_threshold))
+            record[f'within_threshold_{metric}_pct'] = float(100 * np.mean(np.abs(gains) <= args.gain_threshold))
+        records.append(record)
+        log(f'{name}: n={len(ids)} | MPJPE scratch={record["scratch_mpjpe"]:.3f} '
+            f'KD={record["kd_mpjpe"]:.3f} TeacherGT={record["teacher_mpjpe"]:.3f} | '
+            f'gain={record["gain_mpjpe_mean"]:+.3f}, median={record["gain_mpjpe_median"]:+.3f} mm | '
+            f'tot/xau >{args.gain_threshold:g}mm={record["improved_mpjpe_pct"]:.1f}%/'
+            f'{record["worsened_mpjpe_pct"]:.1f}%')
+    log('\nCac mau da eval: MPJPE14 / PA-MPJPE / MPVPE (mm)')
+    for model in ('scratch', 'kd', 'teacher'):
+        values = [records[0][f'{model}_{metric}'] for metric in METRICS]
+        log(f'{model:8s}: ' + ' / '.join(f'{value:.3f}' for value in values))
+    write_csv(out_dir / 'groups.csv', records)
+    return records, hard
+
+
+def select_compare_visuals(rows, hard, args, log):
+    if not args.num_vis:
+        return {}
+    selected = {}
+
+    def add(idx, label):
+        selected.setdefault(int(idx), []).append(label)
+
+    fixed = args.sample_ids if args.sample_ids is not None else ([2749, 8785, 17500] if args.set == '3dpw' else [])
+    for idx in sorted(set(fixed)):
+        if 0 <= idx < len(rows):
+            add(idx, 'fixed')
+        else:
+            log(f'Khong ve fixed sample {idx}: ngoai pham vi da eval ({len(rows)} mau)')
+    gains = np.array([row['gain_mpjpe'] for row in rows])
+    for idx in np.argsort(-gains, kind='mergesort')[:args.num_vis]:
+        if gains[idx] > args.gain_threshold:
+            add(idx, 'improved')
+    for idx in np.argsort(gains, kind='mergesort')[:args.num_vis]:
+        if gains[idx] < -args.gain_threshold:
+            add(idx, 'worsened')
+    rng = np.random.RandomState(args.seed)
+    for idx in rng.choice(hard, size=min(args.num_vis, len(hard)), replace=False):
+        add(idx, 'hard_random')
+    return selected
+
+
+def save_compare_visual(payload, ds, out_dir):
+    row, meshes, labels = payload['row'], payload['meshes'], payload['groups']
+    faces = np.asarray(ds.smpl.face, dtype=np.int64)
+    reg = np.asarray(ds.joint_regressor)
+    h36m_reg = np.asarray(ds.h36m_joint_regressor)
+    colors = {'gt': 'lightgray', 'scratch': 'darkorange', 'kd': 'steelblue', 'teacher': 'seagreen'}
+    names = ('gt', 'scratch', 'kd', 'teacher')
+    centered, poses = {}, {}
+    for name in names:
+        vertices = meshes[name]
+        centered[name] = (vertices - (reg @ vertices)[0:1]) * 1000
+        joints = h36m_reg @ vertices
+        poses[name] = (joints - joints[0:1]) * 1000
+    fig, axes = plt.subplots(3, 4, figsize=(17, 12))
+    image, xy = payload['image'], payload['xy']
+    valid = payload['mask'].reshape(-1) > 0
+    axes[0, 0].imshow(np.clip(image.transpose(1, 2, 0), 0, 1))
+    pixels = (xy[:, :2] + 1) / 2 * np.array([image.shape[2], image.shape[1]])
+    for joint, parent in BONES:
+        if valid[joint] and valid[parent]:
+            axes[0, 0].plot(pixels[[joint, parent], 0], pixels[[joint, parent], 1], color='lime', lw=1)
+    axes[0, 0].scatter(pixels[valid, 0], pixels[valid, 1], color='cyan', s=20)
+    axes[0, 0].set_title(f'Crop + detector; missing={row["missing_2d"]}/17')
+    axes[0, 0].axis('off')
+    for col, horizontal in ((1, 0), (2, 2)):
+        for name in names:
+            draw_skeleton(axes[0, col], poses[name], horizontal, 'black' if name == 'gt' else colors[name])
+        set_view(axes[0, col], list(poses.values()), horizontal)
+        axes[0, col].set_title('H36M17: GT black / scratch orange / KD blue / T green', fontsize=8)
+    axes[0, 3].axis('off')
+    text = ['MPJPE14 / PA / MPVPE (mm)']
+    for name in names[1:]:
+        text.append(f'{name}: ' + ' / '.join(f'{row[name + "_" + metric]:.2f}' for metric in METRICS))
+    text.extend([f'Gain scratch-KD: {row["gain_mpjpe"]:+.2f} mm',
+                 f'Scratch quartile: Q{row["scratch_error_quartile"]}',
+                 f'Hardest 10%: {bool(row["hardest_10pct_scratch"])}', 'Teacher uses GT 3D (oracle)'])
+    axes[0, 3].text(0, 1, '\n'.join(text), va='top', fontsize=9)
+    for r, horizontal in ((1, 0), (2, 2)):
+        for c, name in enumerate(names):
+            draw_mesh(axes[r, c], centered[name], faces, horizontal, colors[name])
+            set_view(axes[r, c], list(centered.values()), horizontal)
+            axes[r, c].set_title(name.upper() + (' front' if horizontal == 0 else ' side'))
+    fig.suptitle(f'Sample #{row["sample"]} | {", ".join(labels)} | ann_id={row["ann_id"]}\n'
+                 f'{row["img_path"]}\nOrthographic root-relative; not a camera overlay', fontsize=10)
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.savefig(out_dir / 'vis' / f'{row["sample"]:06d}_{"_".join(labels)}.png', dpi=140)
+    plt.close(fig)
+
+
+def plot_compare_overview(rows, groups, out_dir):
+    gains = np.array([row['gain_mpjpe'] for row in rows])
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
+    axes[0].hist(gains, bins=80)
+    axes[0].axvline(0, color='black', lw=1)
+    axes[0].set_xlabel('MPJPE gain scratch - KD (mm)')
+    axes[0].set_ylabel('Samples')
+    quartiles = [record for record in groups if record['group'].startswith('Q')]
+    x = np.arange(len(quartiles))
+    for model, shift, color in (('scratch', -0.25, 'darkorange'), ('kd', 0, 'steelblue'), ('teacher', 0.25, 'seagreen')):
+        axes[1].bar(x + shift, [record[f'{model}_mpjpe'] for record in quartiles], width=0.25, label=model, color=color)
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels([record['group'].split('_')[0] for record in quartiles])
+    axes[1].set_xlabel('Groups fixed by scratch error')
+    axes[1].set_ylabel('MPJPE14 (mm)')
+    axes[1].legend()
+    axes[2].hexbin([row['scratch_mpjpe'] for row in rows], gains, gridsize=45, mincnt=1, bins='log')
+    axes[2].axhline(0, color='black', lw=1)
+    axes[2].set_xlabel('Scratch MPJPE14 (mm)')
+    axes[2].set_ylabel('MPJPE gain scratch - KD (mm)')
+    fig.tight_layout()
+    fig.savefig(out_dir / 'overview.png', dpi=150)
+    plt.close(fig)
+
+
+def inspect_compare(args, defaults):
+    from types import SimpleNamespace
+    from torch.utils.data import DataLoader
+    from utils.jotr_dataset import get_test_dataset
+    from tqdm import tqdm
+
+    if not torch.cuda.is_available():
+        raise RuntimeError('Chay tren server GPU co CUDA')
+    paths = {'scratch': (args.baseline_cfg, args.baseline_ckpt), 'kd': (args.cfg, args.ckpt),
+             'teacher': (args.teacher_cfg, args.teacher_ckpt)}
+    for config_path, checkpoint_path in paths.values():
+        for path in (config_path, checkpoint_path):
+            if not Path(path).is_file():
+                raise FileNotFoundError(path)
+    configs = {name: read_compare_config(config_path, defaults) for name, (config_path, _) in paths.items()}
+    for name in ('scratch', 'kd'):
+        model_cfg = configs[name].MODEL
+        if (model_cfg.name != 'student' or model_cfg.pose_lifter != 'diffusion'
+                or not model_cfg.difflift_spread or model_cfg.difflift_steps != 1 or model_cfg.difflift_k != 1
+                or model_cfg.difflift_spread_k < 2 or model_cfg.difflift_select or model_cfg.student_hint
+                or not model_cfg.student_3d_rootrel or model_cfg.REFINER != 'hypergcn'):
+            raise ValueError(f'{name}: can Student spread S1/K1, root-relative, hypergcn, khong selector/hint')
+        if configs[name].DATASET.seqlen != 1 or configs[name].DATASET.use_gt_input:
+            raise ValueError(f'{name}: can image-based seqlen=1, detector input')
+    if any(configs[name].DATASET.input_joint_set != 'human36' or configs[name].DATASET.target_joint_set != 'human36'
+           for name in configs):
+        raise ValueError('Can joint set H36M-17 cho ca ba YAML')
+    if configs['scratch'].MODEL.student_use_kd or not configs['kd'].MODEL.student_use_kd:
+        raise ValueError('baseline_cfg phai la scratch khong KD; cfg phai la Student KD')
+    teacher_cfg = configs['teacher'].MODEL
+    if teacher_cfg.name != 'teacher' or teacher_cfg.teacher_hint or teacher_cfg.teacher_lift_alpha_max != 0:
+        raise ValueError('teacher_cfg phai la Teacher GT thuan, khong hint/tron lifter')
+    if teacher_cfg.REFINER != 'hypergcn':
+        raise ValueError('Chi ho tro Teacher GT hypergcn')
+    # Cung mot loader cho hai Student; tu choi neu YAML doi quy uoc dau vao.
+    ignored = {'train_list', 'test_list', 'workers'}
+    for key, value in configs['scratch'].DATASET.items():
+        if key not in ignored and value != configs['kd'].DATASET[key]:
+            raise ValueError(f'YAML Student khac DATASET.{key}; khong duoc so nhu cung dau vao')
+    for key in ('input_img_shape', 'output_hm_shape', 'focal', 'princpt', 'bbox_3d_size', 'camera_3d_size'):
+        if key in defaults and any(configs[name][key] != configs['scratch'][key] for name in ('kd', 'teacher')):
+            raise ValueError(f'YAML khac {key}; can cung crop/camera/evaluator')
+    for key in ('pw3d_2d_source', 'halpe26_conf_thr', 'input_joint_set', 'target_joint_set'):
+        if configs['teacher'].DATASET[key] != configs['scratch'].DATASET[key]:
+            raise ValueError(f'Teacher khac DATASET.{key}; can cung detector/PE2D')
+    for key in ('difflift_steps', 'difflift_k', 'difflift_spread_steps', 'difflift_spread_k'):
+        if configs['scratch'].MODEL[key] != configs['kd'].MODEL[key]:
+            raise ValueError(f'Hai Student khac MODEL.{key}')
+    batch_size = args.batch_size or int(configs['kd'].TEST.batch_size)
+    if batch_size < 1:
+        raise ValueError('batch_size phai >0')
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    device = torch.device('cuda')
+    stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    out_dir = Path(args.out_dir) if args.out_dir else Path(args.ckpt).parent / f'compare_scratch_kd_{args.set}_{stamp}'
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if any(out_dir.iterdir()):
+        raise FileExistsError(f'Thu muc khong rong: {out_dir}; chon thu muc moi')
+    lines = []
+
+    def log(message):
+        print(message, flush=True)
+        lines.append(message)
+        (out_dir / 'compare_log.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+    models, epochs = {}, {}
+    for name, (config_path, checkpoint_path) in paths.items():
+        mode = 'teacher' if name == 'teacher' else 'spread'
+        with compare_config(configs[name]):
+            models[name], epochs[name] = load_model(SimpleNamespace(mode=mode, ckpt=checkpoint_path), device)
+        (out_dir / f'{name}_config.yml').write_text(Path(config_path).read_text(encoding='utf-8-sig'), encoding='utf-8')
+        log(f'{name}: cfg={config_path} | ckpt={checkpoint_path} | epoch={epochs[name]} | '
+            f'train={list(configs[name].DATASET.train_list)} | select={configs[name].TEST.select_dataset}')
+    if args.expected_epoch is not None and epochs['kd'] != args.expected_epoch:
+        raise ValueError(f'KD checkpoint epoch={epochs["kd"]}, khong phai {args.expected_epoch}; kiem tra best.pth.tar')
+    log(f'Set={args.set} | batch_size={batch_size} | mot GPU | thu tu dataset co dinh | lifter seed=0')
+    log(f'Gain = scratch - KD, duong la KD tot hon; nguong mo ta {args.gain_threshold:g} mm.')
+    log('Teacher GT la oracle. Day la so hai run, con khac khoi tao/hard loss/lich LR; khong tach rieng tac dung loss KD.')
+    log('Khong chon checkpoint moi. Ket qua test da dung chon best chi la phan tich phat trien.')
+    log('Q1-Q4 va top10% xep hang theo MPJPE scratch; neu bang loi, giu thu tu sample. Khong phai nhom spread.')
+    rows = []
+    input_parity = {'pose_max_abs_m': 0.0, 'std_max_abs_m': 0.0, 'teacher_gt_max_error_mm': 0.0}
+    # Giu cfg scratch khi dataset/worker chay; moi forward duoc boc cfg rieng.
+    with compare_config(configs['scratch']):
+        ds = get_test_dataset(args.set, None)
+        if not len(ds):
+            raise ValueError('Dataset rong')
+        if args.sample_ids is not None and any(i < 0 or i >= len(ds) for i in args.sample_ids):
+            raise ValueError('--sample_ids chua chi so ngoai dataset')
+        reg = torch.as_tensor(ds.h36m_joint_regressor, device=device, dtype=torch.float32)
+
+        def run_batch(inputs, targets, offset):
+            image = inputs['img'].to(device).float()
+            p2 = inputs['joints'].to(device).float()
+            mask = inputs['joints_mask'].to(device).float()
+            cam = inputs['cam_bbox'].to(device).float()
+            target = targets['smpl_mesh_cam'].float()
+            gt = torch.matmul(reg[None], target.to(device))
+            gt = gt - gt[:, 0:1]
+            predictions, metrics, student_inputs = {}, {}, {}
+            with torch.no_grad():
+                for name in ('scratch', 'kd', 'teacher'):
+                    with compare_config(configs[name]):
+                        if name == 'teacher':
+                            result = models[name](image, gt, is_train=False, pose_2d=p2, joints_mask=mask)
+                            gt_error = float(torch.norm(result['teacher_input_joints'] - gt, dim=-1).max()) * 1000
+                            input_parity['teacher_gt_max_error_mm'] = max(input_parity['teacher_gt_max_error_mm'], gt_error)
+                            if not np.isfinite(gt_error) or gt_error > 0.001:
+                                raise RuntimeError('Teacher khong nhan dung GT 3D')
+                        else:
+                            result, cache = capture_real(models[name], image, p2, mask, cam)
+                            student_inputs[name] = (result['lifted_joints_3d'], cache['std'])
+                            del cache
+                        predictions[name] = result['smpl_mesh_cam'].cpu().numpy()
+                        del result
+                    metrics[name] = evaluate_mesh(ds, predictions[name], target.numpy(), offset)
+                    if (not np.isfinite(predictions[name]).all()
+                            or any(not np.isfinite(metrics[name][metric]).all() for metric in METRICS)):
+                        raise RuntimeError(f'NaN/Inf: {name}, offset={offset}')
+                for j, key in ((0, 'pose_max_abs_m'), (1, 'std_max_abs_m')):
+                    delta = float((student_inputs['scratch'][j] - student_inputs['kd'][j]).abs().max())
+                    input_parity[key] = max(input_parity[key], delta)
+                    if not np.isfinite(delta) or delta > 1e-6:
+                        raise RuntimeError(f'Hai Student khac dau vao {key}={delta}; kiem tra lifter/YAML/batch')
+                pose, std = student_inputs['scratch']
+                lift_error = torch.norm(pose - gt, dim=-1)[:, 1:].mean(-1).cpu().numpy() * 1000
+                spread = std[:, 1:].norm(dim=-1).mean(-1).cpu().numpy() * 1000
+            return predictions, metrics, target.numpy(), lift_error, spread
+
+        loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=args.workers,
+                            generator=torch.Generator().manual_seed(args.seed))
+        offset = 0
+        for bi, (inputs, targets, meta) in enumerate(tqdm(loader, desc=f'compare {args.set}')):
+            if args.max_batches and bi >= args.max_batches:
+                break
+            predictions, metrics, target, lift_error, spread = run_batch(inputs, targets, offset)
+            batch = len(target)
+            mask = inputs['joints_mask'].numpy().reshape(batch, 17)
+            for i in range(batch):
+                row = {'sample': offset + i, 'img_path': value_at(meta, 'img_path', i),
+                       'ann_id': value_at(meta, 'aid', i), 'dataset_idx': value_at(meta, 'idx', i),
+                       'missing_2d': int(np.sum(mask[i] <= 0)), 's1_mpjpe16_mm': float(lift_error[i]),
+                       'spread_mm': float(spread[i])}
+                if not row['img_path'] or str(row['ann_id']).strip() == '':
+                    raise RuntimeError('Dataset thieu img_path/ann_id de xac minh mau')
+                for name in ('scratch', 'kd', 'teacher'):
+                    for metric in METRICS:
+                        row[f'{name}_{metric}'] = float(metrics[name][metric][i])
+                for metric in METRICS:
+                    row[f'gain_{metric}'] = row[f'scratch_{metric}'] - row[f'kd_{metric}']
+                rows.append(row)
+            offset += batch
+            del predictions, metrics, target
+        if not rows:
+            raise ValueError('Khong co mau duoc eval')
+        log(f'\nDa eval {len(rows)}/{len(ds)} mau; '
+            + ('TOAN TAP' if len(rows) == len(ds) else 'TAP CON, khong coi la ket qua toan tap'))
+        log(f'Dau vao Student cung pose/std; sai khac max: {input_parity}')
+        groups, hard = summarize_compare(rows, args, out_dir, log)
+        selected = select_compare_visuals(rows, hard, args, log)
+        for row in rows:
+            row['visual_groups'] = '|'.join(selected.get(row['sample'], []))
+        write_csv(out_dir / 'samples.csv', rows)
+        summary = {'args': vars(args), 'epochs': epochs, 'n': len(rows), 'dataset_n': len(ds),
+                   'full_dataset': len(rows) == len(ds), 'input_parity': input_parity,
+                   'gain_definition': 'scratch - kd, mm; positive = KD better',
+                   'hard_group_definition': 'rank scratch MPJPE; top ceil(0.1*N); stable sample order for ties',
+                   'groups': groups, 'visual_samples': selected,
+                   'configs': {name: json.loads(json.dumps(config, default=str)) for name, config in configs.items()}}
+        summary['visuals_complete'] = not bool(args.num_vis)
+        summary['visual_replay_max_mm'] = 0.0
+        (out_dir / 'summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding='utf-8')
+        if args.num_vis:
+            global plt
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            plot_compare_overview(rows, groups, out_dir)
+            (out_dir / 'vis').mkdir()
+            # Nap LAI nguyen batch goc cho mau can ve; khong eval mau le lam doi nhieu DDIM.
+            batch_ids = sorted({idx // batch_size for idx in selected})
+            batches = [list(range(bi * batch_size, min((bi + 1) * batch_size, len(ds)))) for bi in batch_ids]
+            vis_loader = DataLoader(ds, batch_sampler=batches, num_workers=args.workers,
+                                    generator=torch.Generator().manual_seed(args.seed))
+            for bi, (inputs, targets, meta) in zip(batch_ids, tqdm(vis_loader, desc='compare visuals')):
+                batch_offset = bi * batch_size
+                predictions, metrics, target, _, _ = run_batch(inputs, targets, batch_offset)
+                for i in range(len(target)):
+                    idx = batch_offset + i
+                    if idx not in selected:
+                        continue
+                    verify_spread_reference({idx: rows[idx]}, idx, value_at(meta, 'img_path', i), value_at(meta, 'aid', i))
+                    for name in ('scratch', 'kd', 'teacher'):
+                        for metric in METRICS:
+                            replay_delta = abs(float(metrics[name][metric][i]) - rows[idx][f'{name}_{metric}'])
+                            summary['visual_replay_max_mm'] = max(summary['visual_replay_max_mm'], replay_delta)
+                            if replay_delta > 0.01:
+                                raise RuntimeError(f'Visual replay khac luot eval: sample={idx}, {name}/{metric}')
+                    payload = {'row': rows[idx], 'groups': selected[idx], 'image': inputs['img'][i].numpy(),
+                               'xy': inputs['joints'][i].numpy(), 'mask': inputs['joints_mask'][i].numpy(),
+                               'meshes': {name: predictions[name][i] for name in predictions}}
+                    payload['meshes']['gt'] = target[i]
+                    save_compare_visual(payload, ds, out_dir)
+            log(f'Da ve {len(selected)} mau; replay metric lech toi da cho phep 0.01mm; xem vis/ va overview.png')
+    summary['visuals_complete'] = True
+    (out_dir / 'summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding='utf-8')
+    log('Cac nhom kho duoc chon bang loi scratch tren tap dang phan tich; khong dung de tinh chinh tren test.')
+    log('Gain trung binh cua mot run khong chung minh y nghia thong ke; cac frame cung video co tuong quan.')
+    log(f'Ket qua: {out_dir}')
+
+
 def main():
     args = parse_args()
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -623,10 +1043,14 @@ def main():
     from models.diff_lifter import H36M_PARENTS
     from tqdm import tqdm
 
+    defaults = copy.deepcopy(cfg) if args.mode == 'compare' else None
     update_config(args.cfg)
     JOINT_NAMES = list(HUMAN36M_JOINTS)
     BONES = [(j, p) for j, p in enumerate(H36M_PARENTS) if p >= 0]
     METRICS = ('mpjpe', 'pa_mpjpe', 'mpvpe')
+    if args.mode == 'compare':
+        inspect_compare(args, defaults)
+        return
     if args.mode == 'teacher':
         inspect_teacher(args)
         return

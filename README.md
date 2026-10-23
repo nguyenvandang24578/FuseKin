@@ -139,4 +139,36 @@ Teacher nhận **GT mesh → H36M-17 → trừ pelvis → mét**, không qua lif
 python main/train.py --cfg config/train_student_kd_e1_v2_diff_spread.yml --exp_name student_kd_e1_v2_diff_spread --seed 123 --gpu 0
 ```
 
-Chạy từ gốc repo trên server, với lifter `experiment/finetune_difflifter_r25_cam/best_epoch.bin` và Teacher `experiment/teacher_gt_v2/checkpoint/best.pth.tar` đúng kiến trúc. Run mới khởi tạo phần `smpl_model` từ Teacher như E1, không tiếp tục checkpoint Student spread cũ. Kết quả sẽ nằm trong `experiment/student_kd_e1_v2_diff_spread/`; không tạo trước thư mục kết quả vì trainer quản lý run mới. YAML vẫn chọn best trên 3DPW test để giữ giao thức đối chứng hiện có; đây là thí nghiệm phát triển. Mới chuẩn bị cấu hình, chưa chạy xác nhận.
+Chạy từ gốc repo trên server, với lifter `experiment/finetune_difflifter_r25_cam/best_epoch.bin` và Teacher `experiment/teacher_gt_v2/checkpoint/best.pth.tar` đúng kiến trúc. Run mới khởi tạo phần `smpl_model` từ Teacher như E1, không tiếp tục checkpoint Student spread cũ. Kết quả sẽ nằm trong `experiment/student_kd_e1_v2_diff_spread/`; không tạo trước thư mục kết quả vì trainer quản lý run mới. YAML vẫn chọn best trên 3DPW test để giữ giao thức đối chứng hiện có; đây là thí nghiệm phát triển. Người dùng đã gửi log KD epoch 14–22; mốc thấp nhất trong đoạn là epoch 18: 76.76 / 93.57 mm. Chưa có kết quả đánh giá ghép cặp; xem mục 11–12 của experiment.md.
+
+## So sánh scratch và KD trên cùng mẫu
+
+Đã rà `main/compare_students.py` (metric tổng nhiều Student), `compare_teacher_student.py` (feature Teacher/Student), `diagnose_kd.py` (T-hint), `kd_feature_analysis.py` và `compare_checkpoint_drift.py`. Các đường phân tích cũ chưa đủ cho phép so spread + DiffLifter + Teacher GT này. Mở rộng **script có sẵn** `main/inspect_student_spread.py --mode compare`, dùng lại strict loader, capture spread, `dataset.evaluate` và hàm vẽ mesh; không tạo file Python mới.
+
+Ví dụ theo tên run đã chuẩn bị; thay đường dẫn nếu run thực tế có tên khác. Ưu tiên YAML sao lưu trong chính run khi local đã thay lịch train. `--cfg/--ckpt` là KD, `--baseline_*` là scratch spread, `--teacher_*` là Teacher GT đúng checkpoint:
+
+```bash
+python main/inspect_student_spread.py --mode compare \
+  --cfg config/train_student_kd_e1_v2_diff_spread.yml \
+  --ckpt experiment/student_kd_e1_v2_diff_spread/checkpoint/best.pth.tar \
+  --baseline_cfg config/train_student_v2_diff_spread.yml \
+  --baseline_ckpt experiment/student_v2_diff_spread/checkpoint/best.pth.tar \
+  --teacher_cfg config/train_teacher_k16_v2.yml \
+  --teacher_ckpt experiment/teacher_gt_v2/checkpoint/best.pth.tar \
+  --set 3dpw --gpu 0 --batch_size 32 --workers 0 --num_vis 4 \
+  --sample_ids 2749 8785 17500 --expected_epoch 18
+```
+
+`--expected_epoch 18` dừng nếu best KD không phải epoch 18; kiểm tra checkpoint thực tế trước khi kết luận. Bỏ cờ này nếu muốn chỉ in epoch đã lưu mà không ép bằng 18. Không dùng `last.pth.tar` thay best. Mặc định eval toàn split; thêm `--max_batches 10 --num_vis 0` để kiểm tra trên tập con trước, rồi bỏ `--max_batches` để đo toàn tập. `--sample_ids` trong mode compare **chỉ chọn thêm hình**, không giới hạn tập đánh giá. `--num_vis 0` bỏ toàn bộ hình/matplotlib. Giữ một GPU và batch 32 để đối chiếu run cũ.
+
+Script chạy cả scratch, KD và Teacher GT trên cùng batch; mỗi model dùng YAML riêng từ cùng bộ default, không kế thừa key của YAML trước. Kiểm tra pose S1 và std hai Student khớp trong 1e-6 mét; Teacher nhận GT H36M-17 từ mesh, root-relative, mét. Tính metric mesh 14 khớp bằng evaluator hiện có. Khi vẽ, nạp lại **nguyên batch gốc** của mẫu được chọn để giữ nhiễu DDIM; kiểm tra metric replay lệch không quá 0.01 mm. Ba model ở trên cùng GPU; không giảm batch để tránh OOM rồi so trực tiếp với log batch khác.
+
+Kết quả mới cạnh checkpoint KD: `compare_scratch_kd_3dpw_<timestamp>/`, gồm:
+
+- `compare_log.txt`, `summary.json`: epoch, YAML, số mẫu, kiểm tra đầu vào, metric và trạng thái vẽ.
+- `samples.csv`: identity ảnh/ann_id/index, metric từng model và gain `scratch - KD` (dương = KD tốt hơn).
+- `groups.csv`: toàn tập, Q1–Q4 theo lỗi scratch, 10% lỗi scratch cao nhất, số keypoint thiếu và nhóm Teacher tốt hơn scratch; mean/median gain, phân vị 10/90 và tỷ lệ tốt/xấu hơn 1 mm cho cả ba metric.
+- `overview.png`, `vis/`: histogram gain, nhóm lỗi scratch, hình GT/scratch/KD/Teacher cùng góc nhìn trước/ngang; mẫu cố định, tốt/xấu nhiều và ngẫu nhiên trong nhóm khó. Không lưu mesh toàn dataset trong RAM.
+- Ba YAML sao lưu theo vai trò scratch/KD/Teacher.
+
+Nhóm khó cố định theo MPJPE scratch, top 10% lấy `ceil(0.1*N)`, bằng lỗi thì giữ thứ tự sample. Ngưỡng 1 mm là mô tả, không phải kiểm định thống kê. Teacher dùng GT là phép đo oracle. Đây là so hai run còn khác khởi tạo, hard loss và lịch LR; không quy toàn bộ gain cho riêng loss KD hoặc chọn/tinh chỉnh theo test. Mode mới đã code/đọc lại diff, **chưa chạy trên server**.
