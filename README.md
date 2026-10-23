@@ -2,7 +2,7 @@
 
 Dự án nghiên cứu khôi phục mesh người từ một ảnh: kết hợp đặc trưng ảnh với pose 3D được nâng từ keypoint 2D. Hướng đang phát triển là **DiffLifter đa giả thuyết + Student v2**.
 
-Cập nhật: **2026-10-22**, đối chiếu với source và cấu hình local. Trạng thái train trên server lấy từ thông tin người dùng cung cấp.
+Cập nhật: **2026-10-23**, đối chiếu với source và cấu hình local. Trạng thái train trên server lấy từ thông tin người dùng cung cấp.
 
 ## Tài liệu
 
@@ -26,7 +26,7 @@ Teacher/KD, MotionBERT và PMCE vẫn có trong source để đối chiếu. Ch�
 ## Trạng thái hiện tại
 
 - `train_student_v2_diff_aug.yml`: người dùng đang train trên server; chưa có kết quả cuối được cung cấp.
-- `finetune_difflifter_r25_cam_gcn_attn.yaml`: đã thêm denoiser GCN + attention song song; chưa chạy train/test.
+- GCN + attention song song: đã đối chiếu best epoch 6 với attention baseline tại S=1/K=1; chỉ H36M giảm lỗi, 3DPW/OC/PC tăng. Giữ `r25_cam` làm mốc chính; bảng số ở mục 5 của `experiment.md`.
 - Prior nhiễu có điều kiện từ SimCC/GMM: tạm hoãn. Code probe SimCC được giữ để nghiên cứu sau.
 - Các YAML Student diffusion đang dùng (`diff`, `diff_aug`, `diff_sel`) hiện chọn best trên **3DPW test**, dù một số comment còn ghi val. Lifter chọn best theo `3dpw-val`; chi tiết trong [bối cảnh dự án](01_PROJECT_CONTEXT.md#6-giao-thức-và-chọn-checkpoint).
 

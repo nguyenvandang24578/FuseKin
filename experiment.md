@@ -1,6 +1,6 @@
 # FuseKin — kết quả và tiến độ thí nghiệm
 
-Cập nhật **2026-10-22**. Số bên dưới lấy từ kết quả người dùng đã cung cấp trong trao đổi và tài liệu lịch sử của dự án; không phải các phép đo vừa được chạy lại. Chưa có đủ đường dẫn checkpoint/seed/epoch cho mọi số, nên không tự gán thêm.
+Cập nhật **2026-10-23**. Số bên dưới lấy từ kết quả người dùng đã cung cấp trong trao đổi và tài liệu lịch sử của dự án; không phải các phép đo vừa được chạy lại. Chưa có đủ đường dẫn checkpoint/seed/epoch cho mọi số, nên không tự gán thêm.
 
 Kiến trúc và giao thức hiện tại: [01_PROJECT_CONTEXT.md](01_PROJECT_CONTEXT.md). Lệnh chạy: [README.md](README.md).
 
@@ -13,7 +13,7 @@ Kiến trúc và giao thức hiện tại: [01_PROJECT_CONTEXT.md](01_PROJECT_CO
 | Selector theo khớp bằng ảnh | `train_student_v2_diff_sel.yml` | Có kết quả: pose tốt hơn nhưng mesh chưa tốt hơn; xem mục 3 |
 | Augmentation bằng pose diffusion | `train_student_v2_diff_aug.yml` | **Đang train trên server theo người dùng**; chưa có kết quả cuối |
 | Spread vào fusion | `train_student_v2_diff_spread.yml` | Có code/YAML; chưa có kết quả được xác nhận trong đợt cập nhật này |
-| GCN + attention song song | `finetune_difflifter_r25_cam_gcn_attn.yaml` | **Đã code, đọc lại source; chưa chạy train/test** |
+| GCN + attention song song | `finetune_difflifter_r25_cam_gcn_attn.yaml` | Đã đối chiếu hai best checkpoint epoch 6, S=1/K=1: chỉ H36M giảm lỗi, 3DPW/OC/PC tăng; chưa thay baseline, xem mục 5 |
 | Prior SimCC/GMM | `probe_halpe26_simcc*.yaml` | Đã probe 32 người tập val; **tạm hoãn** phát triển prior |
 | Teacher / KD / hint | Các YAML Teacher/KD hiện có | Hướng phụ, hạ ưu tiên; không tiếp tục thêm biến thể nếu chưa có lý do mới |
 
@@ -75,11 +75,33 @@ Thay đổi duy nhất về thiết kế thí nghiệm: bật `DIFFLIFT.gcn_attn
 
 Thư mục mới: `experiment/finetune_difflifter_r25_cam_gcn_attn/`; train từ đầu, đánh giá **`best_epoch.bin`** theo `3dpw-val`. Nhiều tham số hơn baseline, nên đây chưa phải ablation cân bằng số tham số.
 
-Khi người dùng chạy xong:
+### Đối chứng người dùng gửi ngày 2026-10-23
 
-1. So MPJPE/PA-MPJPE 17 khớp của baseline và bản mới với cùng S/K trên 3DPW và H36M.
-2. Dùng `inspect_difflifter.py` xem lỗi chiều sâu, xoay toàn thân, độ đa dạng và oracle; không chỉ nhìn lỗi trung bình.
-3. Khi có bằng chứng lifter cải thiện mới lập thí nghiệm Student riêng. Các YAML Student đang có vẫn trỏ checkpoint `r25_cam`, không tự chuyển sang GCN.
+Hai bảng tổng kết được gửi sau hướng dẫn chạy `main/eval_difflifter_3dpw.py`. Header xác nhận cả hai dùng **best checkpoint epoch 6, S=1, K=1**; số mẫu từng tập trùng nhau:
+
+- Attention baseline: `experiment/finetune_difflifter_r25_cam/best_epoch.bin`.
+- GCN + attention: `experiment/finetune_difflifter_r25_cam_gcn_attn/best_epoch.bin`.
+
+| Tập | Số mẫu | Attention | GCN + attention | Chênh GCN − baseline |
+|---|---:|---:|---:|---:|
+| 3DPW test | 35,515 | 72.18 | 73.70 | +1.52 |
+| Human36M test | 2,181 | 62.46 | 61.82 | -0.64 |
+| 3DPW-OC | 20,243 | 82.14 | 82.30 | +0.16 |
+| 3DPW-PC | 2,218 | 93.87 | 96.23 | +2.36 |
+
+MPJPE lifter H36M-17 root-relative, mm; thấp hơn tốt hơn. Lệnh đã hướng dẫn dùng cùng batch=512/seed eval=0; các header không in hai tham số này hoặc seed train, nên chưa xác nhận độc lập và chưa có kết quả nhiều seed.
+
+**Kết luận cho hai run đã đo:** GCN + attention chưa cải thiện so với attention baseline ở S=1/K=1; H36M giảm 0.64 mm nhưng 3DPW tăng 1.52 mm, PC tăng 2.36 mm; OC tăng nhẹ 0.16 mm. Giữ `r25_cam` làm mốc chính và lifter của Student. Chưa có bằng chứng để chuyển FuseKin sang checkpoint GCN hoặc quy kết GCN nói chung không phù hợp.
+
+Log test ban đầu của bản GCN có PA-MPJPE 3DPW/H36M/OC/PC lần lượt **50.21 / 47.93 / 54.47 / 60.87 mm**; MPJPE H36M khi đó là 61.81 mm. Dùng 61.82 mm của evaluator đối chứng trong bảng trên; không tự suy nguyên nhân chênh 0.01 mm khi chưa đối chiếu chi tiết evaluator. Chưa có PA-MPJPE baseline trong cặp log mới.
+
+Với K=1, min-K bằng MPJPE là điều hiển nhiên. Chất lượng đa giả thuyết, spread và oracle của hai backbone chưa được so sánh. Mốc 72.1 mm cũ ở mục 2 không thay thế mốc baseline trực tiếp 72.18 mm mới xác nhận.
+
+Bước tiếp theo:
+
+1. Nếu tiếp tục xét GCN cho mục tiêu đa giả thuyết, so cùng S=5/K=20 và oracle trên hai checkpoint; dùng `inspect_difflifter.py` để phân tích sâu hơn.
+2. Hướng conditioning từng block (adaLN) đã được trao đổi, chưa code/chưa được duyệt triển khai. Nếu kiểm tra tác dụng độc lập của conditioning, dùng attention baseline làm đối chứng trước; không mặc định GCN là backbone tốt hơn.
+3. Chỉ lập thí nghiệm Student riêng khi có bằng chứng cải thiện phù hợp mục tiêu. Các YAML Student vẫn trỏ checkpoint `r25_cam`, không tự chuyển sang GCN.
 
 ## 6. SimCC — kết quả giữ lại để nghiên cứu sau
 

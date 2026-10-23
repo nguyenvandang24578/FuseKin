@@ -62,6 +62,9 @@ def parse_args():
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--num_vis', type=int, default=4, help='so mau moi nhom (spread cao / score thap / ngau nhien)')
     p.add_argument('--K_vis', type=int, default=30, help='so gia thuyet khi VE (nhieu hon de thay phan phoi)')
+    p.add_argument('--S', type=int, default=5, help='so buoc DDIM cho so lieu + hinh (checkpoint moi luu S=1 -> '
+                                                     'gia thuyet gan trung nhau, khong thay phan phoi)')
+    p.add_argument('--K', type=int, default=5, help='so gia thuyet cho so lieu (muc 4, 5 can K > 1)')
     p.add_argument('--out_dir', default='', help='mac dinh <thu muc ckpt>/inspect_<set>')
     return p.parse_args()
 
@@ -213,6 +216,7 @@ def main():
 
     ckpt = torch.load(args.ckpt, map_location=device)
     model = build_model(ckpt, device)
+    model.sampling_timesteps, model.num_proposals = args.S, args.K   # ghi de sampler luu trong checkpoint
     log(f'ckpt={args.ckpt}')
     log(f'difflift_cfg={ckpt["difflift_cfg"]}')
     log(f'soft_conf (cfg)={cfg.DATASET.lift_soft_conf} | S={model.sampling_timesteps} | K={model.num_proposals}')
@@ -326,7 +330,7 @@ def main():
         if gname == 'ngau_nhien':
             # Quy dao DDIM: x0 du doan o tung buoc (nhin ngang), 2 mau dau
             S = len(x0s)
-            fig, axes = plt.subplots(2, S, figsize=(3.6 * S, 7))
+            fig, axes = plt.subplots(2, S, figsize=(3.6 * S, 7), squeeze=False)
             for r in range(min(2, len(idxs))):
                 for k in range(S):
                     h = (x0s[k][r] - x0s[k][r][:, :1]).cpu().numpy()

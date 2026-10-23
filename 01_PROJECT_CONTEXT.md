@@ -1,13 +1,13 @@
 # FuseKin — bối cảnh kỹ thuật hiện tại
 
-Cập nhật **2026-10-22**. Nội dung kỹ thuật đối chiếu với code/YAML local; đây không phải xác nhận trạng thái môi trường hoặc file trên server. Kết quả và tiến độ nằm trong [experiment.md](experiment.md), lệnh thường dùng trong [README.md](README.md).
+Cập nhật **2026-10-23**. Nội dung kỹ thuật đối chiếu với code/YAML local; đây không phải xác nhận trạng thái môi trường hoặc file trên server. Kết quả và tiến độ nằm trong [experiment.md](experiment.md), lệnh thường dùng trong [README.md](README.md).
 
 ## 1. Phạm vi và hướng đang làm
 
 - Bài toán hiện tại: **image-based**, một ảnh, `seqlen: 1`.
 - Hai phần được train riêng: lifter 2D→3D; Student kết hợp ảnh + pose để dự đoán mesh.
 - Lifter đang dùng trong các YAML Student diffusion: `r25_cam`, đóng băng, checkpoint `experiment/finetune_difflifter_r25_cam/best_epoch.bin`.
-- Người dùng đang train Student augmentation; thí nghiệm mới kế tiếp là đổi denoiser sang GCN + attention song song.
+- Người dùng đang train Student augmentation; GCN + attention đã đối chiếu với attention baseline ngày 23/10: cùng best epoch 6, S=1/K=1; chỉ H36M giảm lỗi, 3DPW/OC/PC tăng. Giữ `r25_cam` làm mốc chính.
 - Selector đã có trong code nhưng chưa chứng minh được lợi ích trên mesh. KD/hint hạ ưu tiên; khởi tạo nhiễu SimCC/GMM tạm hoãn.
 
 ## 2. Student v2 và tích hợp DiffLifter
@@ -62,7 +62,7 @@ Trong wrapper FuseKin, inference thường dùng generator seed 0; train selecto
 
 `SkeletonGCN`: liên kết xương H36M-17 hai chiều + self-loop, chuẩn hóa đối xứng `D^(-1/2) A D^(-1/2)`, Linear và ReLU. Adjacency cố định, là buffer không persistent và không tham gia EMA.
 
-Đây là bản áp dụng ý tưởng hai nhánh của FMPose3D, không phải sao chép toàn bộ model. Vẫn dự đoán `x0` bằng diffusion/DDIM. D=256, depth=8, dữ liệu, loss và lịch train giữ như `r25_cam`; số tham số tăng do thêm GCN/fusion. Thí nghiệm train từ đầu, chưa chạy kiểm chứng.
+Đây là bản áp dụng ý tưởng hai nhánh của FMPose3D, không phải sao chép toàn bộ model. Vẫn dự đoán `x0` bằng diffusion/DDIM. D=256, depth=8, dữ liệu, loss và lịch train giữ như `r25_cam`; số tham số tăng do thêm GCN/fusion. Ngày 23/10 người dùng đã gửi cặp kết quả hai best checkpoint epoch 6, S=1/K=1: GCN + attention chưa cải thiện tổng thể; bảng đối chứng ở mục 5 của `experiment.md`.
 
 Các cờ cũ `cond_mode`, `conf_attn`, `skel_attn`, `mask_token`, `self_cond`, `cam_cond`, `aggregate` không còn là API của model/config hiện tại. JPMA chỉ còn là phép phân tích trong `main/diag_difflifter.py`. `config/diag_ocpc_clean.yaml` vẫn chứa key cũ, không dùng làm lệnh mẫu với config hiện tại.
 
