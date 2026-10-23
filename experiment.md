@@ -210,3 +210,17 @@ Biểu đồ image(5): phân phối MPJPE off-real tập trung gần 0, có đu�
 Các hình củng cố kết luận nhánh cộng std hiện chỉ gây điều chỉnh nhỏ ở nhiều mẫu, chưa cho thấy khả năng sửa các ca sai lớn. `missing=0` chỉ nói mask hợp lệ, không chứng minh detector đúng hoặc 3D không còn mơ hồ. Các pose nhìn trước/ngang đều root-relative; không coi chúng là overlay camera lên ảnh.
 
 Bước chẩn đoán đề xuất tiếp theo là đo oracle/min-K theo từng mẫu xấu (GT chỉ dùng phân tích) để tách: K có chứa pose hợp GT mà fusion chưa dùng, hay cả nhóm giả thuyết đã sai theo đầu vào 2D. Ba giá trị std mất thông tin hướng sửa và cấu trúc từng nghiệm; thêm gate không tự tạo được nghiệm đúng khi cả K đều sai. Chưa code hoặc chạy phép min-K theo các ID này, chưa đổi kiến trúc hay mở run mới.
+
+## 10. Kiểm tra Teacher GT trên các mẫu khó - đã code, chờ chạy
+
+Người dùng chuyển ưu tiên sang kiểm tra Teacher đang dùng cho KD trước khi đổi fusion đa giả thuyết. Chưa duyệt/chưa triển khai fusion K=5 hoặc gate. Chưa có kết quả Teacher mới.
+
+`main/inspect_student_spread.py --mode teacher` dùng YAML/checkpoint Teacher GT thuần (không T-hint, không trộn lifter); hỗ trợ `--sample_ids 2749 8785 17500` để kiểm tra đúng ba mẫu đã xem. `--spread_csv` đọc CSV spread đã chạy để xác minh sequence/frame và ann_id của từng mẫu, đồng thời in metric Student real/off/shuffle đã lưu. Không suy vị trí mẫu từ ann_id. Chế độ chọn tập con gọi evaluator theo index dataset gốc, không dùng offset liên tiếp của Subset để tránh so sai annotation.
+
+GT 3D lấy từ GT mesh qua H36M regressor, root-relative tại pelvis, mét, giống evaluator Teacher hiện có. Đối chiếu `result['teacher_input_joints']` với GT trước khi báo số; không lifter hoặc corruption GT khi eval. PE2D giữ detector Halpe/mask như run train vì GT input của Teacher là **3D**, không tự biến PE thành GT 2D.
+
+Xuất MPJPE/PA-MPJPE/MPVPE mesh bằng `dataset.evaluate` (14 khớp), CSV từng mẫu và hình Teacher/GT trước-ngang. Chẩn đoán khớp/biểu đồ trong hình dùng H36M-17 bỏ pelvis và được ghi rõ. Có thể bỏ `--sample_ids` để chạy toàn tập, lưu hình nhóm Teacher worst/best/random; chỉ số tổng kết khi chọn ba mẫu được ghi rõ là tập con. Lệnh cụ thể ở README.
+
+YAML `config/train_student_kd_e1_v2_diff.yml` đang trỏ Teacher tới `experiment/teacher_gt_v2/checkpoint/best.pth.tar`; source Teacher GT là `config/train_teacher_k16_v2.yml` (teacher_hint=False, teacher_lift_alpha_max=0, train corruption=0.3 chỉ áp dụng khi train; img_probe=True). Đường dẫn là giá trị đọc từ YAML local, chưa xác nhận file trên server hoặc YAML thật của checkpoint người dùng. Nạp strict sẽ báo lỗi nếu checkpoint/YAML không khớp. Alias lịch sử teacher_model→smpl_model được đổi tên trước khi strict load, không lọc sai shape hoặc bỏ backbone.
+
+Câu hỏi: với GT 3D đúng, Teacher có tái tạo được ca guitar/chạy/trong xe không? Teacher tốt cho thấy pose sạch có thể hỗ trợ đường Teacher, chưa đảm bảo Student sẽ học được qua KD. Teacher vẫn sai cần xét đường GT17→mesh, fusion/head, ảnh và PE2D; chưa thể quy riêng lỗi cho ảnh. Đây là chẩn đoán oracle dùng GT, vẫn thuộc giao thức chọn best theo 3DPW test của YAML hiện có.

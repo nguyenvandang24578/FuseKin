@@ -1,4 +1,4 @@
-"""Chan doan spread cua Student tren cung checkpoint, chi suy luan.
+"""Chan doan Student spread hoac Teacher GT tren cac mau kho, chi suy luan.
 
 Chay tu goc repo, voi YAML da train checkpoint spread:
     python main/inspect_student_spread.py --cfg config/train_student_v2_diff_spread.yml \
@@ -7,6 +7,9 @@ Chay tu goc repo, voi YAML da train checkpoint spread:
 Khong sua model/YAML, khong train. real di qua forward_student; off va shuffle
 dung lai pose S=1, feature anh va PE2D cua real. off bo CA embedding (ke ca bias).
 Mesh dung dataset.evaluate (14 khop); chan doan lifter dung H36M-17, bo pelvis.
+Them --mode teacher voi --cfg/--ckpt cua Teacher GT de kiem tra anh + GT 3D.
+--sample_ids la chi so sample 0-based cua cung split; --spread_csv xac minh
+ann_id/anh va in metric Student cu tren dung mau. Mac dinh van la spread.
 """
 import argparse
 import csv
@@ -24,7 +27,8 @@ for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description='Kiem tra tac dung spread len mesh, khong train')
+    p = argparse.ArgumentParser(description='Chan doan Student spread hoac Teacher GT, khong train')
+    p.add_argument('--mode', choices=['spread', 'teacher'], default='spread')
     p.add_argument('--cfg', required=True)
     p.add_argument('--ckpt', required=True)
     p.add_argument('--gpu', default='0', help='mot GPU, giong cau hinh eval batch=32')
@@ -33,11 +37,18 @@ def parse_args():
     p.add_argument('--workers', type=int, default=0)
     p.add_argument('--max_batches', type=int, default=0, help='0: toan tap; >0: chi chan doan tap con')
     p.add_argument('--seed', type=int, default=0, help='chon donor shuffle va mau ngau nhien; lifter giu seed eval=0')
-    p.add_argument('--num_vis', type=int, default=4, help='so mau moi nhom: improved, worsened, random; 0: bo hinh')
+    p.add_argument('--num_vis', type=int, default=4,
+                   help='so mau moi nhom: improved/worsened/random; teacher: worst/best/random; 0: bo hinh')
     p.add_argument('--out_dir', default='', help='mac dinh tao thu muc moi canh checkpoint')
+    p.add_argument('--sample_ids', type=int, nargs='+', default=None,
+                   help='chi cho mode teacher: chi danh gia cac chi so sample 0-based nay')
+    p.add_argument('--spread_csv', default='',
+                   help='chi cho mode teacher: samples.csv cua spread, xac minh dung anh/ann_id va so metric')
     args = p.parse_args()
     if ',' in args.gpu or args.batch_size < 0 or args.workers < 0 or args.max_batches < 0 or args.num_vis < 0:
         p.error('Dung mot GPU; cac so luong phai >= 0')
+    if args.mode != 'teacher' and (args.sample_ids is not None or args.spread_csv):
+        p.error('--sample_ids/--spread_csv chi dung cho --mode teacher')
     return args
 
 
@@ -86,17 +97,19 @@ def value_at(meta, key, i, default=''):
 
 class VisualPool:
     # Chi giu toi da 3*num_vis mau, khong luu mesh cua ca dataset trong RAM.
-    def __init__(self, count, seed):
+    def __init__(self, count, seed, groups=None):
         self.count = count
         self.rng = np.random.RandomState(seed)
-        self.groups = {'improved': [], 'worsened': [], 'random': []}
+        self.groups = {name: [] for name in (groups or ('improved', 'worsened', 'random'))}
         self.payloads = {}
 
-    def consider(self, sample_id, gain, make_payload):
+    def consider(self, sample_id, gain, make_payload, scores=None):
         if not self.count:
             return
         candidates = {'random': float(self.rng.random_sample())}
-        if gain > 0:
+        if scores is not None:
+            candidates.update(scores)
+        elif gain > 0:
             candidates['improved'] = float(gain)
         elif gain < 0:
             candidates['worsened'] = float(-gain)
@@ -120,10 +133,17 @@ def load_model(args, device):
 
     ckpt = torch.load(args.ckpt, map_location='cpu', pickle_module=_PickleShim, weights_only=False)
     if not isinstance(ckpt, dict) or 'model_state_dict' not in ckpt:
-        raise ValueError('Can checkpoint Student co model_state_dict')
+        raise ValueError('Can checkpoint Teacher/Student co model_state_dict')
     state = {(k[7:] if k.startswith('module.') else k): v for k, v in ckpt['model_state_dict'].items()}
-    if 'spread_proj.weight' not in state or 'spread_proj.bias' not in state:
+    if args.mode == 'spread' and ('spread_proj.weight' not in state or 'spread_proj.bias' not in state):
         raise ValueError('Checkpoint khong co spread_proj da train; khong duoc dung baseline de gia lap spread')
+    if args.mode == 'teacher':
+        # Alias checkpoint cu da duoc ho tro trong core.base; van nap strict sau khi doi ten.
+        old_prefix = 'teacher_model.'
+        state = {('smpl_model.' + k[len(old_prefix):] if k.startswith(old_prefix) else k): v
+                 for k, v in state.items()}
+        if 'smpl_model.fusion.joint_proj.weight' not in state:
+            raise ValueError('Can checkpoint Teacher GT thuan, khong phai Student hoac T-hint')
     model = ARTS(num_joint=17, embed_dim=cfg.MODEL.hpe_dim).to(device)
     # Chi ho tro checkpoint khop chinh xac YAML, khong loc key sai shape/thieu backbone.
     model.load_state_dict(state, strict=True)
@@ -352,6 +372,242 @@ def save_visuals(pool, ds, out_dir, log):
     log(f'Da luu {len(pool.payloads)} hinh (mau trung nhom chi luu mot lan) vao {vis_dir}')
 
 
+def read_spread_reference(path):
+    if not path:
+        return {}
+    with open(path, encoding='utf-8-sig', newline='') as f:
+        reader = csv.DictReader(f)
+        required = {'sample', 'img_path', 'ann_id', 'real_mpjpe', 'real_pa_mpjpe', 'real_mpvpe'}
+        if not required.issubset(reader.fieldnames or []):
+            raise ValueError('spread_csv phai la samples.csv do inspector spread tao')
+        rows = {}
+        for row in reader:
+            idx = int(row['sample'])
+            if idx in rows:
+                raise ValueError(f'spread_csv co sample trung: {idx}')
+            rows[idx] = row
+    return rows
+
+
+def verify_spread_reference(reference, sample_id, img_path, ann_id):
+    if sample_id not in reference:
+        return None
+    row = reference[sample_id]
+    # Cho phep doi root dataset tren server, nhung sequence/frame va ann_id phai khop.
+    image_key = lambda value: '/'.join(str(value).replace('\\', '/').split('/')[-2:])
+    if not row['img_path'] or image_key(row['img_path']) != image_key(img_path):
+        raise ValueError(f'Sample {sample_id}: anh khong khop spread_csv; khong duoc so hai mau khac nhau')
+    if str(row['ann_id']).strip() != str(ann_id).strip():
+        raise ValueError(f'Sample {sample_id}: ann_id khong khop spread_csv')
+    return row
+
+
+def save_teacher_visuals(pool, ds, out_dir, log, selected_only=False):
+    vis_dir = out_dir / 'vis'
+    vis_dir.mkdir()
+    faces = np.asarray(ds.smpl.face, dtype=np.int64)
+    mesh_regressor = np.asarray(ds.joint_regressor)
+    for sample_id, payload in sorted(pool.payloads.items()):
+        row = payload['row']
+        groups = [name for name, items in pool.groups.items() if any(idx == sample_id for _, idx in items)]
+        if selected_only:
+            groups = ['selected subset']
+        fig, axes = plt.subplots(3, 3, figsize=(13, 12))
+        image = payload['image']
+        axes[0, 0].imshow(np.clip(image.transpose(1, 2, 0), 0, 1))
+        pixels = (payload['xy'][:, :2] + 1) / 2 * np.array([image.shape[2], image.shape[1]])
+        valid = payload['mask'].reshape(-1) > 0
+        for j, p in BONES:
+            if valid[j] and valid[p]:
+                axes[0, 0].plot(pixels[[j, p], 0], pixels[[j, p], 1], color='lime', lw=1)
+        axes[0, 0].scatter(pixels[valid, 0], pixels[valid, 1], c='cyan', s=15)
+        axes[0, 0].set_title(f'Crop + detector PE2D; missing={row["missing_2d"]}')
+        axes[0, 0].axis('off')
+        gt_pose, pred_pose = payload['gt_pose'] * 1000, payload['pred_pose'] * 1000
+        for column, horizontal in ((1, 0), (2, 2)):
+            ax = axes[0, column]
+            draw_skeleton(ax, gt_pose, horizontal, 'black', lw=2)
+            draw_skeleton(ax, pred_pose, horizontal, 'tab:blue', lw=1.5)
+            set_view(ax, [gt_pose, pred_pose], horizontal)
+            ax.set_title('GT input black / mesh joints blue: ' + ('front' if horizontal == 0 else 'side'))
+        meshes = {}
+        for name in ('teacher', 'gt'):
+            vertices = payload['meshes'][name]
+            meshes[name] = (vertices - (mesh_regressor @ vertices)[0:1]) * 1000
+        for line, horizontal in ((1, 0), (2, 2)):
+            for column, name in enumerate(('teacher', 'gt')):
+                ax = axes[line, column]
+                draw_mesh(ax, meshes[name], faces, horizontal, 'steelblue' if name == 'teacher' else 'lightgray')
+                set_view(ax, list(meshes.values()), horizontal)
+                ax.set_title(name.upper() + (' front' if horizontal == 0 else ' side'))
+        joint_error = np.linalg.norm(pred_pose - gt_pose, axis=-1)
+        axes[1, 2].barh(np.arange(1, 17), joint_error[1:], color='steelblue')
+        axes[1, 2].set_yticks(np.arange(1, 17))
+        axes[1, 2].set_yticklabels(JOINT_NAMES[1:], fontsize=7)
+        axes[1, 2].set_xlabel('Mesh joint error (mm); H36M-17, no pelvis')
+        axes[1, 2].invert_yaxis()
+        axes[2, 2].axis('off')
+        text = (f'Teacher GT input\nMPJPE(14): {row["teacher_mpjpe"]:.3f} mm\n'
+                f'PA-MPJPE: {row["teacher_pa_mpjpe"]:.3f} mm\nMPVPE: {row["teacher_mpvpe"]:.3f} mm\n'
+                f'GT input error: {row["teacher_input_error_mm"]:.6g} mm')
+        if row['reference_matched']:
+            text += (f'\n\nStudent spread (saved CSV)\nMPJPE(14): {row["student_real_mpjpe"]:.3f} mm\n'
+                     f'MPVPE: {row["student_real_mpvpe"]:.3f} mm\nDifferent checkpoint/input, not a pure input ablation')
+        axes[2, 2].text(0, 0.95, text, va='top', fontsize=10)
+        fig.suptitle(f'Teacher GT | #{sample_id} | {", ".join(groups)}\n{row["img_path"]}\n'
+                     'Orthographic root-relative views; NOT a camera overlay', fontsize=10)
+        fig.tight_layout(rect=(0, 0, 1, 0.93))
+        fig.savefig(vis_dir / f'{sample_id:06d}_teacher_gt.png', dpi=140)
+        plt.close(fig)
+    log(f'Da luu {len(pool.payloads)} hinh Teacher GT vao {vis_dir}')
+
+
+def inspect_teacher(args):
+    from torch.utils.data import DataLoader, Subset
+    from utils.jotr_dataset import get_test_dataset
+    from tqdm import tqdm
+    global plt
+
+    if cfg.MODEL.name != 'teacher' or cfg.MODEL.get('teacher_hint', False):
+        raise ValueError('Can YAML Teacher GT thuan (name=teacher, teacher_hint=False), khong dung YAML KD Student')
+    if cfg.MODEL.get('teacher_lift_alpha_max', 0.0) != 0:
+        raise ValueError('Teacher dang cau hinh tron lifter; hay dung dung YAML Teacher GT thuan da train')
+    if not torch.cuda.is_available():
+        raise RuntimeError('Chay tren server GPU co CUDA')
+    if not Path(args.ckpt).is_file():
+        raise FileNotFoundError(args.ckpt)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    device = torch.device('cuda')
+    batch_size = args.batch_size or int(cfg.TEST.batch_size)
+    if batch_size < 1:
+        raise ValueError('batch_size phai >=1')
+    cfg.DATASET.lift_only = False
+    cfg.render, cfg.vis = False, False
+    if args.num_vis:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+    stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    out_dir = Path(args.out_dir) if args.out_dir else Path(args.ckpt).parent / f'inspect_teacher_gt_{args.set}_{stamp}'
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if any(out_dir.iterdir()):
+        raise FileExistsError(f'Thu muc ket qua khong rong: {out_dir}')
+    lines = []
+
+    def log(message):
+        print(message, flush=True)
+        lines.append(message)
+        (out_dir / 'inspect_log.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+    model, epoch = load_model(args, device)
+    ds = get_test_dataset(args.set, None)
+    selected = sorted(set(args.sample_ids)) if args.sample_ids is not None else list(range(len(ds)))
+    if not selected or selected[0] < 0 or selected[-1] >= len(ds):
+        raise ValueError(f'sample_ids phai nam trong [0, {len(ds)-1}] va khong duoc rong')
+    reference = read_spread_reference(args.spread_csv)
+    if args.sample_ids is not None and args.spread_csv and any(idx not in reference for idx in selected):
+        raise ValueError('Co sample duoc chon khong nam trong spread_csv')
+    loader = DataLoader(Subset(ds, selected), batch_size=batch_size, shuffle=False, num_workers=args.workers)
+    reg = torch.as_tensor(ds.h36m_joint_regressor, device=device, dtype=torch.float32)
+    pool = VisualPool(args.num_vis, args.seed, groups=('worst', 'best', 'random'))
+    rows, joints = [], []
+    seen = 0
+    log(f'mode=teacher | cfg={args.cfg}\nckpt={args.ckpt} | epoch={epoch} | set={args.set} | batch_size={batch_size}')
+    log(f'Train={list(cfg.DATASET.train_list)} | chon best={cfg.TEST.get("select_dataset", "")}')
+    log('Input: GT mesh -> H36M-17 -> tru pelvis -> met; khong lifter, khong corruption luc eval.')
+    log(f'PE2D: {"detector Halpe va mask nhu YAML train" if model.joint_pe2d else "tat theo YAML"}; khong thay bang GT 2D.')
+    log('GT input la oracle de chan doan, khong phai ket qua trien khai. Teacher dung checkpoint rieng cua no.')
+    log(f'sample_ids={args.sample_ids if args.sample_ids is not None else "toan tap"} | spread_csv={args.spread_csv or "khong co"}')
+    with torch.no_grad():
+        for bi, (inputs, targets, meta) in enumerate(tqdm(loader, desc=f'Teacher GT {args.set}')):
+            if args.max_batches and bi >= args.max_batches:
+                break
+            image = inputs['img'].to(device).float()
+            p2 = inputs['joints'].to(device).float()
+            mask = inputs['joints_mask'].to(device).float()
+            target = targets['smpl_mesh_cam'].float()
+            batch = len(image)
+            ids = selected[seen:seen + batch]
+            matched = [verify_spread_reference(reference, idx, value_at(meta, 'img_path', i),
+                                               value_at(meta, 'aid', i)) for i, idx in enumerate(ids)]
+            gt = torch.matmul(reg[None], target.to(device))
+            gt = gt - gt[:, 0:1]
+            result = model(image, gt, is_train=False, pose_2d=p2, joints_mask=mask)
+            input_error = torch.norm(result['teacher_input_joints'] - gt, dim=-1).mean(-1).cpu().numpy() * 1000
+            if not np.isfinite(input_error).all() or input_error.max() > 1e-3:
+                raise RuntimeError('Teacher khong nhan dung GT 3D; dung chan doan')
+            prediction = result['smpl_mesh_cam'].cpu().numpy()
+            target_np = target.numpy()
+            if not np.isfinite(prediction).all():
+                raise RuntimeError('Teacher xuat NaN/Inf')
+            # Subset khong lien tiep: evaluate tung mau voi dung index dataset goc.
+            metrics = {name: [] for name in METRICS}
+            if ids == list(range(ids[0], ids[0] + batch)):
+                metrics = evaluate_mesh(ds, prediction, target_np, ids[0])
+            else:
+                for i, idx in enumerate(ids):
+                    one = evaluate_mesh(ds, prediction[i:i+1], target_np[i:i+1], idx)
+                    for metric in METRICS:
+                        metrics[metric].extend(one[metric])
+            if any(not np.isfinite(metrics[m]).all() for m in METRICS):
+                raise RuntimeError('Metric Teacher co NaN/Inf')
+            pred_pose = torch.matmul(reg[None], result['smpl_mesh_cam'])
+            pred_pose = pred_pose - pred_pose[:, 0:1]
+            error = torch.norm(pred_pose - gt, dim=-1).cpu().numpy() * 1000
+            gt_np, pred_np, mask_np = gt.cpu().numpy(), pred_pose.cpu().numpy(), mask.cpu().numpy().reshape(batch, 17)
+            for i, sample_id in enumerate(ids):
+                row = {'sample': sample_id, 'img_path': value_at(meta, 'img_path', i),
+                       'ann_id': value_at(meta, 'aid', i), 'missing_2d': int((mask_np[i] <= 0).sum()),
+                       'teacher_input_error_mm': float(input_error[i]), 'reference_matched': matched[i] is not None}
+                for metric in METRICS:
+                    row[f'teacher_{metric}'] = float(metrics[metric][i])
+                    for name in ('real', 'off', 'shuffle'):
+                        key = f'{name}_{metric}'
+                        row[f'student_{key}'] = float(matched[i][key]) if matched[i] is not None and key in matched[i] else float('nan')
+                rows.append(row)
+                if args.sample_ids is not None:
+                    extra = f' | Student real J14={row["student_real_mpjpe"]:.3f}' if row['reference_matched'] else ''
+                    log(f'#{sample_id} ann_id={row["ann_id"]} | Teacher J14={row["teacher_mpjpe"]:.3f} '
+                        f'PA={row["teacher_pa_mpjpe"]:.3f} V={row["teacher_mpvpe"]:.3f} mm | missing2D={row["missing_2d"]}'
+                        f'{extra}\n  {row["img_path"]}')
+                for j in range(1, 17):
+                    joints.append({'sample': sample_id, 'joint': j, 'name': JOINT_NAMES[j],
+                                   'teacher_mesh_joint_error_mm': float(error[i, j]), 'valid_2d': int(mask_np[i, j] > 0)})
+
+                def make_payload():
+                    return {'row': row.copy(), 'image': image[i].cpu().numpy().copy(),
+                            'xy': p2[i].cpu().numpy().copy(), 'mask': mask_np[i].copy(),
+                            'gt_pose': gt_np[i].copy(), 'pred_pose': pred_np[i].copy(),
+                            'meshes': {'teacher': prediction[i].copy(), 'gt': target_np[i].copy()}}
+
+                pool.consider(sample_id, 0.0, make_payload,
+                              scores={'worst': row['teacher_mpjpe'], 'best': -row['teacher_mpjpe']})
+            seen += batch
+    if not rows:
+        raise RuntimeError('Khong co mau de chan doan')
+    write_csv(out_dir / 'samples.csv', rows)
+    write_csv(out_dir / 'joints.csv', joints)
+    summary = {'mode': 'teacher_gt', 'args': vars(args), 'epoch': epoch, 'n': len(rows),
+               'dataset_n': len(ds), 'subset': len(rows) < len(ds),
+               'metrics': {metric: float(np.mean([r[f'teacher_{metric}'] for r in rows])) for metric in METRICS},
+               'max_gt_input_error_mm': float(max(r['teacher_input_error_mm'] for r in rows)),
+               'reference_matched_n': sum(r['reference_matched'] for r in rows),
+               'train_list': list(cfg.DATASET.train_list), 'select_dataset': cfg.TEST.get('select_dataset', ''),
+               'pe2d_source': 'detector' if model.joint_pe2d else 'disabled'}
+    (out_dir / 'summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding='utf-8')
+    log(f'\nTeacher GT | n={len(rows)}/{len(ds)} | {"TAP CON" if summary["subset"] else "TOAN TAP"}')
+    log('Mesh MPJPE 14 khop / PA-MPJPE / MPVPE, mm: ' + ' | '.join(f'{m}={v:.3f}' for m, v in summary['metrics'].items()))
+    log(f'GT input max error={summary["max_gt_input_error_mm"]:.6g} mm; CSV matched={summary["reference_matched_n"]}')
+    if args.num_vis:
+        save_teacher_visuals(pool, ds, out_dir, log, selected_only=args.sample_ids is not None)
+    log('Joints.csv/pose tren hinh dung H36M-17 bo pelvis; metric mesh tong ket dung evaluator 14 khop.')
+    log('Teacher co GT ma van sai -> xem fusion/head/GT17 sang SMPL va anh/PE2D; khong ket luan rieng do anh khi chua ablation.')
+    log('Teacher dung GT tot hon Student khong tu chung minh KD hieu qua; can log Student KD de ket luan.')
+    log(f'Ket qua: {out_dir}')
+
+
 def main():
     args = parse_args()
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -368,6 +624,12 @@ def main():
     from tqdm import tqdm
 
     update_config(args.cfg)
+    JOINT_NAMES = list(HUMAN36M_JOINTS)
+    BONES = [(j, p) for j, p in enumerate(H36M_PARENTS) if p >= 0]
+    METRICS = ('mpjpe', 'pa_mpjpe', 'mpvpe')
+    if args.mode == 'teacher':
+        inspect_teacher(args)
+        return
     if cfg.MODEL.name != 'student' or cfg.MODEL.pose_lifter != 'diffusion' or not cfg.MODEL.difflift_spread:
         raise ValueError('Can YAML Student diffusion da bat difflift_spread')
     if cfg.MODEL.get('difflift_select', False) or cfg.MODEL.get('student_hint', False):

@@ -102,9 +102,10 @@ def main():
         print(f'  do dai xuong TB (m)            : {f(bone)}   [ky vong ~0.2 - 0.3]')
         print(f'  |root| (m)                     : {f(root_abs)}   [ky vong 0]')
         print(f'  |z| lon nhat (m)               : {f(zmax)}   [ky vong < ~1]')
-        print(f'  lech mesh -> GT 3D (m)         : {f(mesh_gap)}   [ky vong ~0]')
+        print(f'  lech mesh -> GT 3D (m)         : {f(mesh_gap)}   [ky vong < 0.005; MSCOCO / CrowdPose ~2 mm do\n'
+              '                                   tong hang regressor != 1 nhan voi do sau camera ao lon, khong anh huong loss]')
         print(f'  lech GT 2D vs Halpe (px, 256)  : {f(err2d)}   [ky vong vai px; lon -> sai lat / chieu]')
-        ok = (0.15 < np.median(bone) < 0.4) and np.max(root_abs) < 1e-4 and np.median(mesh_gap) < 1e-3 \
+        ok = (0.15 < np.median(bone) < 0.4) and np.max(root_abs) < 1e-4 and np.median(mesh_gap) < 5e-3 \
             and np.median(err2d) < 25
         all_ok &= ok
         print('  => ' + ('OK' if ok else '[CAN XEM LAI] (xem so lieu + anh)'))

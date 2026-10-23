@@ -109,3 +109,24 @@ python main/inspect_student_spread.py \
 Mặc định chạy toàn tập, tạo thư mục kết quả mới `inspect_spread_3dpw_<timestamp>` cạnh checkpoint. So real/off/shuffle trên cùng checkpoint, in MPJPE/PA-MPJPE/MPVPE mesh, tỷ lệ tốt/xấu và nhóm spread thấp/cao. Xuất CSV từng mẫu/khớp, `summary.json`, `inspect_log.txt`, `overview.png` và hình trong `vis/`. Hình có crop/keypoint và pose/mesh nhìn trước/ngang, không phải overlay camera.
 
 Thêm `--max_batches 10` để kiểm tra nhanh trên tập con; thêm `--num_vis 0` nếu chỉ cần bảng/CSV. Dùng `--out_dir <thu_muc_moi>` nếu muốn chọn nơi lưu; script từ chối thư mục không rỗng. Giữ cùng batch size và một GPU để đối chiếu vì wrapper đặt lại seed DDIM theo batch. Đã có log chạy toàn bộ 35,515 mẫu do người dùng gửi; bảng số, cách diễn giải và giới hạn tại mục 9 của `experiment.md`.
+
+## Kiểm tra Teacher GT trên các mẫu khó của spread
+
+Cùng script trên hỗ trợ `--mode teacher`, mặc định vẫn là chế độ spread. Dùng YAML **Teacher đã train**, không dùng YAML Student KD. YAML KD hiện trỏ `MODEL.TEACHER` tới `experiment/teacher_gt_v2/checkpoint/best.pth.tar`; nếu checkpoint thực nằm nơi khác thì thay đường dẫn tương ứng và dùng đúng YAML của run đó.
+
+Ví dụ kiểm tra ba mẫu đã xem (#2749 guitar, #8785 chạy, #17500 trong xe), đối chiếu đúng ảnh/ann_id với CSV spread người dùng đã tạo:
+
+```bash
+python main/inspect_student_spread.py --mode teacher \
+  --cfg config/train_teacher_k16_v2.yml \
+  --ckpt experiment/teacher_gt_v2/checkpoint/best.pth.tar \
+  --set 3dpw --sample_ids 2749 8785 17500 \
+  --spread_csv experiment/student_v2_diff_spread/checkpoint/inspect_spread_3dpw_20261023_165208_598609/samples.csv \
+  --gpu 0 --batch_size 32 --num_vis 4
+```
+
+Teacher nhận **GT mesh → H36M-17 → trừ pelvis → mét**, không qua lifter. PE2D vẫn dùng detector/mask như YAML train; không thay bằng GT 2D. Input thực vào Teacher phải trùng GT (script kiểm tra), không áp dụng corruption lúc eval. Checkpoint nạp strict, không bỏ key thiếu/thừa để nạp nhầm Student/T-hint.
+
+Đây là phép đo **ba mẫu**, không phải kết quả toàn tập. Để đo toàn 3DPW, bỏ `--sample_ids 2749 8785 17500`; có thể giữ CSV để đối chiếu từng mẫu. Mỗi mẫu chọn theo index dataset 0-based, không phải ann_id; có CSV sẽ xác minh sequence/frame và ann_id trước khi so. Nếu chỉ số trỏ sai ảnh do đổi dataset, script báo lỗi.
+
+Đầu ra mới `inspect_teacher_gt_3dpw_<timestamp>` cạnh checkpoint gồm `inspect_log.txt`, `summary.json`, `samples.csv`, `joints.csv`, `vis/*_teacher_gt.png`. Hình có crop/keypoint detector, pose input GT và khớp hồi quy từ mesh Teacher, mesh Teacher/GT nhìn trước-ngang, lỗi từng khớp. Khi có CSV spread, in thêm metric Student cũ đã khớp mẫu (không chạy lại Student). So Teacher GT với Student là so khác checkpoint/đầu vào, không tự chứng minh KD có lợi. Chế độ Teacher đã code, chưa chạy.
