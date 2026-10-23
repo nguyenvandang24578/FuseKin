@@ -211,9 +211,9 @@ Các hình củng cố kết luận nhánh cộng std hiện chỉ gây điều 
 
 Bước chẩn đoán đề xuất tiếp theo là đo oracle/min-K theo từng mẫu xấu (GT chỉ dùng phân tích) để tách: K có chứa pose hợp GT mà fusion chưa dùng, hay cả nhóm giả thuyết đã sai theo đầu vào 2D. Ba giá trị std mất thông tin hướng sửa và cấu trúc từng nghiệm; thêm gate không tự tạo được nghiệm đúng khi cả K đều sai. Chưa code hoặc chạy phép min-K theo các ID này, chưa đổi kiến trúc hay mở run mới.
 
-## 10. Kiểm tra Teacher GT trên các mẫu khó - đã code, chờ chạy
+## 10. Kiểm tra Teacher GT trên các mẫu khó - đã có ảnh mẫu #17500
 
-Người dùng chuyển ưu tiên sang kiểm tra Teacher đang dùng cho KD trước khi đổi fusion đa giả thuyết. Chưa duyệt/chưa triển khai fusion K=5 hoặc gate. Chưa có kết quả Teacher mới.
+Người dùng chuyển ưu tiên sang kiểm tra Teacher đang dùng cho KD trước khi đổi fusion đa giả thuyết. Chưa duyệt/chưa triển khai fusion K=5 hoặc gate. Người dùng đã gửi ảnh Teacher mẫu #17500; chưa có log tổng kết ba mẫu hoặc toàn tập.
 
 `main/inspect_student_spread.py --mode teacher` dùng YAML/checkpoint Teacher GT thuần (không T-hint, không trộn lifter); hỗ trợ `--sample_ids 2749 8785 17500` để kiểm tra đúng ba mẫu đã xem. `--spread_csv` đọc CSV spread đã chạy để xác minh sequence/frame và ann_id của từng mẫu, đồng thời in metric Student real/off/shuffle đã lưu. Không suy vị trí mẫu từ ann_id. Chế độ chọn tập con gọi evaluator theo index dataset gốc, không dùng offset liên tiếp của Subset để tránh so sai annotation.
 
@@ -224,3 +224,23 @@ Xuất MPJPE/PA-MPJPE/MPVPE mesh bằng `dataset.evaluate` (14 khớp), CSV từ
 YAML `config/train_student_kd_e1_v2_diff.yml` đang trỏ Teacher tới `experiment/teacher_gt_v2/checkpoint/best.pth.tar`; source Teacher GT là `config/train_teacher_k16_v2.yml` (teacher_hint=False, teacher_lift_alpha_max=0, train corruption=0.3 chỉ áp dụng khi train; img_probe=True). Đường dẫn là giá trị đọc từ YAML local, chưa xác nhận file trên server hoặc YAML thật của checkpoint người dùng. Nạp strict sẽ báo lỗi nếu checkpoint/YAML không khớp. Alias lịch sử teacher_model→smpl_model được đổi tên trước khi strict load, không lọc sai shape hoặc bỏ backbone.
 
 Câu hỏi: với GT 3D đúng, Teacher có tái tạo được ca guitar/chạy/trong xe không? Teacher tốt cho thấy pose sạch có thể hỗ trợ đường Teacher, chưa đảm bảo Student sẽ học được qua KD. Teacher vẫn sai cần xét đường GT17→mesh, fusion/head, ảnh và PE2D; chưa thể quy riêng lỗi cho ảnh. Đây là chẩn đoán oracle dùng GT, vẫn thuộc giao thức chọn best theo 3DPW test của YAML hiện có.
+
+### Ảnh Teacher mẫu #17500 và hướng KD người dùng đề nghị
+
+Đã xem trực tiếp ảnh `image(6).png` người dùng gửi: Teacher GT, sample #17500, downtown_car_00/image_00794.jpg, selected subset, GT input error=0 mm. Nhãn cho biết Teacher MPJPE(14)=**153.026**, PA-MPJPE=**111.654**, MPVPE=**170.524** mm. Student spread cùng mẫu (CSV cũ trên hình): MPJPE=469.334, MPVPE=450.284 mm. Teacher tái tạo được dạng ngồi/hướng toàn thân tốt hơn Student, nhưng tay/chân vẫn lệch GT rõ; chưa coi Teacher là nghiệm chính xác. Chỉ có một hình mẫu, không suy ra mức giảm chung cho ba mẫu hoặc toàn tập, không suy ra hiệu quả KD.
+
+Người dùng muốn giữ spread và chuyển sang train KD, chỉnh tín hiệu để Teacher dạy được ca khó. Source E1 (`train_student_kd_e1_v2_diff.yml`) hiện KD MSE qua projector ở feature joint/global sau fusion, w_proj=0, w_joint=w_global=1, kd_noise_weight=False; Student có sẵn hard loss GT joint/SMPL/mesh. Có cờ kd_noise_weight nhưng cơ chế hiện có chỉ cân theo lỗi pose lifter so với GT, chưa xét chất lượng output Teacher so với Student. Các YAML KD này chưa bật spread; YAML spread hiện chưa bật KD, nên chưa có kết quả xác nhận run kết hợp spread+KD.
+
+Đề xuất đang thảo luận, **chưa code/chưa duyệt công thức cuối**: giữ nguyên các điểm feature KD, chỉ thay luật trọng số per-joint bằng mức khó Student kết hợp lợi thế Teacher. Lỗi Student/Teacher phải tính từ cùng H36M regressor của mesh, cùng GT/root/đơn vị; không so lỗi input lifter của bên này với lỗi mesh của bên kia. Teacher kém hơn ở khớp nào thì giảm/tắt KD khớp đó; khớp Student sai nhiều và Teacher tốt hơn thì tăng KD có giới hạn. Trọng số stop-gradient, chỉ dùng GT của train; mask hợp lệ GT độc lập với mask 2D detector. KD global dùng trọng số mẫu tổng hợp từ khớp. Không thêm KD output hoặc ép attention giống nhau trong cùng lần thay đổi đầu.
+
+Đối chứng cần thiết: spread + KD feature đồng đều, so với cùng cấu hình spread + KD có trọng số; giữ cùng seed/khởi tạo/loss/lịch train và tập chọn best, đặc biệt không bật init_student_from_teacher ở một run mà tắt ở run kia. Giữ spread trong cả hai run là lựa chọn thí nghiệm, chưa khẳng định spread có lợi; sau KD vẫn so real/off/shuffle để xem nhánh spread có được dùng hơn không. Tín hiệu Teacher dùng GT không luôn suy ra được từ ảnh bị che và 2D hỏng; Teacher tốt hơn không bảo đảm Student sao chép được toàn bộ feature đặc quyền.
+
+## 11. Spread + KD feature E1 - đã chuẩn bị YAML, chờ chạy (2026-10-23)
+
+Người dùng duyệt chuẩn bị bản spread + KD hiện có làm đối chứng trước. YAML mới: `config/train_student_kd_e1_v2_diff_spread.yml`, run dự kiến `student_kd_e1_v2_diff_spread`, seed lệnh chạy 123. So với `train_student_kd_e1_v2_diff.yml`, chỉ thêm spread=True, steps=5, k=20; mọi giá trị cấu hình E1 còn lại được giữ nguyên. Không sửa loss/trainer/kiến trúc hay YAML cũ, không chạy code dự án tại local.
+
+Giữ pose chính S=1/K=1; Teacher GT checkpoint theo E1; Student `smpl_model` khởi tạo từ Teacher, spread Linear khởi tạo 0. KD feature MSE ở joint/global sau fusion, hệ số mỗi nhánh=1, proj=0, hard_w=1, lambda=1, không noise weighting/InfoNCE. Run mới không lấy checkpoint spread cũ làm điểm khởi đầu. Mục tiêu là đo bản kết hợp trước khi thay luật trọng số KD cho ca khó; chưa triển khai luật trọng số mới.
+
+Đối chứng trực tiếp để tách tác động thêm spread là E1 diffusion có cùng seed, khởi tạo Teacher, dữ liệu, lịch train và evaluator. So với run spread-only trước đó còn khác cả KD và khởi tạo Teacher, không quy chênh lệch riêng cho loss KD. Bản KD có trọng số về sau cần giữ nguyên cấu hình/khởi tạo của YAML mới này và chỉ đổi luật trọng số.
+
+Giữ train 3DPW-train, chọn best theo 3DPW test như run hiện có, nên chỉ coi là kết quả phát triển. Chưa có log train hoặc kết quả mới; lệnh chạy ở README. Thư mục kết quả mới do trainer tạo trên server khi chạy, không tạo thư mục rỗng ở local.

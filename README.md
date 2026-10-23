@@ -129,4 +129,14 @@ Teacher nhận **GT mesh → H36M-17 → trừ pelvis → mét**, không qua lif
 
 Đây là phép đo **ba mẫu**, không phải kết quả toàn tập. Để đo toàn 3DPW, bỏ `--sample_ids 2749 8785 17500`; có thể giữ CSV để đối chiếu từng mẫu. Mỗi mẫu chọn theo index dataset 0-based, không phải ann_id; có CSV sẽ xác minh sequence/frame và ann_id trước khi so. Nếu chỉ số trỏ sai ảnh do đổi dataset, script báo lỗi.
 
-Đầu ra mới `inspect_teacher_gt_3dpw_<timestamp>` cạnh checkpoint gồm `inspect_log.txt`, `summary.json`, `samples.csv`, `joints.csv`, `vis/*_teacher_gt.png`. Hình có crop/keypoint detector, pose input GT và khớp hồi quy từ mesh Teacher, mesh Teacher/GT nhìn trước-ngang, lỗi từng khớp. Khi có CSV spread, in thêm metric Student cũ đã khớp mẫu (không chạy lại Student). So Teacher GT với Student là so khác checkpoint/đầu vào, không tự chứng minh KD có lợi. Chế độ Teacher đã code, chưa chạy.
+Đầu ra mới `inspect_teacher_gt_3dpw_<timestamp>` cạnh checkpoint gồm `inspect_log.txt`, `summary.json`, `samples.csv`, `joints.csv`, `vis/*_teacher_gt.png`. Hình có crop/keypoint detector, pose input GT và khớp hồi quy từ mesh Teacher, mesh Teacher/GT nhìn trước-ngang, lỗi từng khớp. Khi có CSV spread, in thêm metric Student cũ đã khớp mẫu (không chạy lại Student). So Teacher GT với Student là so khác checkpoint/đầu vào, không tự chứng minh KD có lợi. Đã nhận ảnh kết quả Teacher mẫu #17500; chưa có log tổng kết. Chi tiết ở mục 10 của `experiment.md`.
+
+## Train Student spread + KD feature E1
+
+Đã tạo `config/train_student_kd_e1_v2_diff_spread.yml`: giữ nguyên KD feature E1 và bật spread S=5/K=20; pose chính vẫn S=1/K=1. Đây là bản đối chứng KD hiện có, chưa có trọng số ưu tiên ca khó.
+
+```bash
+python main/train.py --cfg config/train_student_kd_e1_v2_diff_spread.yml --exp_name student_kd_e1_v2_diff_spread --seed 123 --gpu 0
+```
+
+Chạy từ gốc repo trên server, với lifter `experiment/finetune_difflifter_r25_cam/best_epoch.bin` và Teacher `experiment/teacher_gt_v2/checkpoint/best.pth.tar` đúng kiến trúc. Run mới khởi tạo phần `smpl_model` từ Teacher như E1, không tiếp tục checkpoint Student spread cũ. Kết quả sẽ nằm trong `experiment/student_kd_e1_v2_diff_spread/`; không tạo trước thư mục kết quả vì trainer quản lý run mới. YAML vẫn chọn best trên 3DPW test để giữ giao thức đối chứng hiện có; đây là thí nghiệm phát triển. Mới chuẩn bị cấu hình, chưa chạy xác nhận.
