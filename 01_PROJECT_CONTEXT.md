@@ -170,3 +170,15 @@ Hai YAML `train_student_kd_e1_v2_diff_spread_gate.yml`, `_gate_zero.yml` giữ n
 ## 11. Trạng thái dọn code
 
 Người dùng chốt **chỉ bỏ nhánh cộng embedding spread, giữ gate + KD để train**. Đã xóa hai YAML spread cũ, gỡ nhánh trong ARTS/FusionPose2Mesh và inspector, giữ YAML gate real/zero. Thống kê spread của chính DiffLifter trong các công cụ chẩn đoán không bị xóa vì không phải đầu vào cộng token Student. Giữ kết quả/checkpoint đã train và lịch sử trong experiment.md; gate vẫn chờ kết quả người dùng chạy trên server. Chỉ kiểm tra văn bản/source/diff tại local, không import hay chạy Python.
+
+## 12. Đo pose DiffLifter đầu vào trên tập con train/test
+
+`main/eval_difflifter_3dpw.py` đã mở rộng theo yêu cầu: `--train_sets config` đo riêng các bộ DATASET.train_list, `--sets config` hoặc tên split cho eval, `--max_samples N` chọn ngẫu nhiên không hoàn lại tối đa N mẫu mỗi bộ. Không dùng ratio/oversampling của loader trộn, không lấy N frame đầu. Seed cố định và selected_indices được lưu khi có out_dir. Các tùy chọn mới mặc định tắt/rỗng; max_samples=0 và bộ split mặc định cũ vẫn eval toàn tập.
+
+`DIFFLIFT.eval_student_input=False` là key mới chỉ phục vụ script eval; `--student_input` bật chế độ dùng YAML Student, yêu cầu pose_lifter=diffusion, seqlen1, lift_only=False và H36M-17. Đo 4 bộ train cần fusekin_unified=True; giữ nguồn Halpe/conf/camera/augmentation và GT orig_joint_cam như Student_Trainer (test có mesh thì dùng H36M regressor). Trong unified, target cả 4 bộ train là mesh NeuralAnnot, ghi nhãn pseudo-GT, khác nhánh lifter H36M/MuCo dùng mocap/native GT. Không chạy backbone ảnh/fusion/gate/Teacher hay KD; vẫn cần loader Student đọc ảnh/dựng GT. Chưa hỗ trợ selector, pose augmentation, s2d noise trong chế độ này.
+
+Dùng chung diag_difflifter.build_model/get_gt/make_cond. Chế độ cũ giữ noise stream theo seed; chế độ Student lấy S/K từ MODEL nếu CLI không ghi đè và reset DDIM seed=0 mỗi batch, dự đoán cả batch trước khi loại GT rỗng, như ARTS.lift_diffusion. max_samples/batch/workers thay đổi có thể đổi vị trí nhiễu/augmentation; không đồng nhất với con số toàn split hoặc log train.
+
+Metric raw: MPJPE17 có pelvis, MPJPE16 bỏ pelvis và từng khớp, root-relative mét -> mm, bỏ mẫu GT rỗng. Metric train phụ dùng mask GT fit_joint_trunc * is_valid_fit như trainer; không dùng mask detector để bỏ khớp 3D. Không phải metric mesh 14 khớp. Mỗi bộ ghi rõ GT, số chọn/số hợp lệ; không báo 0 nếu toàn GT rỗng.
+
+--out_dir tùy chọn lưu log/JSON/CSV/YAML vào thư mục mới; CSV ghi index/ảnh/missing2D và lỗi từng mẫu, summary có per-joint/indices/config/noise và dataset lỗi. Không ghi đè kết quả cũ. Đã code/chờ người dùng chạy trên server, không chạy/import Python tại local; lệnh README, trạng thái experiment.md mục 17. Không đổi YAML train hay kiến trúc/save/load DiffLifter.

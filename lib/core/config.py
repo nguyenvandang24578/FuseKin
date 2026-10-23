@@ -432,6 +432,8 @@ cfg.PMCE.final_ckpt = 'latest'     # test cuoi: 'latest' (epoch cuoi) | 'best' (
 
 """ DiffLifter (single-frame diffusion 2D->3D, main/finetune_difflifter.py) """
 cfg.DIFFLIFT = edict()
+# Chi eval_difflifter_3dpw.py dung: GT/loader/noise nhu Student, mac dinh TAT de giu lenh cu.
+cfg.DIFFLIFT.eval_student_input = False
 cfg.DIFFLIFT.embed_dim = 256           # chieu an Transformer (D3DP goc = 512)
 cfg.DIFFLIFT.depth = 4                 # so Spatial Attention blocks (D3DP goc = 8)
 cfg.DIFFLIFT.num_heads = 8

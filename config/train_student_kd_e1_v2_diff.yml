@@ -36,7 +36,7 @@ MODEL:
   difflift_steps: 1
   difflift_k: 1
   backbone_pretrained: 'spin'
-  TEACHER: './experiment/teacher_gt_v2/checkpoint/best.pth.tar'                          # checkpoint Teacher GT v2
+  TEACHER: './experiment/teacher_gt_v2_jotr/checkpoint/best.pth.tar'                          # checkpoint Teacher GT v2
   student_use_kd: True
   init_student_from_teacher: True
 

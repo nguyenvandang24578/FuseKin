@@ -174,3 +174,44 @@ Luôn kiểm tra pose S1 hai Student khớp trong 1e-6 mét. Chỉ so std khi c�
 Đầu ra `compare_scratch_kd_<split>_<timestamp>/`: log, summary, CSV mẫu/nhóm, YAML sao lưu, biểu đồ và hình GT/scratch/KD/Teacher. Gain = scratch - KD, dương là KD tốt hơn. Q1-Q4/top10% theo lỗi scratch có thiên lệch chọn nhóm; cần đối chiếu thêm nhóm theo lỗi S1 chung. `--sample_ids` chỉ thêm hình, không giới hạn tập eval; `--expected_epoch N` kiểm tra epoch checkpoint thật. Replay hình dùng nguyên batch gốc và kiểm tra metric lệch không quá 0.01 mm. Giới hạn khởi tạo/hard loss/lịch LR giữa các run vẫn cần xét khi diễn giải gain.
 
 Đã đọc lại source/diff và kiểm tra cấu hình bằng văn bản. **Chưa chạy/import/kiểm cú pháp Python, train hoặc test tại local.**
+
+## Kiểm tra lỗi pose DiffLifter đầu vào trên train/test
+
+Đã mở rộng `main/eval_difflifter_3dpw.py`; không cần checkpoint Student/Teacher. Dùng checkpoint lifter `best_epoch.bin` và đúng YAML Student để giữ nguồn 2D, confidence, augmentation, camera và GT đang dùng cho run. Không chạy ResNet/fusion/gate/KD/mesh head; loader Student vẫn đọc ảnh/dựng GT như khi train để giữ đúng xử lý dữ liệu.
+
+Kiểm tra bản KD full dataset: tối đa **512 mẫu ngẫu nhiên không hoàn lại cho mỗi bộ** Human36M, MuCo, MSCOCO, CrowdPose và 3DPW test:
+
+```bash
+python main/eval_difflifter_3dpw.py \
+  --cfg config/train_student_kd_e1_v2_diff_jotr.yml \
+  --ckpt experiment/finetune_difflifter_r25_cam/best_epoch.bin \
+  --train_sets config --sets 3dpw --student_input \
+  --S 1 --K 1 --max_samples 512 --batch_size 32 --workers 0 --seed 123 --gpu 0 \
+  --out_dir experiment/check_lifter_input_full_s123
+```
+
+Kiểm tra bản gate đang train trên 3DPW-train: cùng script, đổi YAML và thư mục kết quả:
+
+```bash
+python main/eval_difflifter_3dpw.py \
+  --cfg config/train_student_kd_e1_v2_diff_spread_gate.yml \
+  --ckpt experiment/finetune_difflifter_r25_cam/best_epoch.bin \
+  --train_sets config --sets 3dpw --student_input \
+  --S 1 --K 1 --max_samples 512 --batch_size 32 --workers 0 --seed 123 --gpu 0 \
+  --out_dir experiment/check_lifter_input_3dpw_s123
+```
+
+Các cờ:
+
+- `--train_sets config`: lấy các bộ trong `DATASET.train_list`, đo riêng từng bộ, không dùng ratio/oversampling. Có thể chỉ định `Human36M,MuCo` hoặc `3dpw-train`.
+- `--sets 3dpw`: đánh giá 3DPW test. `--sets config` dùng `DATASET.test_list`. Vẫn hỗ trợ các split cũ `3dpw-train-noaug,3dpw-val,3dpw`.
+- `--max_samples 512`: chọn ngẫu nhiên toàn dataset, giữ seed/indices trong summary; nếu ít hơn 512 thì lấy hết. 0 là toàn bộ như lệnh cũ. Số hợp lệ có thể ít hơn số chọn vì bỏ GT rỗng.
+- `--student_input`: bật `DIFFLIFT.eval_student_input` (key mới mặc định False), yêu cầu YAML Student DiffLifter seqlen1. Loader giữ `lift_only=False`, không đổi sang target của nhánh lifter. S/K mặc định từ MODEL; có thể ghi đè bằng `--S/--K` nhưng sẽ ghi chú nếu khác YAML. Pose chính dùng noise seed=0 reset mỗi batch như ARTS, còn `--seed` điều khiển chọn mẫu/augmentation. Không hỗ trợ selector, pose augmentation hoặc s2d noise trong chế độ này.
+- `--workers 0`: xử lý tuần tự để dễ tái lập augmentation; bỏ cờ thì dùng YAML. Giữ cùng seed/workers/batch khi đối chiếu. Tập con có vị trí mẫu trong batch khác full eval nên không so số tuyệt đối với log toàn tập như cùng một phép đo.
+- `--out_dir`: tùy chọn lưu `eval_log.txt`, `summary.json`, `samples.csv` và YAML; từ chối thư mục đã có nội dung. Bỏ cờ để chỉ in như trước.
+
+In **MPJPE17** có pelvis, **MPJPE16** bỏ pelvis, lỗi từng khớp, số chọn/hợp lệ/bỏ và nguồn GT. Train ở chế độ Student in thêm MPJPE theo mask GT `fit_joint_trunc * is_valid_fit` như log lift_err của trainer (tổng lỗi chia tổng trọng số toàn tập con; có thể khác trung bình các batch trong log train). Không dùng confidence 2D để loại khớp khỏi metric 3D. Đây không phải MPJPE mesh 14 khớp.
+
+Train giữ augmentation của dataset/YAML, test dùng loader eval; 3DPW-train-noaug vẫn có thể dùng khi muốn so tập train tắt augmentation. Với `fusekin_unified=True`, 4 bộ train đều dùng target hồi quy từ mesh NeuralAnnot, ghi rõ **pseudo-GT**; không coi chênh lệch với 3DPW GT là thuần lỗi tổng quát hóa. Human36M test riêng dùng mocap/GT 2D sạch và được ghi nhãn riêng. Script dùng chung `diag_difflifter.build_model/get_gt/make_cond`, không sửa kiến trúc/checkpoint lifter hay các run đang train. Dataset lỗi được ghi riêng, chạy tiếp bộ còn lại và cuối cùng trả exit code 1.
+
+Trạng thái: đã sửa và rà source/diff, **chưa chạy/import/kiểm cú pháp Python hoặc đánh giá trên GPU tại local**.
