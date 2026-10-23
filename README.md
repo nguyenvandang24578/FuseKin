@@ -28,7 +28,7 @@ Teacher/KD, MotionBERT và PMCE vẫn có trong source để đối chiếu. Ch�
 - Augmentation: người dùng báo không hiệu quả. Spread: best trên 3DPW được báo là MPJPE 77.59 / MPVPE 94.17 mm; người dùng đã gửi log chẩn đoán 35,515 mẫu: real/off/shuffle gần nhau, chưa thấy lợi ích rõ của spread lúc inference (mục 9 của `experiment.md`).
 - GCN + attention song song: đã đối chiếu best epoch 6 với attention baseline tại S=1/K=1; chỉ H36M giảm lỗi, 3DPW/OC/PC tăng. Giữ `r25_cam` làm mốc chính; bảng số ở mục 5 của `experiment.md`.
 - Prior nhiễu có điều kiện từ SimCC/GMM: tạm hoãn. Code probe SimCC được giữ để nghiên cứu sau.
-- Các YAML Student diffusion đang dùng (`diff`, `diff_aug`, `diff_sel`, `diff_spread`) hiện chọn best trên **3DPW test**, dù một số comment còn ghi val. Lifter chọn best theo `3dpw-val`; chi tiết trong [bối cảnh dự án](01_PROJECT_CONTEXT.md#6-giao-thức-và-chọn-checkpoint).
+- Các YAML Student diffusion đang dùng (`diff`, `diff_aug`, `diff_sel` và hai bản gate KD) hiện chọn best trên **3DPW test**, dù một số comment còn ghi val. Lifter chọn best theo `3dpw-val`; chi tiết trong [bối cảnh dự án](01_PROJECT_CONTEXT.md#6-giao-thức-và-chọn-checkpoint).
 
 ## Cấu trúc chính
 
@@ -95,80 +95,82 @@ README này mô tả FuseKin hiện tại, không phải bản phát hành chín
 }
 ```
 
-## Kiểm tra Student spread trên server
+## Student DiffLifter thuần và KD
 
-Dùng đúng YAML train và `checkpoint/best.pth.tar` của run spread. Ví dụ dưới đây dùng tên run `student_v2_diff_spread`; thay đường dẫn nếu run thực có tên khác. Không cần train lại.
+Hai cấu hình không dùng spread/gate:
+
+- `config/train_student_v2_diff.yml`: Student scratch, không Teacher/KD.
+- `config/train_student_kd_e1_v2_diff.yml`: KD feature E1, khởi tạo phần chung của Student từ Teacher.
+
+Cả hai dùng pose DiffLifter đóng băng S1/K1 kết hợp đặc trưng ảnh. Nhánh cộng embedding spread và hai YAML `train_student_v2_diff_spread.yml`, `train_student_kd_e1_v2_diff_spread.yml` đã xóa theo yêu cầu người dùng. Lịch sử kết quả giữ trong `experiment.md`; checkpoint nhánh cũ cần source/YAML tương ứng của run cũ, loader hiện tại sẽ từ chối thay vì bỏ qua nhánh.
+
+## Train gate + KD
+
+Gate nhận token joint, thông tin ảnh vừa đọc và `log1p(std_xyz*10)`; `g=2*sigmoid(MLP)` trong (0,2), khởi tạo g=1. Cập nhật: `coef1*joint + coef2*(g*image_update)`. Teacher GT và loss KD E1 joint/global giữ nguyên.
+
+Đồng bộ source mới lên server, chạy từ gốc repo. Đây là run mới từ khởi tạo Teacher như E1, không resume checkpoint spread cộng token cũ:
 
 ```bash
-python main/inspect_student_spread.py \
-  --cfg config/train_student_v2_diff_spread.yml \
-  --ckpt experiment/student_v2_diff_spread/checkpoint/best.pth.tar \
-  --gpu 0 --set 3dpw --batch_size 32 --num_vis 4
+python main/train.py --cfg config/train_student_kd_e1_v2_diff_spread_gate.yml --exp_name student_kd_e1_v2_diff_spread_gate --seed 123 --gpu 0
 ```
 
-Mặc định chạy toàn tập, tạo thư mục kết quả mới `inspect_spread_3dpw_<timestamp>` cạnh checkpoint. So real/off/shuffle trên cùng checkpoint, in MPJPE/PA-MPJPE/MPVPE mesh, tỷ lệ tốt/xấu và nhóm spread thấp/cao. Xuất CSV từng mẫu/khớp, `summary.json`, `inspect_log.txt`, `overview.png` và hình trong `vis/`. Hình có crop/keypoint và pose/mesh nhìn trước/ngang, không phải overlay camera.
+Đối chứng cùng gate, chỉ đặt ba giá trị std ở đầu vào gate bằng 0:
 
-Thêm `--max_batches 10` để kiểm tra nhanh trên tập con; thêm `--num_vis 0` nếu chỉ cần bảng/CSV. Dùng `--out_dir <thu_muc_moi>` nếu muốn chọn nơi lưu; script từ chối thư mục không rỗng. Giữ cùng batch size và một GPU để đối chiếu vì wrapper đặt lại seed DDIM theo batch. Đã có log chạy toàn bộ 35,515 mẫu do người dùng gửi; bảng số, cách diễn giải và giới hạn tại mục 9 của `experiment.md`.
+```bash
+python main/train.py --cfg config/train_student_kd_e1_v2_diff_spread_gate_zero.yml --exp_name student_kd_e1_v2_diff_spread_gate_zero --seed 123 --gpu 0
+```
 
-## Kiểm tra Teacher GT trên các mẫu khó của spread
+Hai YAML chỉ khác `MODEL.difflift_spread_gate_zero`; vẫn sinh cùng S5/K20 và dùng pose chính S1/K1. Cùng Teacher, khởi tạo, loss, lịch LR `[5,10,15,22,27]`, 30 epoch. Tên YAML giữ nguyên để dùng lệnh đã gửi. `difflift_spread` cùng steps/k hiện chỉ cấu hình std cho gate; bật spread mà không bật gate là lỗi, không còn nhánh cộng embedding.
 
-Cùng script trên hỗ trợ `--mode teacher`, mặc định vẫn là chế độ spread. Dùng YAML **Teacher đã train**, không dùng YAML Student KD. YAML KD hiện trỏ `MODEL.TEACHER` tới `experiment/teacher_gt_v2/checkpoint/best.pth.tar`; nếu checkpoint thực nằm nơi khác thì thay đường dẫn tương ứng và dùng đúng YAML của run đó.
+Log có `g: mean+/-std` theo batch và `Spread gate: mean/std/min/max` theo epoch, kèm W&B. Checkpoint lưu `spread_gate_config`; loader kiểm tra real/zero/hidden khi resume/eval. Gate thay đổi chưa chứng minh std hữu ích: so real/zero cùng seed để tách lợi ích của std khỏi gate dựa vào joint/ảnh. Nếu chênh nhỏ cần thêm seed. Các run vẫn chọn best trên **3DPW test**, chỉ phục vụ phát triển.
 
-Ví dụ kiểm tra ba mẫu đã xem (#2749 guitar, #8785 chạy, #17500 trong xe), đối chiếu đúng ảnh/ann_id với CSV spread người dùng đã tạo:
+## Kiểm tra gate trên server
+
+Giữ file inspector hiện có `main/inspect_student_spread.py`; mặc định là `--mode gate`, `--mode spread` chỉ là alias cho gate để giữ lệnh đã gửi. Đã bỏ code replay nhánh cộng embedding.
+
+```bash
+python main/inspect_student_spread.py --mode gate --cfg config/train_student_kd_e1_v2_diff_spread_gate.yml --ckpt experiment/student_kd_e1_v2_diff_spread_gate/checkpoint/best.pth.tar --set 3dpw --gpu 0 --batch_size 32 --num_vis 4
+```
+
+`real`: gate đã học; `off`: ép mọi gate=1; `shuffle`: đổi std giữa các mẫu trong batch trước gate. Giữ ảnh/pose/PE2D; kiểm tra replay khớp wrapper. Real-off đo tác động gate, real-shuffle kiểm tra std đúng mẫu; shuffle cục bộ có thể yếu vì các frame gần nhau. Bản zero có thể khác off vì vẫn học từ joint/ảnh, nhưng không phụ thuộc std thật khi shuffle.
+
+Mặc định đánh giá toàn split, lưu `inspect_gate_3dpw_<timestamp>/` cạnh checkpoint: CSV mẫu/khớp, nhóm spread, `summary.json`, log, biểu đồ và hình `vis/`. Có gate_mean/std/min/max từng mẫu và gate_mean từng khớp; không còn cột embedding spread. Metric mesh dùng evaluator 14 khớp; chẩn đoán lifter dùng H36M-17 bỏ pelvis. Hình nhìn trước/ngang không phải overlay camera.
+
+Thêm `--max_batches 10 --num_vis 0` để kiểm tra trên tập con trước. Giữ cùng batch và một GPU vì wrapper reset seed DDIM theo batch. Không dùng nguyên trạng nhánh Student của `content_ablation_test.py` hoặc `kd_res_mode=v2` cho gate; chúng chưa truyền std và sẽ báo lỗi.
+
+## Kiểm tra Teacher GT
+
+Dùng YAML/checkpoint Teacher riêng; có thể đọc CSV lịch sử để xác minh đúng ảnh/ann_id mà không nạp lại Student cũ:
 
 ```bash
 python main/inspect_student_spread.py --mode teacher \
   --cfg config/train_teacher_k16_v2.yml \
   --ckpt experiment/teacher_gt_v2/checkpoint/best.pth.tar \
   --set 3dpw --sample_ids 2749 8785 17500 \
-  --spread_csv experiment/student_v2_diff_spread/checkpoint/inspect_spread_3dpw_20261023_165208_598609/samples.csv \
   --gpu 0 --batch_size 32 --num_vis 4
 ```
 
-Teacher nhận **GT mesh → H36M-17 → trừ pelvis → mét**, không qua lifter. PE2D vẫn dùng detector/mask như YAML train; không thay bằng GT 2D. Input thực vào Teacher phải trùng GT (script kiểm tra), không áp dụng corruption lúc eval. Checkpoint nạp strict, không bỏ key thiếu/thừa để nạp nhầm Student/T-hint.
+Thêm `--spread_csv <samples.csv_da_luu>` khi cần đối chiếu; CSV cũ vẫn đọc được. Bỏ `--sample_ids` để đánh giá toàn split. Teacher nhận GT mesh -> H36M-17 -> trừ pelvis -> mét, không corruption khi eval; PE2D vẫn từ detector theo YAML. Đây là phép đo oracle. Xuất metric, CSV và hình Teacher/GT; checkpoint nạp strict.
 
-Đây là phép đo **ba mẫu**, không phải kết quả toàn tập. Để đo toàn 3DPW, bỏ `--sample_ids 2749 8785 17500`; có thể giữ CSV để đối chiếu từng mẫu. Mỗi mẫu chọn theo index dataset 0-based, không phải ann_id; có CSV sẽ xác minh sequence/frame và ann_id trước khi so. Nếu chỉ số trỏ sai ảnh do đổi dataset, script báo lỗi.
+## So scratch/KD trên cùng mẫu
 
-Đầu ra mới `inspect_teacher_gt_3dpw_<timestamp>` cạnh checkpoint gồm `inspect_log.txt`, `summary.json`, `samples.csv`, `joints.csv`, `vis/*_teacher_gt.png`. Hình có crop/keypoint detector, pose input GT và khớp hồi quy từ mesh Teacher, mesh Teacher/GT nhìn trước-ngang, lỗi từng khớp. Khi có CSV spread, in thêm metric Student cũ đã khớp mẫu (không chạy lại Student). So Teacher GT với Student là so khác checkpoint/đầu vào, không tự chứng minh KD có lợi. Đã nhận ảnh kết quả Teacher mẫu #17500; chưa có log tổng kết. Chi tiết ở mục 10 của `experiment.md`.
-
-## Train Student spread + KD feature E1
-
-Đã tạo `config/train_student_kd_e1_v2_diff_spread.yml`: giữ nguyên KD feature E1 và bật spread S=5/K=20; pose chính vẫn S=1/K=1. Đây là bản đối chứng KD hiện có, chưa có trọng số ưu tiên ca khó.
-
-```bash
-python main/train.py --cfg config/train_student_kd_e1_v2_diff_spread.yml --exp_name student_kd_e1_v2_diff_spread --seed 123 --gpu 0
-```
-
-Chạy từ gốc repo trên server, với lifter `experiment/finetune_difflifter_r25_cam/best_epoch.bin` và Teacher `experiment/teacher_gt_v2/checkpoint/best.pth.tar` đúng kiến trúc. Run mới khởi tạo phần `smpl_model` từ Teacher như E1, không tiếp tục checkpoint Student spread cũ. Kết quả sẽ nằm trong `experiment/student_kd_e1_v2_diff_spread/`; không tạo trước thư mục kết quả vì trainer quản lý run mới. YAML vẫn chọn best trên 3DPW test để giữ giao thức đối chứng hiện có; đây là thí nghiệm phát triển. Người dùng đã gửi log KD epoch 14–22; mốc thấp nhất trong đoạn là epoch 18: 76.76 / 93.57 mm. Chưa có kết quả đánh giá ghép cặp; xem mục 11–12 của experiment.md.
-
-## So sánh scratch và KD trên cùng mẫu
-
-Đã rà `main/compare_students.py` (metric tổng nhiều Student), `compare_teacher_student.py` (feature Teacher/Student), `diagnose_kd.py` (T-hint), `kd_feature_analysis.py` và `compare_checkpoint_drift.py`. Các đường phân tích cũ chưa đủ cho phép so spread + DiffLifter + Teacher GT này. Mở rộng **script có sẵn** `main/inspect_student_spread.py --mode compare`, dùng lại strict loader, capture spread, `dataset.evaluate` và hàm vẽ mesh; không tạo file Python mới.
-
-Ví dụ theo tên run đã chuẩn bị; thay đường dẫn nếu run thực tế có tên khác. Ưu tiên YAML sao lưu trong chính run khi local đã thay lịch train. `--cfg/--ckpt` là KD, `--baseline_*` là scratch spread, `--teacher_*` là Teacher GT đúng checkpoint:
+`--mode compare` hỗ trợ Student DiffLifter thuần hoặc gate; `--cfg/--ckpt` là KD, `--baseline_*` là scratch không KD, `--teacher_*` là Teacher GT. Dùng đúng YAML/checkpoint đã train, ví dụ cho hai bản không gate:
 
 ```bash
 python main/inspect_student_spread.py --mode compare \
-  --cfg config/train_student_kd_e1_v2_diff_spread.yml \
-  --ckpt experiment/student_kd_e1_v2_diff_spread/checkpoint/best.pth.tar \
-  --baseline_cfg config/train_student_v2_diff_spread.yml \
-  --baseline_ckpt experiment/student_v2_diff_spread/checkpoint/best.pth.tar \
+  --cfg config/train_student_kd_e1_v2_diff.yml \
+  --ckpt experiment/student_kd_e1_v2_diff/checkpoint/best.pth.tar \
+  --baseline_cfg config/train_student_v2_diff.yml \
+  --baseline_ckpt experiment/student_v2_diff/checkpoint/best.pth.tar \
   --teacher_cfg config/train_teacher_k16_v2.yml \
   --teacher_ckpt experiment/teacher_gt_v2/checkpoint/best.pth.tar \
-  --set 3dpw --gpu 0 --batch_size 32 --workers 0 --num_vis 4 \
-  --sample_ids 2749 8785 17500 --expected_epoch 18
+  --set 3dpw --gpu 0 --batch_size 32 --workers 0 --num_vis 4
 ```
 
-`--expected_epoch 18` dừng nếu best KD không phải epoch 18; kiểm tra checkpoint thực tế trước khi kết luận. Bỏ cờ này nếu muốn chỉ in epoch đã lưu mà không ép bằng 18. Không dùng `last.pth.tar` thay best. Mặc định eval toàn split; thêm `--max_batches 10 --num_vis 0` để kiểm tra trên tập con trước, rồi bỏ `--max_batches` để đo toàn tập. `--sample_ids` trong mode compare **chỉ chọn thêm hình**, không giới hạn tập đánh giá. `--num_vis 0` bỏ toàn bộ hình/matplotlib. Giữ một GPU và batch 32 để đối chiếu run cũ.
+Chỉ dùng ví dụ khi các checkpoint tương ứng đã tồn tại; không coi YAML là kết quả đã train. Có thể thay KD bằng YAML/checkpoint gate, nhưng khi đó so hai run khác cả cơ chế fusion, không tách riêng hiệu quả KD/std.
 
-Script chạy cả scratch, KD và Teacher GT trên cùng batch; mỗi model dùng YAML riêng từ cùng bộ default, không kế thừa key của YAML trước. Kiểm tra pose S1 và std hai Student khớp trong 1e-6 mét; Teacher nhận GT H36M-17 từ mesh, root-relative, mét. Tính metric mesh 14 khớp bằng evaluator hiện có. Khi vẽ, nạp lại **nguyên batch gốc** của mẫu được chọn để giữ nhiễu DDIM; kiểm tra metric replay lệch không quá 0.01 mm. Ba model ở trên cùng GPU; không giảm batch để tránh OOM rồi so trực tiếp với log batch khác.
+Luôn kiểm tra pose S1 hai Student khớp trong 1e-6 mét. Chỉ so std khi cả hai bật gate; nếu không, summary ghi `std_compared=false`, `std_max_abs_m=null`, không giả vờ std=0 là bất định đo được. Khi có std, CSV ghi rõ `spread_source`; không có gate ở cả hai thì không thêm cột spread. Teacher input GT phải khớp.
 
-Kết quả mới cạnh checkpoint KD: `compare_scratch_kd_3dpw_<timestamp>/`, gồm:
+Đầu ra `compare_scratch_kd_<split>_<timestamp>/`: log, summary, CSV mẫu/nhóm, YAML sao lưu, biểu đồ và hình GT/scratch/KD/Teacher. Gain = scratch - KD, dương là KD tốt hơn. Q1-Q4/top10% theo lỗi scratch có thiên lệch chọn nhóm; cần đối chiếu thêm nhóm theo lỗi S1 chung. `--sample_ids` chỉ thêm hình, không giới hạn tập eval; `--expected_epoch N` kiểm tra epoch checkpoint thật. Replay hình dùng nguyên batch gốc và kiểm tra metric lệch không quá 0.01 mm. Giới hạn khởi tạo/hard loss/lịch LR giữa các run vẫn cần xét khi diễn giải gain.
 
-- `compare_log.txt`, `summary.json`: epoch, YAML, số mẫu, kiểm tra đầu vào, metric và trạng thái vẽ.
-- `samples.csv`: identity ảnh/ann_id/index, metric từng model và gain `scratch - KD` (dương = KD tốt hơn).
-- `groups.csv`: toàn tập, Q1–Q4 theo lỗi scratch, 10% lỗi scratch cao nhất, số keypoint thiếu và nhóm Teacher tốt hơn scratch; mean/median gain, phân vị 10/90 và tỷ lệ tốt/xấu hơn 1 mm cho cả ba metric.
-- `overview.png`, `vis/`: histogram gain, nhóm lỗi scratch, hình GT/scratch/KD/Teacher cùng góc nhìn trước/ngang; mẫu cố định, tốt/xấu nhiều và ngẫu nhiên trong nhóm khó. Không lưu mesh toàn dataset trong RAM.
-- Ba YAML sao lưu theo vai trò scratch/KD/Teacher.
-
-Nhóm khó cố định theo MPJPE scratch, top 10% lấy `ceil(0.1*N)`, bằng lỗi thì giữ thứ tự sample. Ngưỡng 1 mm là mô tả, không phải kiểm định thống kê. Teacher dùng GT là phép đo oracle. Đây là so hai run còn khác khởi tạo, hard loss và lịch LR; không quy toàn bộ gain cho riêng loss KD hoặc chọn/tinh chỉnh theo test. Mode mới đã code/đọc lại diff, **chưa chạy trên server**.
+Đã đọc lại source/diff và kiểm tra cấu hình bằng văn bản. **Chưa chạy/import/kiểm cú pháp Python, train hoặc test tại local.**

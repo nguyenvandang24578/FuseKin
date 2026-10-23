@@ -1,16 +1,13 @@
-"""Chan doan Student spread hoac Teacher GT tren cac mau kho, chi suy luan.
+"""Chan doan gate Student, Teacher GT hoac so scratch/KD, chi suy luan.
 
-Chay tu goc repo, voi YAML da train checkpoint spread:
-    python main/inspect_student_spread.py --cfg config/train_student_v2_diff_spread.yml \
-        --ckpt experiment/student_v2_diff_spread/checkpoint/best.pth.tar --gpu 0
-
-Khong sua model/YAML, khong train. real di qua forward_student; off va shuffle
-dung lai pose S=1, feature anh va PE2D cua real. off bo CA embedding (ke ca bias).
-Mesh dung dataset.evaluate (14 khop); chan doan lifter dung H36M-17, bo pelvis.
-Them --mode teacher voi --cfg/--ckpt cua Teacher GT de kiem tra anh + GT 3D.
---sample_ids la chi so sample 0-based cua cung split; --spread_csv xac minh
-ann_id/anh va in metric Student cu tren dung mau. Mac dinh van la spread.
---mode compare so scratch/KD tren cung batch, kem Teacher GT, bang nhom kho va hinh.
+Gate: dung YAML train_student_kd_e1_v2_diff_spread_gate.yml va checkpoint cua run.
+real dung gate da hoc; off dat gate=1; shuffle doi std giua mau trong cung batch.
+Giu pose S1, feature anh va PE2D cua real khi replay, kiem tra output trung wrapper.
+--mode gate la mac dinh; --mode spread la alias cu, cung chi ho tro gate.
+--mode teacher doc GT 3D, co the doi chieu CSV da luu bang --spread_csv.
+--mode compare so scratch/KD (DiffLifter thuan hoac gate) voi Teacher GT.
+Metric mesh dung dataset.evaluate (14 khop); chan doan lifter dung H36M-17 bo pelvis.
+Nhanh cong embedding spread da duoc go bo; khong nap checkpoint nhanh cu.
 """
 import argparse
 import csv
@@ -30,8 +27,8 @@ for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description='Chan doan spread/Teacher GT hoac so scratch-KD, khong train')
-    p.add_argument('--mode', choices=['spread', 'teacher', 'compare'], default='spread')
+    p = argparse.ArgumentParser(description='Chan doan gate/Teacher GT hoac so scratch-KD, khong train')
+    p.add_argument('--mode', choices=['gate', 'spread', 'teacher', 'compare'], default='gate')
     p.add_argument('--cfg', required=True)
     p.add_argument('--ckpt', required=True)
     p.add_argument('--gpu', default='0', help='mot GPU, giong cau hinh eval batch=32')
@@ -148,15 +145,18 @@ class VisualPool:
 
 
 def load_model(args, device):
-    from core.base import _PickleShim
+    from core.base import _PickleShim, validate_spread_gate_checkpoint
     from models.ARTS import ARTS
 
     ckpt = torch.load(args.ckpt, map_location='cpu', pickle_module=_PickleShim, weights_only=False)
     if not isinstance(ckpt, dict) or 'model_state_dict' not in ckpt:
         raise ValueError('Can checkpoint Teacher/Student co model_state_dict')
     state = {(k[7:] if k.startswith('module.') else k): v for k, v in ckpt['model_state_dict'].items()}
-    if args.mode == 'spread' and ('spread_proj.weight' not in state or 'spread_proj.bias' not in state):
-        raise ValueError('Checkpoint khong co spread_proj da train; khong duoc dung baseline de gia lap spread')
+    if args.mode in ('gate', 'spread'):
+        if not cfg.MODEL.get('difflift_spread_gate', False):
+            raise ValueError('Mode gate can YAML bat difflift_spread_gate; nhanh cong spread cu da bo')
+        if not any('.image_gate.net.' in key for key in state):
+            raise ValueError('YAML gate nhung checkpoint khong co gate da train')
     if args.mode == 'teacher':
         # Alias checkpoint cu da duoc ho tro trong core.base; van nap strict sau khi doi ten.
         old_prefix = 'teacher_model.'
@@ -166,6 +166,7 @@ def load_model(args, device):
             raise ValueError('Can checkpoint Teacher GT thuan, khong phai Student hoac T-hint')
     model = ARTS(num_joint=17, embed_dim=cfg.MODEL.hpe_dim).to(device)
     # Chi ho tro checkpoint khop chinh xac YAML, khong loc key sai shape/thieu backbone.
+    validate_spread_gate_checkpoint(model, ckpt)
     model.load_state_dict(state, strict=True)
     model.eval()
     for parameter in model.parameters():
@@ -174,35 +175,50 @@ def load_model(args, device):
 
 
 def capture_real(model, image, p2, mask, cam):
+    # Compare van ho tro Student DiffLifter thuan, khong tao std gia.
+    if not model.diff_spread_gate:
+        result = model.forward_student(image, p2, is_train=False, joints_mask=mask, cam_bbox=cam)
+        return result, {}
     cache = {}
 
     def backbone_hook(module, inputs, output):
         cache['features'] = output[0]
 
     def diffusion_hook(module, inputs, output):
-        # Lan goi cuoi cua wrapper la nhom gia thuyet de tinh spread.
+        # Lan goi cuoi cua wrapper la nhom gia thuyet de tinh std cho gate.
         pred = output[2]
         cache['hyp'] = pred - pred[:, :, 0:1]
 
-    def spread_hook(module, inputs, output):
-        cache['std'] = inputs[0] / 10.0
-        cache['embedding'] = output
-
     hooks = [model.backbone.register_forward_hook(backbone_hook),
-             model.diff_lifter.register_forward_hook(diffusion_hook),
-             model.spread_proj.register_forward_hook(spread_hook)]
+             model.diff_lifter.register_forward_hook(diffusion_hook)]
     try:
         result = model.forward_student(image, p2, is_train=False, joints_mask=mask, cam_bbox=cam)
     finally:
         for hook in hooks:
             hook.remove()
-    if not all(k in cache for k in ('features', 'hyp', 'std', 'embedding')):
-        raise RuntimeError('Khong bat duoc day du dau vao spread tu forward_student')
+    cache['std'] = result['joint_spread_3d']
+    cache['gates'] = torch.stack([layer['spread_gate'] for layer in result['feat_layers']])
+    if not all(k in cache for k in ('features', 'hyp', 'std', 'gates')):
+        raise RuntimeError('Khong bat duoc day du dau vao gate tu forward_student')
     if cache['hyp'].shape[1] != int(cfg.MODEL.difflift_spread_k):
-        raise RuntimeError('Nhom gia thuyet bat duoc khong khop K spread trong YAML')
+        raise RuntimeError('Nhom gia thuyet bat duoc khong khop K std trong YAML')
     if not torch.allclose(cache['hyp'].std(dim=1), cache['std'], atol=1e-6, rtol=1e-5):
         raise RuntimeError('std bat duoc khong khop gia thuyet; dung de tranh phan tich sai')
     return result, cache
+
+
+@contextmanager
+def override_image_gates(model, value):
+    # off cua mode gate la g=1; khoi phuc ngay ca khi replay gap loi.
+    gates = [block.image_gate for block in model.smpl_model.fusion.cfcer.blocks if block.image_gate is not None]
+    old = [gate.override_value for gate in gates]
+    try:
+        for gate in gates:
+            gate.override_value = value
+        yield
+    finally:
+        for gate, previous in zip(gates, old):
+            gate.override_value = previous
 
 
 def evaluate_mesh(ds, prediction, target, offset):
@@ -831,10 +847,12 @@ def inspect_compare(args, defaults):
     for name in ('scratch', 'kd'):
         model_cfg = configs[name].MODEL
         if (model_cfg.name != 'student' or model_cfg.pose_lifter != 'diffusion'
-                or not model_cfg.difflift_spread or model_cfg.difflift_steps != 1 or model_cfg.difflift_k != 1
-                or model_cfg.difflift_spread_k < 2 or model_cfg.difflift_select or model_cfg.student_hint
+                or model_cfg.difflift_steps != 1 or model_cfg.difflift_k != 1
+                or model_cfg.difflift_select or model_cfg.student_hint
                 or not model_cfg.student_3d_rootrel or model_cfg.REFINER != 'hypergcn'):
-            raise ValueError(f'{name}: can Student spread S1/K1, root-relative, hypergcn, khong selector/hint')
+            raise ValueError(f'{name}: can Student DiffLifter S1/K1, root-relative, hypergcn, khong selector/hint')
+        if model_cfg.difflift_spread_gate and model_cfg.difflift_spread_k < 2:
+            raise ValueError(f'{name}: gate can K>=2 de tinh std')
         if configs[name].DATASET.seqlen != 1 or configs[name].DATASET.use_gt_input:
             raise ValueError(f'{name}: can image-based seqlen=1, detector input')
     if any(configs[name].DATASET.input_joint_set != 'human36' or configs[name].DATASET.target_joint_set != 'human36'
@@ -858,7 +876,11 @@ def inspect_compare(args, defaults):
     for key in ('pw3d_2d_source', 'halpe26_conf_thr', 'input_joint_set', 'target_joint_set'):
         if configs['teacher'].DATASET[key] != configs['scratch'].DATASET[key]:
             raise ValueError(f'Teacher khac DATASET.{key}; can cung detector/PE2D')
-    for key in ('difflift_steps', 'difflift_k', 'difflift_spread_steps', 'difflift_spread_k'):
+    compare_std = all(configs[name].MODEL.difflift_spread_gate for name in ('scratch', 'kd'))
+    shared_keys = ['difflift_steps', 'difflift_k']
+    if compare_std:
+        shared_keys += ['difflift_spread_steps', 'difflift_spread_k']
+    for key in shared_keys:
         if configs['scratch'].MODEL[key] != configs['kd'].MODEL[key]:
             raise ValueError(f'Hai Student khac MODEL.{key}')
     batch_size = args.batch_size or int(configs['kd'].TEST.batch_size)
@@ -884,7 +906,7 @@ def inspect_compare(args, defaults):
 
     models, epochs = {}, {}
     for name, (config_path, checkpoint_path) in paths.items():
-        mode = 'teacher' if name == 'teacher' else 'spread'
+        mode = 'teacher' if name == 'teacher' else 'compare'
         with compare_config(configs[name]):
             models[name], epochs[name] = load_model(SimpleNamespace(mode=mode, ckpt=checkpoint_path), device)
         (out_dir / f'{name}_config.yml').write_text(Path(config_path).read_text(encoding='utf-8-sig'), encoding='utf-8')
@@ -898,7 +920,10 @@ def inspect_compare(args, defaults):
     log('Khong chon checkpoint moi. Ket qua test da dung chon best chi la phan tich phat trien.')
     log('Q1-Q4 va top10% xep hang theo MPJPE scratch; neu bang loi, giu thu tu sample. Khong phai nhom spread.')
     rows = []
-    input_parity = {'pose_max_abs_m': 0.0, 'std_max_abs_m': 0.0, 'teacher_gt_max_error_mm': 0.0}
+    input_parity = {'pose_max_abs_m': 0.0, 'std_max_abs_m': 0.0 if compare_std else None,
+                    'std_compared': compare_std, 'teacher_gt_max_error_mm': 0.0}
+    std_source = next((name for name in ('scratch', 'kd') if configs[name].MODEL.difflift_spread_gate), None)
+    log(f'Kiem tra std giua hai Student: {compare_std}; nguon spread_mm trong CSV: {std_source}')
     # Giu cfg scratch khi dataset/worker chay; moi forward duoc boc cfg rieng.
     with compare_config(configs['scratch']):
         ds = get_test_dataset(args.set, None)
@@ -928,7 +953,7 @@ def inspect_compare(args, defaults):
                                 raise RuntimeError('Teacher khong nhan dung GT 3D')
                         else:
                             result, cache = capture_real(models[name], image, p2, mask, cam)
-                            student_inputs[name] = (result['lifted_joints_3d'], cache['std'])
+                            student_inputs[name] = (result['lifted_joints_3d'], cache.get('std'))
                             del cache
                         predictions[name] = result['smpl_mesh_cam'].cpu().numpy()
                         del result
@@ -936,14 +961,20 @@ def inspect_compare(args, defaults):
                     if (not np.isfinite(predictions[name]).all()
                             or any(not np.isfinite(metrics[name][metric]).all() for metric in METRICS)):
                         raise RuntimeError(f'NaN/Inf: {name}, offset={offset}')
-                for j, key in ((0, 'pose_max_abs_m'), (1, 'std_max_abs_m')):
+                parity_keys = [(0, 'pose_max_abs_m')]
+                if compare_std:
+                    parity_keys.append((1, 'std_max_abs_m'))
+                for j, key in parity_keys:
                     delta = float((student_inputs['scratch'][j] - student_inputs['kd'][j]).abs().max())
                     input_parity[key] = max(input_parity[key], delta)
                     if not np.isfinite(delta) or delta > 1e-6:
                         raise RuntimeError(f'Hai Student khac dau vao {key}={delta}; kiem tra lifter/YAML/batch')
-                pose, std = student_inputs['scratch']
+                pose = student_inputs['scratch'][0]
                 lift_error = torch.norm(pose - gt, dim=-1)[:, 1:].mean(-1).cpu().numpy() * 1000
-                spread = std[:, 1:].norm(dim=-1).mean(-1).cpu().numpy() * 1000
+                spread = None
+                if std_source is not None:
+                    std = student_inputs[std_source][1]
+                    spread = std[:, 1:].norm(dim=-1).mean(-1).cpu().numpy() * 1000
             return predictions, metrics, target.numpy(), lift_error, spread
 
         loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=args.workers,
@@ -958,8 +989,9 @@ def inspect_compare(args, defaults):
             for i in range(batch):
                 row = {'sample': offset + i, 'img_path': value_at(meta, 'img_path', i),
                        'ann_id': value_at(meta, 'aid', i), 'dataset_idx': value_at(meta, 'idx', i),
-                       'missing_2d': int(np.sum(mask[i] <= 0)), 's1_mpjpe16_mm': float(lift_error[i]),
-                       'spread_mm': float(spread[i])}
+                       'missing_2d': int(np.sum(mask[i] <= 0)), 's1_mpjpe16_mm': float(lift_error[i])}
+                if spread is not None:
+                    row.update({'spread_mm': float(spread[i]), 'spread_source': std_source})
                 if not row['img_path'] or str(row['ann_id']).strip() == '':
                     raise RuntimeError('Dataset thieu img_path/ann_id de xac minh mau')
                 for name in ('scratch', 'kd', 'teacher'):
@@ -974,7 +1006,7 @@ def inspect_compare(args, defaults):
             raise ValueError('Khong co mau duoc eval')
         log(f'\nDa eval {len(rows)}/{len(ds)} mau; '
             + ('TOAN TAP' if len(rows) == len(ds) else 'TAP CON, khong coi la ket qua toan tap'))
-        log(f'Dau vao Student cung pose/std; sai khac max: {input_parity}')
+        log(f'Kiem tra dau vao Student (std chi so khi ca hai dung gate): {input_parity}')
         groups, hard = summarize_compare(rows, args, out_dir, log)
         selected = select_compare_visuals(rows, hard, args, log)
         for row in rows:
@@ -1054,10 +1086,11 @@ def main():
     if args.mode == 'teacher':
         inspect_teacher(args)
         return
-    if cfg.MODEL.name != 'student' or cfg.MODEL.pose_lifter != 'diffusion' or not cfg.MODEL.difflift_spread:
-        raise ValueError('Can YAML Student diffusion da bat difflift_spread')
+    if (cfg.MODEL.name != 'student' or cfg.MODEL.pose_lifter != 'diffusion'
+            or not cfg.MODEL.difflift_spread_gate):
+        raise ValueError('Can YAML Student DiffLifter da bat difflift_spread_gate')
     if cfg.MODEL.get('difflift_select', False) or cfg.MODEL.get('student_hint', False):
-        raise ValueError('Script chi danh gia spread rieng, khong selector/hint')
+        raise ValueError('Mode gate khong ho tro selector/hint')
     if cfg.MODEL.difflift_steps != 1 or cfg.MODEL.difflift_k != 1 or cfg.MODEL.difflift_spread_k < 2:
         raise ValueError('Can pose chinh S=1/K=1 va spread K>=2, giu dung thiet ke run')
     if not cfg.MODEL.get('student_3d_rootrel', True):
@@ -1085,7 +1118,7 @@ def main():
     CONDITIONS = ('real', 'off', 'shuffle')
     METRICS = ('mpjpe', 'pa_mpjpe', 'mpvpe')
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-    out_dir = Path(args.out_dir) if args.out_dir else Path(args.ckpt).parent / f'inspect_spread_{args.set}_{stamp}'
+    out_dir = Path(args.out_dir) if args.out_dir else Path(args.ckpt).parent / f'inspect_gate_{args.set}_{stamp}'
     out_dir.mkdir(parents=True, exist_ok=True)
     if any(out_dir.iterdir()):
         raise FileExistsError(f'Thu muc ket qua khong rong: {out_dir}; hay chon thu muc moi')
@@ -1109,17 +1142,17 @@ def main():
         f'chi chan doan {"tap con" if args.max_batches else "toan tap"}, khong train/chon checkpoint moi')
     log('Giu batch_size va mot GPU nhu phep do can doi chieu: wrapper reset seed moi batch, '
         'doi cach chia batch co the doi nhieu DDIM cua tung mau.')
-    log('off: bo ca embedding/bias. shuffle: doi ca tensor (17,3) giua cac mau, khong doi thu tu khop.')
+    log(f'Spread gate: zero_std={cfg.MODEL.difflift_spread_gate_zero}; off dat moi gate=1, '
+        'shuffle doi std that truoc gate.')
+    log('real-off chi do tac dung gate; real-shuffle moi kiem tra std dung mau. Ban zero_std khong dung std that.')
     log('Shuffle trong batch co the gap cac frame gan nhau; tac dong nho chua chung minh model bo qua spread.')
-    log(f'spread_proj ||W||={model.spread_proj.weight.norm().item():.6g}, '
-        f'||bias||={model.spread_proj.bias.norm().item():.6g}; norm khac 0 khong tu chung minh hieu qua.')
     rows, joint_rows = [], []
     pool = VisualPool(args.num_vis, args.seed)
     rng = np.random.RandomState(args.seed)
     offset = 0
     parity_max = None
     with torch.no_grad():
-        for bi, (inputs, targets, meta) in enumerate(tqdm(loader, desc=f'spread {args.set}')):
+        for bi, (inputs, targets, meta) in enumerate(tqdm(loader, desc=f'gate {args.set}')):
             if args.max_batches and bi >= args.max_batches:
                 break
             image = inputs['img'].to(device).float()
@@ -1131,23 +1164,25 @@ def main():
             pose = result['lifted_joints_3d']
             pe = model._pe2d_kwargs(p2, mask)
 
-            def replay(embedding):
-                return model.smpl_model(joints=pose, img_feats=cache['features'], is_train=False,
-                                        return_features=False, extra_tok=embedding, **pe)['smpl_mesh_cam']
+            def replay(neutral_gate=False, spread_override=None):
+                std_in = cache['std'] if spread_override is None else spread_override
+                with override_image_gates(model, 1.0 if neutral_gate else None):
+                    return model.smpl_model(joints=pose, img_feats=cache['features'], is_train=False,
+                                            return_features=False, joint_spread=std_in, **pe)['smpl_mesh_cam']
 
             # Tu kiem tra tren GPU khi nguoi dung chay: duong replay phai trung wrapper.
             if bi == 0:
-                parity_max = float((replay(cache['embedding']) - result['smpl_mesh_cam']).abs().max())
+                parity_max = float((replay() - result['smpl_mesh_cam']).abs().max())
                 log(f'Kiem tra replay real vs forward_student: max |mesh delta|={parity_max:.3g} met')
                 if parity_max > 1e-6 or not np.isfinite(parity_max):
                     raise RuntimeError('Replay khong trung wrapper; dung chan doan')
-            predictions = {'real': result['smpl_mesh_cam'].cpu().numpy(), 'off': replay(None).cpu().numpy()}
+            predictions = {'real': result['smpl_mesh_cam'].cpu().numpy(), 'off': replay(neutral_gate=True).cpu().numpy()}
             batch = len(image)
             donor = np.roll(np.arange(batch), int(rng.randint(1, batch))) if batch > 1 else None
             if donor is not None:
                 donor_tensor = torch.as_tensor(donor, device=device, dtype=torch.long)
-                swapped = model.spread_proj(cache['std'].index_select(0, donor_tensor) * 10.0)
-                predictions['shuffle'] = replay(swapped).cpu().numpy()
+                shuffled_std = cache['std'].index_select(0, donor_tensor)
+                predictions['shuffle'] = replay(spread_override=shuffled_std).cpu().numpy()
             target_np = target.numpy()
             metrics = {name: evaluate_mesh(ds, prediction, target_np, offset)
                        for name, prediction in predictions.items()}
@@ -1159,7 +1194,6 @@ def main():
             error = torch.norm(pose - gt, dim=-1).cpu().numpy() * 1000
             std = cache['std'].cpu().numpy() * 1000
             std_norm = np.linalg.norm(std, axis=-1)
-            embeddings = cache['embedding'].norm(dim=-1).mean(-1).cpu().numpy()
             pose_np, gt_np = pose.cpu().numpy(), gt.cpu().numpy()
             mask_np = mask.cpu().numpy().reshape(batch, 17)
             for i in range(batch):
@@ -1167,8 +1201,10 @@ def main():
                 row = {'sample': sample_id, 'img_path': value_at(meta, 'img_path', i),
                        'ann_id': value_at(meta, 'aid', i), 'dataset_idx': value_at(meta, 'idx', i),
                        'shuffle_donor_sample': offset + int(donor[i]) if donor is not None else -1,
-                       'spread_mm': float(std_norm[i, 1:].mean()), 's1_mpjpe16_mm': float(error[i, 1:].mean()),
-                       'spread_embedding_norm': float(embeddings[i])}
+                       'spread_mm': float(std_norm[i, 1:].mean()), 's1_mpjpe16_mm': float(error[i, 1:].mean())}
+                gate_values = cache['gates'][:, i].detach()
+                row.update({'gate_mean': float(gate_values.mean()), 'gate_std': float(gate_values.std(unbiased=False)),
+                            'gate_min': float(gate_values.min()), 'gate_max': float(gate_values.max())})
                 for name in CONDITIONS:
                     for metric in METRICS:
                         row[f'{name}_{metric}'] = float(metrics[name][metric][i]) if name in metrics else float('nan')
@@ -1181,6 +1217,7 @@ def main():
                                        'std_x_mm': float(std[i, j, 0]), 'std_y_mm': float(std[i, j, 1]),
                                        'std_z_mm': float(std[i, j, 2]), 'spread_mm': float(std_norm[i, j]),
                                        's1_error_mm': float(error[i, j])})
+                    joint_rows[-1]['gate_mean'] = float(cache['gates'][:, i, j, 0].mean())
 
                 def make_payload():
                     return {'row': row.copy(), 'image': image[i].cpu().numpy().copy(),
@@ -1198,6 +1235,8 @@ def main():
     write_csv(out_dir / 'samples.csv', rows)
     write_csv(out_dir / 'joints.csv', joint_rows)
     summary, grouped = summarize(rows, joint_rows, out_dir, log)
+    summary['spread_encoding'] = 'gate'
+    summary['gate_zero_std'] = bool(cfg.MODEL.get('difflift_spread_gate_zero', False))
     summary.update({'args': vars(args), 'epoch': epoch, 'n': offset, 'dataset_n': len(ds),
                     'subset': offset < len(ds), 'replay_max_mesh_delta_m': parity_max,
                     'pose_steps': 1, 'pose_k': 1, 'spread_steps': int(cfg.MODEL.difflift_spread_steps),
@@ -1217,7 +1256,7 @@ def main():
     if args.num_vis:
         plot_overview(rows, joint_rows, grouped, out_dir)
         save_visuals(pool, ds, out_dir, log)
-    log('\nCach doc: real tot hon shuffle -> dung thong tin spread dung mau; real tot hon off -> phu thuoc nhanh spread.')
+    log('\nCach doc: real tot hon shuffle -> thong tin std dung mau co ich; real tot hon off -> gate da hoc co loi so voi gate=1.')
     log('Bo nhanh la can thiep ngoai phan phoi train, khong thay the doi chung retrain baseline. Khong suy y nghia thong ke tu mot run.')
     log('Mau tot/xau chon theo MPJPE off-real tren CUNG checkpoint; khong phai so voi checkpoint baseline khac.')
     log(f'Ket qua: {out_dir}')

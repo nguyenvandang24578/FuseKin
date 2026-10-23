@@ -275,7 +275,7 @@ AWL tăng trọng số mesh 2.756->3.892 và joint3D 2.826->4.108 (epoch14->22).
 
 Bước tiếp: xác nhận epoch và kết quả TEST CUOI của best checkpoint; so sai số từng mẫu/nhóm khó KD với scratch và Teacher để biết lợi ích có tập trung đúng ca khó. Chỉ bổ sung chẩn đoán gradient hoặc đổi trọng số KD trong phạm vi được duyệt; chưa sửa source/YAML train của run này.
 
-## 12. So scratch/KD trên cùng mẫu - đã code, chờ chạy (2026-10-23)
+## 12. So scratch/KD trên cùng mẫu - đã có log toàn tập (2026-10-23)
 
 Người dùng đồng ý tạm dừng train để so các checkpoint hiện có; epoch 18 đang là ứng viên best theo log đã gửi, chưa đọc trực tiếp checkpoint server. Người dùng yêu cầu rà `./main` trước khi thêm file. Đã đọc `compare_students.py`, đường chạy của `compare_teacher_student.py`, `diagnose_kd.py`, `kd_feature_analysis.py`, `compare_checkpoint_drift.py` và inspector hiện tại. `compare_students.py` có metric tổng nhiều Student, các công cụ feature cũ còn giả định MotionBERT/T-hint hoặc gọi forward thiếu cam_bbox/đường spread; không dùng nguyên trạng để kết luận thí nghiệm này.
 
@@ -286,3 +286,98 @@ Người dùng đồng ý tạm dừng train để so các checkpoint hiện có
 Visual: GT/scratch/KD/Teacher trước/ngang; ba ID #2749/#8785/#17500, mẫu cải thiện/xấu đi nhiều và mẫu ngẫu nhiên trong 10% khó. Mode compare dùng `--sample_ids` để chọn thêm hình, vẫn eval cả tập. Chọn hình sau khi có metric toàn lượt, nạp lại nguyên batch gốc để không đổi seed DDIM theo vị trí; xác minh ảnh/ann_id và metric replay trong 0.01 mm. Chỉ giữ mesh theo batch, không giữ mesh toàn tập. `--num_vis 0` bỏ matplotlib/hình; `--max_batches` phải được đọc là kết quả tập con.
 
 Lệnh chính xác ở README, theo tên run đã chuẩn bị; người dùng cần dùng YAML thực tế của checkpoint nếu đã đổi lịch trên server. **Mới code và rà source/diff, chưa chạy/import/kiểm cú pháp Python hoặc đánh giá trên GPU.** Phép so này vẫn còn khác khởi tạo Teacher, hệ số hard loss và lịch LR giữa hai run; chỉ đo lợi ích tổng của bản KD. Teacher GT là oracle. Các checkpoint chọn theo 3DPW test chỉ phục vụ phân tích phát triển, không chọn/tinh chỉnh model tiếp bằng test. Chưa thay luật trọng số KD, chưa train biến thể mới.
+
+### Kết quả ghép cặp người dùng gửi: 35,515 mẫu
+
+Đã nhận bảng MPJPE14 theo nhóm từ mode compare. Sai khác đầu vào hai Student: pose_max_abs_m=0, std_max_abs_m=0; Teacher GT input error=0 mm. Đây là kết quả người dùng chạy, không phải phép chạy local của trợ lý. Chưa có header checkpoint/epoch, bảng PA-MPJPE/MPVPE toàn tập, CSV đầy đủ hoặc dòng xác nhận visual replay. Ảnh đính kèm `image(7).png` đã được xác định nhưng chưa xem trực tiếp pixel ở lượt phân tích này; nhận xét dưới đây chỉ dựa trên log.
+
+| Nhóm theo lỗi scratch / detector | n | Scratch MPJPE | KD MPJPE | Teacher GT MPJPE | Gain scratch-KD | Median gain | Tốt/xấu >1 mm |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Toàn tập | 35515 | 77.593 | 76.763 | 33.502 | +0.830 | +0.727 | 48.9% / 43.4% |
+| Q1 | 8879 | 46.007 | 48.766 | 24.638 | -2.759 | -1.945 | 33.5% / 55.4% |
+| Q2 | 8879 | 63.911 | 63.787 | 30.308 | +0.124 | +0.498 | 48.2% / 44.5% |
+| Q3 | 8879 | 81.796 | 79.605 | 35.122 | +2.190 | +2.659 | 55.7% / 37.9% |
+| Q4 | 8878 | 118.664 | 114.897 | 43.941 | +3.766 | +3.834 | 58.3% / 36.1% |
+| 10% lỗi scratch cao nhất | 3552 | 142.483 | 137.729 | 49.144 | +4.754 | +4.714 | 61.6% / 32.5% |
+| Không thiếu keypoint | 34835 | 77.168 | 76.342 | 33.375 | +0.826 | +0.709 | 48.9% / 43.5% |
+| Thiếu 1–4 keypoint | 678 | 98.436 | 97.124 | 39.820 | +1.313 | +1.554 | 52.9% / 41.0% |
+| Thiếu 9–17 keypoint | 2 | 415.397 | 500.669 | 102.552 | -85.272 | -85.272 | 0% / 100% |
+| Teacher có lợi thế >1 mm | 35452 | 77.638 | 76.775 | 33.464 | +0.863 | +0.747 | 49.0% / 43.3% |
+| Teacher không có lợi thế >1 mm | 63 | 52.362 | 69.789 | 54.830 | -17.427 | -15.883 | 0% / 100% |
+
+Đơn vị mm. `hard10_teacher_better` trùng toàn bộ nhóm hard10 (n=3552), không phải một tập kiểm chứng độc lập. Không có dòng missing_5_8 trong log; không tự suy kết quả nhóm đó. Giá trị gain dùng số in riêng có thể lệch 0.001 mm so với trừ hai mean đã làm tròn.
+
+Diễn giải: run KD cải thiện trung bình 0.830 mm và có gain lớn hơn ở các nhóm scratch sai nhiều, song Q1 xấu đi. Đây là phép so cả run, còn khác khởi tạo/hard loss/LR, chưa tách tác động riêng của loss KD hoặc spread. Nhóm chia theo chính lỗi scratch có thể tạo một phần xu hướng Q1 xấu/Q4 tốt, kể cả khi hai model chỉ khác phân bố sai số; chưa coi là bằng chứng KD đã học cơ chế nhận biết ca khó. Cần phân nhóm thêm theo lỗi pose S1 đầu vào chung (đã có s1_mpjpe16_mm trong samples.csv), số keypoint thiếu hoặc nhãn/sequence cố định, không chỉ theo output scratch.
+
+Quy đổi đóng góp vào gain toàn tập từ các mean đã in: Q1 khoảng -0.690 mm; Q4 +0.941 mm; hard10 +0.475 mm (hard10 nằm trong Q4, không cộng hai nhóm này). Nhóm Teacher không có lợi thế >1 mm chỉ chiếm 63/35515=0.177%, đóng góp -0.031 mm. Vì vậy không thể quy phần lớn thiệt hại Q1 cho việc Teacher kém; Teacher trung bình ở Q1 vẫn tốt hơn nhiều (24.638 so với scratch 46.007). Nhóm thiếu 9–17 chỉ n=2, đóng góp -0.0048 mm toàn tập: cần xem từng ca thất bại, không khái quát cho mọi ca che khuất.
+
+Teacher có lợi thế >1 mm trên 99.823% mẫu so với checkpoint scratch. Chỉ thêm gate theo điều kiện này sẽ tác động rất ít mẫu trong phép phân tích; không đủ bằng chứng rằng nó giải quyết được phần lớn hạn chế. Đây là so Teacher với scratch cố định, không thay thế phân bố Teacher so với Student đang thay đổi trong train. Trên hard10, khoảng cách lỗi scratch–Teacher là 93.339 mm, KD thu hẹp 4.754 mm (~5.1%); khoảng cách này là mô tả oracle, không phải phần cải thiện chắc chắn Student có thể đạt được từ ảnh/2D.
+
+Ưu tiên tiếp: dùng samples.csv hiện có để kiểm tra nhóm theo lỗi S1 và xem gain ở mẫu scratch vốn tốt; sau đó mới chốt trọng số KD. Nếu tiếp tục sửa train, cần xét độ khó và khả năng bảo toàn mẫu đã tốt, không chỉ tăng lambda hoặc gate Teacher kém. Chưa sửa công thức KD, chưa tạo run mới. Các kết quả vẫn chọn checkpoint trên 3DPW test, chỉ là phân tích phát triển của một run; không suy ý nghĩa thống kê.
+
+## 13. Content ablation Teacher GT - kết quả người dùng gửi (2026-10-24)
+
+Đã đọc `main/content_ablation_test.py`, đối chiếu nhánh Teacher alpha=0 với `ARTS.forward_teacher` và cách in bảng tổng kết. Người dùng gửi dòng: `Teacher a=0.0 [GT sach] 30.55 +20.56 +28.26 DUNG anh`. Cột tương ứng: MPJPE ảnh thật=30.55 mm, mean-real MPJPE=+20.56 mm, mean-real MPVPE=+28.26 mm. Suy ra MPJPE khi dùng feature ảnh trung bình batch khoảng 51.11 mm. Chưa có n, batch/seed, đường dẫn checkpoint, epoch, kết quả blind, MPVPE tuyệt đối hoặc toàn bộ header để xác nhận độc lập; không tự gán các giá trị đó.
+
+Script giữ GT 3D/PE2D, thay feature ảnh trước fusion; mean lấy trung bình feature trong batch, không phải ảnh xám. Phép can thiệp cho thấy ảnh đúng mẫu giúp Teacher GT dự đoán tốt hơn trong đánh giá này, không ủng hộ giả thuyết Teacher hoàn toàn bỏ qua ảnh khi pose sạch. Mốc lịch sử n=1600 mean-real Teacher +20.18 mm ở mục 7 là kết quả cũ riêng; không đồng nhất checkpoint hoặc tập con với dòng mới.
+
+Metric ở đây là H36M-17 root-relative (bao gồm pelvis), MPVPE can pelvis H36M; không so tuyệt đối 30.55/51.11 với MPJPE14=33.502 của mode compare. Ngưỡng nhãn DUNG anh trong script là heuristic 3 mm, không phải kiểm định thống kê. Mean feature vẫn là can thiệp có thể khác phân phối; chênh lệch không đo trực tiếp tỷ lệ phụ thuộc ảnh.
+
+Kết quả chưa xác định block fusion nào mang tín hiệu ảnh hữu ích, cũng chưa chứng minh Teacher sửa được pose S1 nhiễu hoặc Student có thể học tín hiệu đó qua KD. Chưa có lý do từ kết quả này để train lại Teacher chỉ nhằm ép dùng ảnh; có cơ sở nghiên cứu KD hướng vào nhánh đọc ảnh, nhưng chưa triển khai/chốt công thức image-update KD. Nhánh Student của content_ablation_test hiện gọi smpl_model trực tiếp mà không truyền extra_tok spread; không dùng nguyên trạng để kết luận về Student spread/KD. Không sửa source hoặc chạy code dự án ở local.
+
+## 14. KD E1 + gate spread - đã code, chờ train (2026-10-24)
+
+Người dùng duyệt thử gate theo từng joint và sẽ train lại KD. Phạm vi đã thực hiện: thay cách dùng spread trong fusion, giữ nguyên tín hiệu/loss KD E1 hiện tại; chưa chuyển sang KD image-update. Không sửa các YAML/run cũ hoặc repo tham khảo, không chạy Python dự án, train/test/import/syntax check tại local.
+
+Hai YAML/run mới:
+
+| Bản | YAML trong config/ | exp_name |
+|---|---|---|
+| Gate nhận spread thật | train_student_kd_e1_v2_diff_spread_gate.yml | student_kd_e1_v2_diff_spread_gate |
+| Cùng gate, std đầu vào=0 | train_student_kd_e1_v2_diff_spread_gate_zero.yml | student_kd_e1_v2_diff_spread_gate_zero |
+
+Đã đối chiếu tĩnh các giá trị YAML: mọi giá trị của KD spread local được giữ nguyên, chỉ thêm ba key gate đã khai báo trong config.py; hai YAML mới chỉ khác difflift_spread_gate_zero. Cả hai dùng S1/K1, spread S5/K20, seed lệnh chạy 123, Teacher GT cũ, init_student_from_teacher=True, hard_w=lambda=1, KD joint/global=1, proj=0, không noise weighting/InfoNCE; LR `[5,10,15,22,27]`, 30 epoch. Bản zero vẫn tính K/std để giữ cùng hình dạng tính toán và RNG giữa hai run, chỉ che std tại gate. Thư mục kết quả mới do trainer tạo khi chạy, không dùng resume của run cộng token cũ.
+
+Gate: ở mỗi trong 3 block, nhận LN token joint sau self-attn, LN image_update sau out_joint và log1p(std_xyz*10), qua MLP hidden64 ra scalar mỗi joint. `g=2*sigmoid`, khởi tạo g=1; residual `coef1*joint + coef2*(g*image_update)`, giữ FFN và các hệ số cũ. Bật gate thì không cộng embedding spread. Gate dùng cả joint/ảnh, nên g khác 1 không chứng minh spread hữu ích. Đối chứng zero tách đóng góp của std khỏi phần gate dựa vào joint/ảnh. Không ép spread cao luôn dùng ảnh nhiều hơn; spread chưa được hiệu chuẩn thành lỗi joint.
+
+Source đã đổi: config.py khai báo mặc định tắt; ARTS.__init__/forward_student nối std; JointImageSpreadGate và constructor/forward các lớp fusion trong teacher_student.py; Student_Trainer thêm log mean/std/min/max và kiểm tra key khởi tạo Teacher (không sửa công thức loss); main/train.py lưu metadata gate và xác minh lúc test cuối; inspector load_model/capture_real/replay hỗ trợ checkpoint gate, giữ strict load. Metadata zero_std/hidden giúp chặn nạp nhầm cấu hình real/zero cùng shape. Teacher không tạo gate dù được dựng từ YAML Student KD; checkpoint Teacher giữ nguyên.
+
+Inspector: mode spread real dùng gate đã học, off ép gate=1, shuffle đổi std đúng mẫu trước gate. Với bản zero, shuffle không thay thông tin gate; off vẫn có thể khác vì gate đã học từ joint/ảnh. Các checkpoint cộng token cũ giữ nghĩa off/shuffle cũ. Mode compare scratch/KD dùng builder mới và vẫn kiểm tra raw pose/std chung. Gate mới chặn kd_res_mode=v2 vì đường fusion phụ cũ chưa truyền std; content_ablation_test.py nhánh Student cũng chưa nối gate và sẽ báo thiếu std. Không dùng hai đường đó để âm thầm bỏ gate.
+
+Tiêu chí sau train: so real với zero trên cùng evaluator/batch và seed, cả metric tổng lẫn từng mẫu/nhóm lỗi S1 chung; kết hợp kiểm tra inference real/off/shuffle. So với KD cộng token 76.763 mm chỉ là so hai cách dùng spread, không tách riêng thông tin std. Nếu chênh nhỏ cần thêm seed, không suy ý nghĩa thống kê từ một run. Cả hai run giữ train 3DPW-train/chọn best 3DPW test để đối chiếu phát triển; không coi là đánh giá cuối độc lập. Chưa có kết quả gate thực nghiệm.
+
+## 15. Chan doan spread tren KD cu - log nguoi dung moi gui
+
+Nguoi dung gui ket qua du 35,515 mau. Real MPJPE/PA-MPJPE/MPVPE = 76.763/51.030/93.574 mm, trung moc KD E18 da bao. Doan log khong kem header checkpoint/YAML/epoch; theo mach trao doi day la KD cong embedding spread cu, KHONG phai ket qua gate moi. Chua xac minh doc lap checkpoint, seed hay CSV.
+
+| Dieu kien | MPJPE (14) | PA-MPJPE | MPVPE |
+|---|---:|---:|---:|
+| real | 76.763 | 51.030 | 93.574 |
+| off | 76.851 | 51.039 | 93.786 |
+| shuffle trong batch | 76.751 | 51.014 | 93.546 |
+
+Don vi mm. Gain off-real = +0.088/+0.009/+0.212; real kem shuffle +0.012/+0.017/+0.028. Median real-off MPJPE=-0.162, MPVPE=-0.296 mm; tot/xau hon >0.1 mm MPJPE=52.7%/39.4%, MPVPE=57.0%/36.5%. Chenh lech mean rat nho; khong suy y nghia thong ke tu mot run.
+
+| Nhom theo spread | n | Spread TB (mm) | MPJPE real | MPJPE off | Gain off-real (mm) |
+|---|---:|---:|---:|---:|---:|
+| Q1 | 8879 | 26.28 | 65.397 | 65.689 | +0.292 |
+| Q2 | 8878 | 33.85 | 69.367 | 69.613 | +0.245 |
+| Q3 | 8879 | 40.62 | 77.840 | 77.956 | +0.116 |
+| Q4 | 8879 | 53.95 | 94.446 | 94.146 | -0.300 |
+
+Spearman gop 16 khop voi loi S1=0.5591, tung khop 0.091-0.311, nhu log scratch. Day la thuoc tinh std/dau vao, khong phai bang chung fusion su dung hieu qua. Q4 la spread cao, khong dong nhat voi kho nhat theo GT hay che khuat.
+
+Ket luan: nhanh embedding co tac dong nho khi bo, nhung chua thay loi ich ro cua std dung mau; real khong tot hon shuffle, Q4 con xau hon off. Off bo ca bias/embedding va khac phan phoi train; shuffle chi trong batch co the gap frame gan nhau nen chua du ket luan spread hoan toan vo ich. Khong quy gain KD so scratch 0.830 mm cho spread, va khong dung ablation inference de tach tac dong spread khi train.
+
+Gate o muc 14 van la gia thuyet da code/cho chay, KHONG duoc log nay kiem chung. Buoc tiep giu hai run gate real/zero cung kien truc, seed, loss, LR; chi khac std dau vao. Neu real khong cai thien nhat quan so zero thi chua co co so giu std, co the giu gate dua vao joint/anh neu doi chung rieng cho thay loi ich. Khong doi them loss KD trong cap thu nghiem nay. Giao thuc chon best theo 3DPW test chi phuc vu phat trien nhu cac moc truoc.
+## 16. Don nhanh cong spread, giu gate KD - da sua code, cho chay
+
+Nguoi dung ban dau yeu cau bo spread/gate, sau do doi uu tien train gate KD va xac nhan pham vi: **chi bo spread, giu GATE**. Pham vi duoc hieu theo lua chon da hoi: bo nhanh cong embedding spread cu; van giu std xyz lam dau vao gate. Khong thay kien truc gate hay loss KD da chot.
+
+Da xoa config/train_student_v2_diff_spread.yml va config/train_student_kd_e1_v2_diff_spread.yml. Hai YAML gate real/zero giu nguyen ten va noi dung. ARTS.__init__/forward_student bo spread_proj/diff_spread va chi sinh K/std khi gate bat; FusionPose2Mesh.forward bo extra_tok rieng nhanh cu, hint_z giu nguyen. Cac key difflift_spread/steps/k giu cho lay std cua gate, config.py ghi ro spread=True phai kem gate=True. Loader validate_spread_gate_checkpoint tu choi checkpoint co spread_proj thay vi de strict=False bo qua nhanh cu. Muon tai hien run spread cu can source/YAML tuong ung cua run do; khong xoa checkpoint, ket qua hay lich su.
+
+Inspector hien co giu ten main/inspect_student_spread.py: mode gate mac dinh, mode spread la alias cho gate; capture_real/replay bo hook/project embedding, off=gate1, shuffle doi std, bo cot spread_embedding_norm. Teacher GT va doc CSV cu giu nguyen. Mode compare ho tro Student DiffLifter thuan/gate, luon so pose S1; chi so std khi ca hai gate, neu khong ghi std_compared=False/std_max_abs_m=None. CSV spread chi co khi do std that va ghi ro nguon. Khong bo qua loi checkpoint de nap run spread cu.
+
+Co san ban thuan config/train_student_v2_diff.yml (khong KD/gate) va ban KD khong gate config/train_student_kd_e1_v2_diff.yml. Khong doi hai YAML nay, loss hay lich train. Gate KD giu 30 epoch, LR [5,10,15,22,27], init Teacher va hai doi chung real/zero nhu muc 14. Lenh train/inspect gate va compare hien hanh trong README. Tat ca moc spread/KD da bao o cac muc truoc la lich su, khong phai ket qua gate. Chua co log train gate moi; gate van la gia thuyet cho kiem chung.
+
+Da doc lai source/diff, kiem tra tham chieu nhanh cu va cau hinh bang van ban; khong chay/import/kiem cu phap Python hay train/test tai local theo AGENTS.md. Khong doi code DiffLifter, cong cu chan doan rieng cua lifter hoac repo tham khao.

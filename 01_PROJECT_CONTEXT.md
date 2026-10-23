@@ -29,7 +29,7 @@ Các cờ kiến trúc v2 (`joint_pe2d`, `fusion_joint_self_attn`, `pose_head_mo
 - Bình thường: `MODEL.pose_lifter: 'diffusion'`, `difflift_steps: 1`, `difflift_k: 1`.
 - Augmentation: `difflift_aug_prob: 0.5`, `difflift_aug_steps: 5`. Khi train, mỗi mẫu có xác suất 0.5 nhận một pose sinh ngẫu nhiên S=5, K=1 thay pose chính; khi eval dùng S=1, K=1. Không có selector trong YAML aug.
 - Selector: `difflift_select: True`, YAML dùng S=5, K=20. `HypSelector` đọc đặc trưng ảnh tại 2D từng khớp và hình dạng các giả thuyết, softmax theo K, gộp có trọng số từng khớp. Đây không phải chọn cứng cả pose.
-- Spread: `difflift_spread: True` sinh một nhóm giả thuyết riêng, lấy std theo x/y/z, chiếu rồi cộng vào token khớp; có YAML riêng.
+- Gate: `difflift_spread=True` + `difflift_spread_gate=True` sinh nhóm S5/K20 riêng, truyền std xyz (mét) để điều chỉnh cập nhật ảnh; pose chính S1/K1. Nhánh cộng embedding spread đã xóa; không bật gate thì Student dùng pose DiffLifter thuần.
 
 Các nhánh trên là thí nghiệm riêng; không bật cộng dồn nếu chưa có kế hoạch. Selector hiện nhận gradient từ đường mesh và loss phụ pose đã chọn; chưa có thay đổi chặn gradient từ FuseKin vào selector.
 
@@ -121,7 +121,7 @@ Các ghi chú cũ về mesh target/mask/collate khi train **mesh đa dataset** c
 | Phép đo/run | Giao thức đang có trong source/YAML |
 |---|---|
 | Lifter `r25_cam` và bản GCN + attention | Train H36M + MuCo + MSCOCO + CrowdPose; không `3dpw-train`; best theo **`3dpw-val`**, có log test trong train |
-| Student `train_student_v2_diff.yml`, `_diff_aug.yml`, `_diff_sel.yml`, `_diff_spread.yml` | Train **`3dpw-train`**; `test_list=['3dpw']`, `TEST.select_dataset='3dpw'` → chọn best trên **test** |
+| Student `train_student_v2_diff.yml`, `_diff_aug.yml`, `_diff_sel.yml` và hai bản gate KD | Train **`3dpw-train`**; `test_list=['3dpw']`, `TEST.select_dataset='3dpw'` -> chọn best trên **test** |
 | Mesh best | `main/train.py` xét cải thiện MPJPE **hoặc** MPVPE trên tập được chọn; không phải chỉ một metric |
 
 Comment “mỗi epoch chỉ val” trong các YAML Student trên đang không khớp giá trị thật. Đợt cập nhật tài liệu không thay YAML hoặc thay run đang train. Các kết quả chọn theo test là kết quả phát triển, cần giao thức tách validation trước khi dùng làm bảng đánh giá cuối.
@@ -135,22 +135,38 @@ Mục tiêu so với JOTR là **toàn pipeline không dùng dữ liệu 3DPW đ�
 
 Không so trực tiếp hai loại MPJPE. Oracle dùng GT để chọn là phép đo tiềm năng, không phải kết quả triển khai không có GT.
 
-## 7. Chẩn đoán Student spread
+## 7. Chẩn đoán gate và Teacher GT
 
-`main/inspect_student_spread.py` là công cụ suy luận riêng, không thêm cờ model hoặc sửa API/config train. Công cụ gọi đường `forward_student` thật, lấy feature/giả thuyết/std qua hook tạm, rồi giữ nguyên feature ảnh/pose S=1/PE2D để so embedding spread thật, bỏ embedding và hoán đổi std giữa mẫu trong batch. Không bỏ sót bias khi tắt embedding. Mesh đo bằng `dataset.evaluate`; chẩn đoán lỗi lifter giữ H36M-17 và bỏ pelvis. Kiểm tra replay và strict load checkpoint chặn phân tích sai kiến trúc. Chi tiết số liệu, đầu ra và giới hạn ở mục 9 của `experiment.md`; lệnh chạy ở README. Người dùng đã gửi log chạy đủ 35,515 mẫu; real/off/shuffle gần như ngang nhau. Đã xem ba hình mẫu và biểu đồ tổng hợp người dùng gửi, chưa xem đủ 12 hình; quan sát củng cố việc real/off thường gần nhau và chưa sửa được ca sai lớn. Chi tiết và giới hạn ở mục 9 của `experiment.md`.
+Giữ script `main/inspect_student_spread.py`; mặc định `--mode gate`, `--mode spread` là alias gate. Không còn builder/replay cho Student cộng embedding spread. `capture_real` lấy ảnh/K/std/gate từ forward thật; `off` ép g=1, `shuffle` đổi std giữa mẫu trong batch. Replay kiểm tra mesh khớp wrapper; metric mesh dùng `dataset.evaluate` 14 khớp, chẩn đoán pose dùng H36M-17 bỏ pelvis. Xuất CSV, nhóm spread, tương quan từng khớp và hình; thống kê gate theo mẫu/khớp. Shuffle trong batch có thể yếu do frame gần nhau; gate khác 1 chưa chứng minh std hữu ích.
 
-## 8. Chẩn đoán Teacher GT trên cùng mẫu khó
+`--mode teacher` dùng YAML/checkpoint Teacher GT thuần, GT mesh -> H36M-17 -> root-relative -> mét; detector PE2D giữ nguyên. Có thể chọn sample index và dùng `--spread_csv` đọc CSV cũ để xác minh ảnh/ann_id, không chạy lại checkpoint Student cũ. Subset không liên tiếp dùng evaluator theo đúng index gốc. Teacher dùng GT là oracle. Lịch sử kết quả ở mục 9-10 và 13 của `experiment.md`; lệnh hiện tại ở README.
 
-Inspector dùng thêm `--mode teacher` (mặc định vẫn spread), với đúng YAML/checkpoint Teacher GT thuần. Mode này gọi `ARTS.forward_teacher` qua wrapper với GT H36M-17 lấy từ GT mesh, mét, trừ pelvis; không lifter hoặc corruption khi eval. Vị trí 2D cho fusion vẫn detector theo YAML, không phải GT 2D. Có thể chọn sample index 0-based và xác minh với CSV spread bằng sequence/frame + ann_id; evaluator nhận đúng index gốc cả khi chọn tập con không liên tiếp. Xuất số mesh 14 khớp, hình Teacher/GT trước-ngang và CSV. Không đổi API model, config hoặc YAML train. Các hàm chính thêm trong inspector: `inspect_teacher`, `read_spread_reference`, `verify_spread_reference`, `save_teacher_visuals`; `load_model` hỗ trợ strict load Teacher và `VisualPool` dùng thêm nhóm worst/best/random. Đã nhận ảnh Teacher mẫu #17500: MPJPE 153.026 / MPVPE 170.524 mm, input GT error=0; chưa có log tổng kết. Người dùng muốn giữ spread để nghiên cứu KD có trọng số; chưa code công thức mới. Số liệu/trạng thái ở mục 10 của `experiment.md`, lệnh ở README.
+## 8. Student DiffLifter thuần và KD E1
 
-## 9. Student spread + KD feature E1
+`config/train_student_v2_diff.yml`: scratch, `student_use_kd=False`, pose S1/K1 từ lifter đóng băng và đặc trưng ảnh. Không sinh K/std cho fusion khi gate tắt.
 
-`config/train_student_kd_e1_v2_diff_spread.yml` được tạo từ E1 diffusion, chỉ thêm ba key spread đã có trong `lib/core/config.py`. Student nhận pose S=1/K=1 và embedding std xyz từ S=5/K=20 trước fusion; KD MSE trên token joint/global sau fusion truyền gradient qua nhánh spread. Teacher GT đóng băng, không có spread. Giữ `init_student_from_teacher=True`, KD joint/global=1, proj=0, `kd_noise_weight=False`, không InfoNCE; `kd_res_mode` vẫn theo mặc định v1. Không sửa Python hoặc YAML cũ. Bản mới làm đối chứng cho KD có trọng số ca khó sau này; đã nhận log epoch 14–22, mốc thấp nhất trong đoạn ở epoch 18 là 76.76 / 93.57 mm. Chưa có kết quả so ghép cặp hai checkpoint. Đây là run mới từ khởi tạo E1, không nạp Student spread đã train. Giữ train 3DPW-train/chọn best trên 3DPW test như E1; chưa phải giao thức đánh giá cuối. Lệnh chạy ở README, trạng thái ở mục 11 của `experiment.md`.
+`config/train_student_kd_e1_v2_diff.yml`: cùng pose S1/K1, Teacher GT đóng băng, Student khởi tạo phần chung của smpl_model từ Teacher. KD MSE qua Linear(LN(Student)) tới LN(Teacher) trên `feat_joint` (B,17,512) và `feat_global` (B,1024) sau cả 3 block fusion; global ghép mean token ảnh và mean token joint. Trọng số joint/global=1, trước fusion=0, hard_w=lambda=1, noise weighting=False, InfoNCE=0. Có hard loss GT và loss phụ privileged 3D. Không KD output mesh/SMPL hoặc attention map trong E1.
 
-## 10. Đánh giá ghép cặp scratch/KD/Teacher
+KD hiện yêu cầu đặc trưng cuối giống Teacher, chưa trực tiếp ép đường ảnh sửa các khớp lifter sai. Không đổi loss KD trong lần dọn. Kết quả KD cộng embedding cũ E18 và so paired được giữ như lịch sử tại mục 11-12,15 của `experiment.md`, không gán cho hai cấu hình thuần hoặc gate chưa có kết quả.
 
-`main/inspect_student_spread.py --mode compare` mở rộng inspector sẵn có sau khi rà các script compare/diagnose trong `main/`; không tạo Python mới, không đổi model/train/config key. `read_compare_config` nạp mỗi YAML từ default riêng; `compare_config` khôi phục cfg toàn cục cho builder/forward từng model rồi trả về cfg dataset. Strict loader cũ dùng cho cả hai Student spread và Teacher GT. `inspect_compare` chạy cùng batch gốc, dùng `capture_real` để kiểm tra S1/std hai Student và Teacher input GT; metric gọi lại `evaluate_mesh`/`dataset.evaluate`. YAML sai vai trò, cấu hình đầu vào khác nhau hoặc sai expected epoch sẽ dừng.
+## 9. Đánh giá ghép cặp scratch/KD/Teacher
 
-`summarize_compare` cố định Q1–Q4 và top 10% theo lỗi scratch, nhóm keypoint thiếu, nhóm Teacher tốt hơn scratch; xuất mean/median gain và tỷ lệ theo ngưỡng mô tả 1 mm. `select_compare_visuals`, `save_compare_visual` và `plot_compare_overview` chọn mẫu cố định/tốt/xấu/ngẫu nhiên khó, vẽ cùng GT/scratch/KD/Teacher. Hình dựng lại trên nguyên batch ban đầu, kiểm tra identity và metric replay; không đổi vị trí mẫu trong batch DDIM, không giữ mesh toàn dataset. Skeleton chẩn đoán H36M-17, metric mesh 14 khớp; mesh can SMPL pelvis, không PA để vẽ.
+`main/inspect_student_spread.py --mode compare` dùng YAML riêng từ cùng default; `compare_config` khôi phục cfg riêng cho mỗi builder/forward. Hỗ trợ Student DiffLifter thuần/gate và Teacher GT, nạp strict. Luôn kiểm tra hai pose S1 khớp và Teacher input đúng GT; chỉ so raw std khi cả hai bật gate và dùng cùng S/K tính std. Nếu không so std, summary ghi std_compared=False và std_max_abs_m=None; CSV chỉ có spread_mm khi có nguồn std thật, ghi rõ spread_source.
 
-Chỉ CLI mode compare được thêm, mặc định vẫn spread và đường teacher cũ được giữ. Lệnh ở README; trạng thái và giới hạn ở mục 12 của `experiment.md`. Chưa chạy code dự án tại local hoặc có kết quả paired mới. Kết quả KD người dùng gửi hiện có epoch 18=76.76 / 51.03 / 93.57 mm; mục 11 của `experiment.md` là nguồn trạng thái mới nhất, thay cho ghi chú chờ chạy lúc tạo YAML.
+Metric mesh theo evaluator. Nhóm Q1-Q4/top10% chọn theo lỗi scratch, nhóm missing/Teacher-better, gain scratch-KD và hình GT/scratch/KD/Teacher giữ nguyên. Chia nhóm theo lỗi scratch có thiên lệch chọn nhóm; không suy ra KD tự nhận biết ca khó. Hình replay nguyên batch DDIM gốc và kiểm tra metric/identity. Khởi tạo, hệ số hard/privileged, lịch LR và tập chọn best phải được xét khi so run. Không coi so gate KD với scratch thuần là ablation tách riêng std hoặc loss KD.
+
+## 10. Gate cho Student KD
+
+`MODEL.difflift_spread_gate=False` mặc định giữ Student thường, không tạo tham số gate. Bật gate chỉ ở Student; Teacher xây từ cùng YAML vẫn không có gate. `difflift_spread` và steps/k chỉ cấu hình lấy std cho gate; spread=True mà gate=False báo lỗi để chặn dùng nhầm YAML nhánh cũ. Giữ tên key và hai YAML gate đã gửi để đồng bộ server không đổi lệnh train.
+
+`ARTS.forward_student` dùng pose S1/K1, std xyz (mét) từ S5/K20, truyền `joint_spread` qua FusionPose2Mesh/RGBJointFusion/RGBJointCrossTransformer tới 3 block. Raw std có trong `joint_spread_3d`. Không còn `spread_proj`, cờ runtime `diff_spread` hay tham số `extra_tok`; đường hint_z riêng giữ nguyên.
+
+`JointImageSpreadGate`: MLP(1027 -> hidden64 -> 1), đầu vào `[LN(joint),LN(image_update),log1p(std_xyz*10)]`. Gate scalar riêng cho từng khớp/mẫu/block: g=2*sigmoid, Linear cuối zero-init nên g=1. Nhân g vào image_update sau out_joint trước residual/FFN, giữ coef1/coef2. Đây không phải confidence đã hiệu chuẩn hay tỷ lệ trộn chuẩn hóa. `difflift_spread_gate_zero=True` chỉ che std ở đầu vào gate, vẫn sinh K để giữ tính toán/RNG. Không ép spread cao luôn dùng ảnh nhiều hơn.
+
+Student_Trainer giữ nguyên KD E1, log gate mean/std/min/max và kiểm tra key khi khởi tạo từ Teacher. main/train.py lưu metadata spread_gate_config={zero_std,hidden}; loader xác minh real/zero/hidden. Checkpoint nhánh cộng embedding cũ bị từ chối rõ ràng thay vì lọc mất spread rồi đánh giá sai; muốn tái hiện lịch sử phải dùng source/YAML của run cũ. Checkpoint Teacher, Student thuần và gate giữ kiến trúc tương ứng.
+
+Hai YAML `train_student_kd_e1_v2_diff_spread_gate.yml`, `_gate_zero.yml` giữ nguyên: pose S1/K1, std S5/K20, KD E1, 30 epoch, LR [5,10,15,22,27], seed lệnh 123. Giữ mặc định tắt cho các key gate, không đổi lifter/constructor/save/load hay loss diffusion. Gate chưa hỗ trợ kd_res_mode=v2 và đường Student của content_ablation_test.py vì các đường đó chưa truyền std; không âm thầm bỏ gate.
+
+## 11. Trạng thái dọn code
+
+Người dùng chốt **chỉ bỏ nhánh cộng embedding spread, giữ gate + KD để train**. Đã xóa hai YAML spread cũ, gỡ nhánh trong ARTS/FusionPose2Mesh và inspector, giữ YAML gate real/zero. Thống kê spread của chính DiffLifter trong các công cụ chẩn đoán không bị xóa vì không phải đầu vào cộng token Student. Giữ kết quả/checkpoint đã train và lịch sử trong experiment.md; gate vẫn chờ kết quả người dùng chạy trên server. Chỉ kiểm tra văn bản/source/diff tại local, không import hay chạy Python.

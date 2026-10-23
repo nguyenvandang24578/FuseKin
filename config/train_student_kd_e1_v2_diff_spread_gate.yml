@@ -1,10 +1,10 @@
-# Spread + KD feature E1: tu train_student_kd_e1_v2_diff.yml, chi bat them spread.
-# Pose chinh S=1/K=1; std xyz tu S=5/K=20 -> Linear khoi tao 0 -> token joint.
-# KD MSE joint/global sau fusion, trong so dong deu tren cac khop GT hop le.
-# Giu khoi tao smpl_model tu Teacher nhu E1; KHONG nap checkpoint Student spread cu.
-# Teacher GT v2 nhan GT 3D, khong dung DiffLifter hay spread; dong bang khi KD.
-# Train 3dpw-train, chon best tren 3dpw TEST: giao thuc phat trien, khong phai danh gia cuoi.
-# Chay: python main/train.py --cfg config/train_student_kd_e1_v2_diff_spread.yml --exp_name student_kd_e1_v2_diff_spread --seed 123 --gpu 0
+# KD E1 + gate spread: g=2*sigmoid(MLP), khoi tao g=1, g trong (0,2).
+# Dau vao gate: LN(joint), LN(cap nhat anh), log1p(std_xyz*10); std tu S5/K20, pose chinh S1/K1.
+# KHONG cong embedding spread vao joint; Teacher/feature KD E1/hard loss giu nguyen.
+# Doi chung cung gate nhung std=0: train_student_kd_e1_v2_diff_spread_gate_zero.yml.
+# Giu lich LR hien tai [5,10,15,22,27] cua ban KD spread cu. Run moi, khoi tao smpl_model tu Teacher.
+# Train 3dpw-train, chon best tren 3dpw TEST: chi la giao thuc phat trien.
+# Chay: python main/train.py --cfg config/train_student_kd_e1_v2_diff_spread_gate.yml --exp_name student_kd_e1_v2_diff_spread_gate --seed 123 --gpu 0
 DATASET:
   train_list: ['3dpw-train']
   test_list: ['3dpw']
@@ -31,6 +31,10 @@ MODEL:
   difflift_spread: True
   difflift_spread_steps: 5
   difflift_spread_k: 20
+  # Thay cong token bang gate rieng tung khop o moi block fusion.
+  difflift_spread_gate: True
+  difflift_spread_gate_zero: False
+  difflift_spread_gate_hidden: 64
   backbone_pretrained: 'spin'
   TEACHER: './experiment/teacher_gt_v2/checkpoint/best.pth.tar'
   student_use_kd: True

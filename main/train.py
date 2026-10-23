@@ -66,7 +66,7 @@ for file_path in files_to_backup:
     if os.path.exists(file_path):
         shutil.copyfile(src=file_path, dst=os.path.join(cfg.checkpoint_dir, os.path.basename(file_path)))
 
-from core.base import Trainer, Tester, Teacher_Trainer, Teacher_Tester, Student_Trainer, Student_Tester
+from core.base import Trainer, Tester, Teacher_Trainer, Teacher_Tester, Student_Trainer, Student_Tester, validate_spread_gate_checkpoint
 
 # Resume: lay last.pth.tar trong thu muc checkpoint cua chinh run nay (experiment/<exp_name>/checkpoint)
 resume_path = ''
@@ -110,6 +110,10 @@ for epoch in range(cfg.TRAIN.begin_epoch, cfg.TRAIN.end_epoch + 1):
         'train_log': trainer.loss_history,
         'test_log': trainer.error_history
     }
+    _save_net = trainer.model.module if hasattr(trainer.model, 'module') else trainer.model
+    if getattr(_save_net, 'diff_spread_gate', False):
+        _save_gate = _save_net.smpl_model.fusion.cfcer.blocks[0].image_gate
+        ckpt['spread_gate_config'] = {'zero_std': _save_gate.zero_spread, 'hidden': _save_gate.net[0].out_features}
     if hasattr(trainer, 'awl'):
         ckpt['awl_state_dict'] = trainer.awl.state_dict()
     if getattr(trainer, 'feat_projector', None) is not None:   # None khi khong dung KD feat (scratch / legacy)
@@ -124,6 +128,7 @@ if final_list and cfg.MODEL.name in ('teacher', 'student'):
     best_path = os.path.join(cfg.checkpoint_dir, 'best.pth.tar')
     best_ck = torch.load(best_path, map_location='cpu', weights_only=False)
     net = trainer.model.module if hasattr(trainer.model, 'module') else trainer.model
+    validate_spread_gate_checkpoint(net, best_ck)
     missing, unexpected = net.load_state_dict(best_ck['model_state_dict'], strict=False)
     print(f"\n===> TEST CUOI tren {final_list} | {best_path} (epoch {best_ck.get('epoch')}) "
           f"| thieu {len(missing)} / thua {len(unexpected)} key")

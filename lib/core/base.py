@@ -791,9 +791,36 @@ class _PickleShim:
     load = pickle.load
     Pickler = pickle.Pickler
     dump = pickle.dump
+
+
+def validate_spread_gate_checkpoint(model, checkpoint):
+    # Real/zero co cung shape tham so, can metadata de tranh nap nham YAML.
+    if getattr(model, 'mode', None) != 'student':
+        return
+    # Khong de loader strict=False bo qua nhanh spread cu roi bao ket qua sai.
+    state = checkpoint
+    if isinstance(checkpoint, dict):
+        for key in ('model_state_dict', 'state_dict', 'model'):
+            if key in checkpoint:
+                state = checkpoint[key]
+                break
+    if isinstance(state, dict) and any(key.startswith(('spread_proj.', 'module.spread_proj.')) for key in state):
+        raise ValueError('Checkpoint cong embedding spread cu khong con ho tro; dung source/YAML cua run cu')
+    metadata = checkpoint.get('spread_gate_config') if isinstance(checkpoint, dict) else None
+    if not getattr(model, 'diff_spread_gate', False):
+        if metadata is not None:
+            raise ValueError('Checkpoint gate can YAML da bat difflift_spread_gate')
+        return
+    gate = model.smpl_model.fusion.cfcer.blocks[0].image_gate
+    expected = {'zero_std': gate.zero_spread, 'hidden': gate.net[0].out_features}
+    if metadata != expected:
+        raise ValueError(f'Checkpoint gate/YAML khong khop: checkpoint={metadata}, YAML={expected}')
+
+
 def load_model_weights(model, ckpt_path, skip_prefixes=('pose_lifter.',)):
     ckpt = torch.load(ckpt_path, map_location='cpu',
                       pickle_module=_PickleShim, weights_only=False)
+    validate_spread_gate_checkpoint(model, ckpt)
     state = ckpt
     if isinstance(ckpt, dict):
         for k in ('model_state_dict', 'state_dict', 'model'):
@@ -919,8 +946,17 @@ class Student_Trainer:
             if not resume and cfg.MODEL.get('init_student_from_teacher', True):
                 missing, unexpected = self.model.smpl_model.load_state_dict(
                     self.teacher.smpl_model.state_dict(), strict=False)
+                if self.model.diff_spread_gate:
+                    # Chi cho phep khac bo ma hoa joint va gate moi; khong bo qua head/backbone sai.
+                    bad_missing = [key for key in missing if not key.startswith('fusion.projector_student.')
+                                   and not (key.startswith('fusion.cfcer.blocks.') and '.image_gate.' in key)]
+                    bad_unexpected = [key for key in unexpected
+                                      if not key.startswith(('fusion.joint_proj.', 'fusion.norm_joint_proj.'))]
+                    if bad_missing or bad_unexpected:
+                        raise RuntimeError(f'Khoi tao gate tu Teacher sai kien truc: '
+                                           f'missing={bad_missing[:5]}, unexpected={bad_unexpected[:5]}')
                 print(f'===> Student smpl_model khoi tao tu Teacher | '
-                      f'missing={len(missing)} (bo ma hoa joint cua student), unexpected={len(unexpected)}')
+                      f'missing={len(missing)} (joint encoder/gate Student neu co), unexpected={len(unexpected)}')
 
             self.teacher = torch.nn.DataParallel(self.teacher).cuda()
             self.teacher.eval()
@@ -1389,6 +1425,14 @@ class Student_Trainer:
                 'hint_abs': (model_output['hint_pred'].detach().abs().mean().item()
                              if model_output.get('hint_pred') is not None else 0.0),
             }
+            gates = [layer['spread_gate'].detach() for layer in model_output.get('feat_layers', [])
+                     if 'spread_gate' in layer]
+            if gates:
+                gate_values = torch.stack(gates)
+                step_stats.update({'gate_mean': gate_values.mean().item(),
+                                   'gate_std': gate_values.std(unbiased=False).item(),
+                                   'gate_min': gate_values.min().item(), 'gate_max': gate_values.max().item()})
+
             for k, v in step_stats.items():
                 running[k] = running.get(k, 0.0) + v
             if cfg.TRAIN.wandb:
@@ -1418,9 +1462,13 @@ class Student_Trainer:
                         'train_loss/hint_abs': step_stats['hint_abs'],
                         'train_loss/hard_total': hard_loss.item(),
                         'train_loss/total': loss.item(),
+                        **{f'train_loss/{key}': step_stats[key]
+                           for key in ('gate_mean', 'gate_std', 'gate_min', 'gate_max') if key in step_stats},
                     }
                 )
 
+            gate_text = (f'g: {step_stats["gate_mean"]:.3f}+/-{step_stats["gate_std"]:.3f} '
+                         if gates else '')
             if i % self.print_freq == 0:
                 batch_generator.set_description(
                     f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
@@ -1432,6 +1480,7 @@ class Student_Trainer:
                     f'[P {step_stats["kd_proj"]:.3f} J {step_stats["kd_joint"]:.3f} G {step_stats["kd_global"]:.3f} '
                     f'N {step_stats["kd_nce"]:.3f} R {step_stats["kd_res"]:.3f} nw {step_stats["kd_noise_w"]:.2f} '
                     f'H {step_stats["kd_hint"]:.3f} |z| {step_stats["hint_abs"]:.2f}] '
+                    f'{gate_text}'
                     f'lift: {step_stats["lift_err_mm"]:.0f}mm '
                     f'priv: {step_stats["privileged_3d"]:.3f} '
                     f'w: {step_stats["adaptive_kd_weight"]:.2f} '
@@ -1451,6 +1500,10 @@ class Student_Trainer:
             print(f'  Goi y: MSE(z_hat, z_T) {avg["kd_hint"]:.4f} | |z_hat| {avg["hint_abs"]:.3f} | '
                   f'KD feat truc tiep (J+G) {avg["kd_hfeat"]:.4f}')
 
+        if 'gate_mean' in avg:
+            print(f'  Spread gate: mean={avg["gate_mean"]:.4f} | std={avg["gate_std"]:.4f} | '
+                  f'min/max TB batch={avg["gate_min"]:.4f}/{avg["gate_max"]:.4f} | '
+                  f'zero_std={cfg.MODEL.get("difflift_spread_gate_zero", False)}')
         # Trong so hieu dung cua AWL (0.5 / p^2) theo tung loss: moi run hoc 1 bo khac nhau -> log de doc ablation
         awl_w = {}
         if hasattr(self, 'awl') and hasattr(self.awl, 'keys'):

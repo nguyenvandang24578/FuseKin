@@ -236,11 +236,16 @@ cfg.MODEL.difflift_k = 1       # K gia thuyet, gop trung binh
 #     1 gia thuyet ngau nhien (difflift_aug_steps buoc DDIM). Luc test van S=1. 0 = TAT.
 cfg.MODEL.difflift_aug_prob = 0.0
 cfg.MODEL.difflift_aug_steps = 5
-# (2) Do trai gia thuyet: sinh difflift_spread_k gia thuyet (difflift_spread_steps buoc) -> std theo truc tung khop
-#     (B, 17, 3) -> Linear (khoi tao 0) -> cong vao token khop truoc fusion. Pose dua vao van S=1. Mac dinh TAT.
+# Std cho gate: sinh K gia thuyet rieng -> std (B,17,3) met; pose chinh van S1/K1.
+# difflift_spread=True chi hop le khi bat difflift_spread_gate; da bo nhanh cong embedding.
 cfg.MODEL.difflift_spread = False
 cfg.MODEL.difflift_spread_steps = 5
 cfg.MODEL.difflift_spread_k = 20
+# Gate dieu chinh cap nhat tu anh theo tung khop. Mac dinh TAT.
+# g=2*sigmoid(MLP([LN(joint),LN(image_update),log1p(std*10)])), khoi tao g=1.
+cfg.MODEL.difflift_spread_gate = False
+cfg.MODEL.difflift_spread_gate_zero = False   # Doi chung: chi thay std dau vao gate bang 0, van sinh K.
+cfg.MODEL.difflift_spread_gate_hidden = 64
 cfg.MODEL.difflift_select = False
 cfg.MODEL.difflift_select_dim = 256
 cfg.MODEL.difflift_select_w = 1.0

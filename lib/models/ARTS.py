@@ -77,14 +77,18 @@ class ARTS(nn.Module):
         self.hyp_selector = HypSelector(num_joints=num_joint, img_dim=2048,
                                         dim=int(cfg.MODEL.get('difflift_select_dim', 256))) \
             if self.diff_select else None
-        # (1) augmentation bang gia thuyet luc train; (2) do trai gia thuyet vao token khop
+        # Augmentation luc train; std chi duoc dung lam dau vao gate.
         self.diff_aug_prob = float(cfg.MODEL.get('difflift_aug_prob', 0.0)) if self.use_diff else 0.0
-        self.diff_spread = self.use_diff and bool(cfg.MODEL.get('difflift_spread', False))
-        self.spread_proj = None
-        if self.diff_spread:
-            self.spread_proj = nn.Linear(3, embed_dim)       # std (x, y, z) tung khop -> token, khoi tao 0
-            nn.init.zeros_(self.spread_proj.weight)
-            nn.init.zeros_(self.spread_proj.bias)
+        self.diff_spread_gate = self.mode == 'student' and bool(cfg.MODEL.get('difflift_spread_gate', False))
+        if self.diff_spread_gate:
+            if not self.use_diff or not cfg.MODEL.get('difflift_spread', False) or self.diff_select or self.student_hint:
+                raise ValueError('Spread gate can Student DiffLifter + spread, khong selector/hint')
+            if cfg.MODEL.get('student_use_kd', True) and cfg.MODEL.get('kd_res_mode', 'v1') != 'v1':
+                raise ValueError('Spread gate hien chi ho tro KD E1/res_mode v1')
+        elif self.mode == 'student' and cfg.MODEL.get('difflift_spread_gate_zero', False):
+            raise ValueError('difflift_spread_gate_zero can bat difflift_spread_gate')
+        if self.mode == 'student' and cfg.MODEL.get('difflift_spread', False) and not self.diff_spread_gate:
+            raise ValueError('Nhanh cong embedding spread da bo; dung gate hoac Student DiffLifter thuan')
         if self.use_pmce:
             from models.PoseEstimation import get_model as _get_pmce_model
             self.pose_lifter = None   # khong dung MotionBERT khi lifter = PMCE
@@ -136,7 +140,13 @@ class ARTS(nn.Module):
             print("Đang gọi mô hình student" + (f" S-hint (k={self.hint_dim})" if self.student_hint else ""))
             self.smpl_model = Student(num_joint=num_joint, embed_dim=embed_dim, depth=3,
                                       hint_dim=self.hint_dim if self.student_hint else 0,
-                                      hint_mode='student' if self.student_hint else 'none', **arch_kw)
+                                      hint_mode='student' if self.student_hint else 'none',
+                                      spread_gate=self.diff_spread_gate,
+                                      spread_gate_zero=bool(cfg.MODEL.get('difflift_spread_gate_zero', False)),
+                                      spread_gate_hidden=int(cfg.MODEL.get('difflift_spread_gate_hidden', 64)), **arch_kw)
+            if self.diff_spread_gate:
+                print(f'===> Spread gate: 2*sigmoid, init=1, zero_std={cfg.MODEL.difflift_spread_gate_zero}, '
+                      f'hidden={cfg.MODEL.difflift_spread_gate_hidden}; khong cong embedding spread')
             self.privileged_joint_head = nn.Linear(embed_dim, 3)
         elif self.mode == "ARTS":
             self.pose_mesh_coevo = Multimodel.get_model(num_joint, embed_dim)
@@ -391,8 +401,8 @@ class ARTS(nn.Module):
                                         random_noise=True)[:, 0]
                     use = torch.rand(h1.shape[0], device=h1.device) < self.diff_aug_prob
                     pose_3d = torch.where(use[:, None, None], h1, pose_3d)
-                if self.diff_spread:
-                    # (2) do trai giua K gia thuyet, theo tung truc: (B, 17, 3) met
+                if self.diff_spread_gate:
+                    # Std (B,17,3) met chi dieu kien gate, khong cong vao token.
                     hk = self._diff_hyp(pose_2d, joints_mask, cam_bbox, cfg.MODEL.get('difflift_spread_steps', 5),
                                         cfg.MODEL.get('difflift_spread_k', 20), random_noise=self.training)
                     spread = hk.std(dim=1)
@@ -410,20 +420,18 @@ class ARTS(nn.Module):
             p2 = pose_2d[:, 0] if pose_2d.dim() == 4 else pose_2d
             pose_3d, sel_w = self.hyp_selector(hyp, feature_map, p2[..., :2], joints_mask)
 
-        extra = {}
-        if spread is not None:
-            extra['extra_tok'] = self.spread_proj(spread * 10.0)   # std ~ vai cm -> ~0.5; co grad vao spread_proj
-
         result = self.smpl_model(
             joints=pose_3d,
             img_feats=feature_map,
             is_train=is_train,
             return_features=True,
             **self._pe2d_kwargs(pose_2d, joints_mask),
-            **extra,
+            joint_spread=spread,
         )
         result['privileged_3d'] = self.privileged_joint_head(result['feat_joint'])
         result['lifted_joints_3d'] = pose_3d   # joint dua vao student (tuyet doi hoac root-rel tuy flag)
+        if self.diff_spread_gate:
+            result['joint_spread_3d'] = spread   # Std that de inspector kiem tra, ke ca ban zero-control.
         if sel_w is not None:
             result['hyp_select_3d'] = pose_3d  # pose da chon (co grad) -> loss phu trong Student_Trainer
             result['hyp_select_w'] = sel_w     # (B, K, 17) trong so softmax theo K

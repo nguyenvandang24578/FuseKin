@@ -125,16 +125,44 @@ class LearnableCoefficient(nn.Module):
         return x * self.bias
 
 
+class JointImageSpreadGate(nn.Module):
+    """Gate rieng tung khop: joint + thong tin anh + log1p(std*10), std don vi met."""
+    def __init__(self, dim, hidden=64, zero_spread=False):
+        super().__init__()
+        if hidden < 1:
+            raise ValueError('spread_gate_hidden phai >0')
+        self.zero_spread = bool(zero_spread)
+        self.override_value = None   # Chi inspector dung de dat gate=1; khong luu vao checkpoint.
+        self.net = nn.Sequential(nn.Linear(2 * dim + 3, hidden), nn.GELU(), nn.Linear(hidden, 1))
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
+
+    def forward(self, joint_tok, image_update, joint_spread):
+        if joint_spread is None or joint_spread.shape != (*joint_tok.shape[:2], 3):
+            raise ValueError('Spread gate can joint_spread (B,J,3) met; khong duoc bo qua spread khi infer')
+        if self.override_value is not None:
+            return joint_tok.new_full((*joint_tok.shape[:2], 1), float(self.override_value))
+        spread = torch.zeros_like(joint_spread) if self.zero_spread else joint_spread
+        # Giu std=0 hop le tai pelvis; cung thang 10 nhu nhanh spread cu.
+        spread = torch.log1p(spread.to(joint_tok.dtype).clamp_min(0) * 10.0)
+        joint = F.layer_norm(joint_tok, joint_tok.shape[-1:])
+        image = F.layer_norm(image_update, image_update.shape[-1:])
+        # Lop cuoi khoi tao 0 => g=1 chinh xac; sau do g nam trong (0,2).
+        return 2.0 * torch.sigmoid(self.net(torch.cat([joint, image, spread], dim=-1)))
+
+
 class RGBJointCrossTransformerBlock(nn.Module):
     """
     rgb tokens:   (B, H*W, C)
     joint tokens: (B, J, C)
     Cross-attention 2 chieu, Pre-LN, residual dung LearnableCoefficient.
     """
-    def __init__(self, d_model, h, block_exp=4, resid_pdrop=0.1, joint_self_attn=False):
+    def __init__(self, d_model, h, block_exp=4, resid_pdrop=0.1, joint_self_attn=False,
+                 spread_gate=False, spread_gate_zero=False, spread_gate_hidden=64):
         super().__init__()
         self.h = h
         self.d_k = d_model // h
+        self.image_gate = JointImageSpreadGate(d_model, spread_gate_hidden, spread_gate_zero) if spread_gate else None
 
         # Self-attn giua cac token khop TRUOC cross-attn (PLAN_STUDENT_V2). out_proj khoi tao 0 -> luc dau = block cu.
         self.joint_sa = None
@@ -186,7 +214,7 @@ class RGBJointCrossTransformerBlock(nn.Module):
         n = x.shape[1]
         return x.view(b, n, self.h, self.d_k).transpose(1, 2)  # (b, h, n, d_k)
 
-    def forward(self, rgb_tok, joint_tok, return_intermediate=False):
+    def forward(self, rgb_tok, joint_tok, return_intermediate=False, joint_spread=None):
         b = rgb_tok.shape[0]
 
         # 0. Self-attn giua cac khop (tuy chon): cac khop biet nhau truoc khi hoi anh
@@ -215,7 +243,9 @@ class RGBJointCrossTransformerBlock(nn.Module):
         rgb_att = self.out_rgb(rgb_att)
 
         # Residual 1
-        joint_out = self.coef1(joint_tok) + self.coef2(joint_att)
+        gate = self.image_gate(joint_tok, joint_att, joint_spread) if self.image_gate is not None else None
+        joint_update = joint_att if gate is None else gate * joint_att
+        joint_out = self.coef1(joint_tok) + self.coef2(joint_update)
         rgb_out = self.coef3(rgb_tok) + self.coef4(rgb_att)
 
         # FFN + Residual 2
@@ -229,22 +259,27 @@ class RGBJointCrossTransformerBlock(nn.Module):
                 'attn_joint_to_img': attn_j,
                 'attn_img_to_joint': attn_r,
             }]
+            if gate is not None:
+                intermediate[0]['spread_gate'] = gate
             return rgb_out, joint_out, intermediate
         return rgb_out, joint_out
 
 
 class RGBJointCrossTransformer(nn.Module):
-    def __init__(self, d_model, h, block_exp=4, resid_pdrop=0.1, depth=3, joint_self_attn=False):
+    def __init__(self, d_model, h, block_exp=4, resid_pdrop=0.1, depth=3, joint_self_attn=False,
+                 spread_gate=False, spread_gate_zero=False, spread_gate_hidden=64):
         super().__init__()
         self.blocks = nn.ModuleList([
-            RGBJointCrossTransformerBlock(d_model, h, block_exp, resid_pdrop, joint_self_attn=joint_self_attn)
+            RGBJointCrossTransformerBlock(d_model, h, block_exp, resid_pdrop, joint_self_attn=joint_self_attn,
+                                         spread_gate=spread_gate, spread_gate_zero=spread_gate_zero,
+                                         spread_gate_hidden=spread_gate_hidden)
             for _ in range(depth)
         ])
 
-    def forward(self, rgb_tok, joint_tok, return_intermediate=False):
+    def forward(self, rgb_tok, joint_tok, return_intermediate=False, joint_spread=None):
         intermediate = []
         for block in self.blocks:
-            out = block(rgb_tok, joint_tok, return_intermediate=return_intermediate)
+            out = block(rgb_tok, joint_tok, return_intermediate=return_intermediate, joint_spread=joint_spread)
             if return_intermediate:
                 rgb_tok, joint_tok, block_features = out
                 intermediate.extend(block_features)
@@ -259,7 +294,8 @@ class RGBJointFusion(nn.Module):
     """img_feats (B,2048,H,W) + joints (B,J,3) -> token anh, token joint, feature toan cuc."""
     def __init__(self, num_joint=17, embed_dim=512, vert_anchors=8, horz_anchors=8,
                  in_channels=2048, depth=3, joint_encoder='gt',
-                 joint_self_attn=False, use_pe2d=False, pe2d_num_freq=6):
+                 joint_self_attn=False, use_pe2d=False, pe2d_num_freq=6,
+                 spread_gate=False, spread_gate_zero=False, spread_gate_hidden=64):
         super().__init__()
         assert joint_encoder in ('gt', 'noisy'), f"joint_encoder khong hop le: {joint_encoder}"
         self.joint_encoder = joint_encoder
@@ -287,7 +323,8 @@ class RGBJointFusion(nn.Module):
 
         self.cfcer = RGBJointCrossTransformer(
             d_model=embed_dim, h=8, block_exp=4, resid_pdrop=0.1, depth=depth,
-            joint_self_attn=joint_self_attn,
+            joint_self_attn=joint_self_attn, spread_gate=spread_gate,
+            spread_gate_zero=spread_gate_zero, spread_gate_hidden=spread_gate_hidden,
         )
         self.norm_img_in = nn.LayerNorm(embed_dim)
 
@@ -301,7 +338,7 @@ class RGBJointFusion(nn.Module):
         return torch.stack([gx, gy], dim=-1).reshape(1, h * w, 2)
 
     def forward(self, joints, img_feats, return_features=False, hint_tok=None,
-                joints_2d=None, joints_2d_mask=None):
+                joints_2d=None, joints_2d_mask=None, joint_spread=None):
         """joints_2d (B, J, 2) trong [-1, 1] va joints_2d_mask (B, J, 1) | (B, J): chi dung khi use_pe2d."""
         img_feats = self.img_proj(img_feats)               # (B, C, H, W)
         bs, c, h, w = img_feats.shape
@@ -345,7 +382,7 @@ class RGBJointFusion(nn.Module):
 
         img_tok = self.norm_img_in(img_tok + pos_emb)
 
-        out = self.cfcer(img_tok, joints_tok, return_intermediate=return_features)
+        out = self.cfcer(img_tok, joints_tok, return_intermediate=return_features, joint_spread=joint_spread)
         if return_features:
             img_out, joint_out, layers = out
         else:
@@ -393,7 +430,8 @@ class FusionPose2Mesh(nn.Module):
                  smpl_head_hidden_dim=256, smpl_head_depth=3, use_pose_pe=True, use_img_probe=False,
                  hint_dim=0, hint_mode='none',
                  joint_pe2d=False, pe2d_num_freq=6, fusion_joint_self_attn=False,
-                 pose_head_mode='vposer', pose_query_bone=False, shape_attn_mode='global'):
+                 pose_head_mode='vposer', pose_query_bone=False, shape_attn_mode='global',
+                 spread_gate=False, spread_gate_zero=False, spread_gate_hidden=64):
         super().__init__()
         assert hint_mode in ('none', 'teacher', 'student'), f"hint_mode khong hop le: {hint_mode}"
         assert refiner in ('hypergcn', 'diffusion'), f"refiner khong hop le: {refiner}"
@@ -438,6 +476,7 @@ class FusionPose2Mesh(nn.Module):
             vert_anchors=vert_anchors, horz_anchors=horz_anchors,
             depth=depth, joint_encoder=joint_encoder,
             joint_self_attn=fusion_joint_self_attn, use_pe2d=joint_pe2d, pe2d_num_freq=pe2d_num_freq,
+            spread_gate=spread_gate, spread_gate_zero=spread_gate_zero, spread_gate_hidden=spread_gate_hidden,
         )
         global_dim = embed_dim * 2
 
@@ -545,7 +584,8 @@ class FusionPose2Mesh(nn.Module):
     # --------------------------------------------------------
     def forward(self, joints, img_feats, is_train=True,
                 gt_pose_6d=None, kp2d=None, kp_conf=None, pose_valid_mask=None,
-                return_features=False, hint_z=None, joints_2d=None, joints_2d_mask=None, extra_tok=None):
+                return_features=False, hint_z=None, joints_2d=None, joints_2d_mask=None,
+                joint_spread=None):
         """
         Args:
             joints   : (B, J, 3) root-relative, don vi met (GT cho teacher, nhieu cho student)
@@ -553,12 +593,11 @@ class FusionPose2Mesh(nn.Module):
             gt_pose_6d, kp2d, kp_conf, pose_valid_mask: chi dung khi refiner='diffusion'
             return_features: tra them feature trung gian cho KD
             joints_2d, joints_2d_mask: (B, J, 2) trong [-1, 1] + mask, chi dung khi joint_pe2d
-            extra_tok: (B, J, C) | None -- cong vao token khop truoc cross-attn (cung cho voi goi y),
-                       vd do trai gia thuyet DiffLifter (ARTS, MODEL.difflift_spread)
+            joint_spread: (B,J,3) met, std rieng cho gate, khong cong vao token.
         """
         B = img_feats.shape[0]
         device = img_feats.device
-        fus_kw = dict(joints_2d=joints_2d, joints_2d_mask=joints_2d_mask)
+        fus_kw = dict(joints_2d=joints_2d, joints_2d_mask=joints_2d_mask, joint_spread=joint_spread)
 
         # 0. Goi y nen. Teacher: hint_z do ARTS tinh tu GT. Student (hint_pred): fusion 2 luot -
         #    luot 1 khong goi y -> feature toan cuc -> z_hat; luot 2 dung z_hat. Luc test cung 2 luot.
@@ -570,8 +609,6 @@ class FusionPose2Mesh(nn.Module):
         hint_tok = None
         if hint_z is not None and self.hint_proj is not None:
             hint_tok = self.hint_proj(hint_z).view(B, self.num_joint, self.embed_dim)
-        if extra_tok is not None:
-            hint_tok = extra_tok if hint_tok is None else hint_tok + extra_tok
 
         # 1. Fusion
         fus = self.fusion(joints, img_feats, return_features=return_features, hint_tok=hint_tok, **fus_kw)

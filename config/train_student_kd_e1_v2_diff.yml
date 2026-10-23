@@ -11,8 +11,8 @@
 #   Kiem tra truoc: python main/check_student_v2.py --cfg ./config/train_student_kd_e1_v2_diff.yml --gpu 0
 # Chay: python main/train.py --cfg ./config/train_student_kd_e1_v2_diff.yml --exp_name student_kd_e1_v2_diff --gpu 0
 DATASET:
-  train_list: ['3dpw-train']
-  test_list: ['3dpw']        # moi epoch CHI danh gia val; test 1 lan cuoi tu dong (TEST.final_test_list)
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']
+  test_list: ['3dpw']        # danh gia + chon best moi epoch TREN 3dpw TEST (chu y: so bi lac quan)
   input_joint_set: 'human36'
   target_joint_set: 'human36'
   workers: 8
