@@ -11,8 +11,8 @@ Kiến trúc và giao thức hiện tại: [01_PROJECT_CONTEXT.md](01_PROJECT_CO
 | Lifter baseline | `finetune_difflifter_r25_cam.yaml` | Đã có checkpoint, dùng làm lifter đóng băng cho các YAML Student diffusion |
 | Student diffusion baseline | `train_student_v2_diff.yml` | Mốc S=1, K=1; người dùng báo mesh khoảng 78.2 / 94.4 mm |
 | Selector theo khớp bằng ảnh | `train_student_v2_diff_sel.yml` | Có kết quả: pose tốt hơn nhưng mesh chưa tốt hơn; xem mục 3 |
-| Augmentation bằng pose diffusion | `train_student_v2_diff_aug.yml` | **Đang train trên server theo người dùng**; chưa có kết quả cuối |
-| Spread vào fusion | `train_student_v2_diff_spread.yml` | Có code/YAML; chưa có kết quả được xác nhận trong đợt cập nhật này |
+| Augmentation bằng pose diffusion | `train_student_v2_diff_aug.yml` | Người dùng báo không hiệu quả; chưa có số liệu/checkpoint chi tiết |
+| Spread vào fusion | `train_student_v2_diff_spread.yml` | Người dùng báo best trên 3DPW: MPJPE 77.59 / MPVPE 94.17 mm; công cụ chẩn đoán đã code, chưa chạy; xem mục 9 |
 | GCN + attention song song | `finetune_difflifter_r25_cam_gcn_attn.yaml` | Đã đối chiếu hai best checkpoint epoch 6, S=1/K=1: chỉ H36M giảm lỗi, 3DPW/OC/PC tăng; chưa thay baseline, xem mục 5 |
 | Prior SimCC/GMM | `probe_halpe26_simcc*.yaml` | Đã probe 32 người tập val; **tạm hoãn** phát triển prior |
 | Teacher / KD / hint | Các YAML Teacher/KD hiện có | Hướng phụ, hạ ưu tiên; không tiếp tục thêm biến thể nếu chưa có lý do mới |
@@ -57,7 +57,7 @@ Mốc 72.4 và mốc 72.1 ở mục 2 thuộc các phép đo đã báo riêng; c
 
 Các hướng chặn gradient từ mesh vào selector, giảm sức chứa hoặc thêm nhiễu vào pose đã chọn mới là đề xuất, **chưa triển khai trong source hiện tại**. Ưu tiên trước mắt của người dùng đã chuyển sang denoiser GCN + attention.
 
-## 4. Bản augmentation đang train để kiểm tra điều gì?
+## 4. Bản augmentation đã thử để kiểm tra điều gì?
 
 `train_student_v2_diff_aug.yml` giữ Student baseline, không selector/KD/Teacher:
 
@@ -65,7 +65,7 @@ Các hướng chặn gradient từ mesh vào selector, giảm sức chứa hoặ
 - Eval: S=1, K=1 như baseline; lifter vẫn đóng băng.
 - Câu hỏi: Student có tốt lên chỉ nhờ thấy pose đa dạng trong train hay cần cơ chế chọn bằng ảnh?
 
-Khi có log, so với baseline cùng dữ liệu/lịch train/checkpoint selection. Ghi MPJPE/MPVPE mesh và seed/epoch; không quy mọi thay đổi cho selector vì bản aug không có selector.
+Cập nhật 2026-10-23: người dùng báo augmentation không hiệu quả; chưa có số MPJPE/MPVPE, epoch hoặc checkpoint chi tiết. Khi bổ sung log, đối chiếu baseline cùng dữ liệu/lịch train/checkpoint selection; bản aug không có selector. Trạng thái mới nhất ở mục 9.
 
 ## 5. Thí nghiệm denoiser mới
 
@@ -144,3 +144,24 @@ Các run lịch sử được ghi là chọn theo test; chênh lệch nhỏ chư
 Mỗi kết quả mới cần ghi: tên run/YAML, checkpoint và epoch, seed, dữ liệu train, tập chọn best, tập đánh giá, S/K và thước đo 17 hay 14 khớp. Nếu thiếu thì ghi thiếu, không suy từ comment hoặc tên thư mục.
 
 Các YAML Student diffusion hiện dùng 3DPW-train và chọn best trên 3DPW test. Lifter `r25_cam` không train 3DPW nhưng chọn best trên 3DPW-val. Ghi rõ giới hạn này khi so với giao thức không dùng 3DPW; xem mục 6 của tài liệu bối cảnh.
+
+## 9. Spread - kết quả người dùng báo và công cụ chẩn đoán (2026-10-23)
+
+Người dùng gửi dòng log: `chon best theo: ['3dpw'] | MPJPE 77.59 | MPVPE 94.17`.
+Đây là metric mesh qua evaluator (MPJPE 14 khớp), đơn vị mm. Chưa có epoch, seed train và đường dẫn checkpoint thực tế của log; không tự gán các thông tin đó. YAML tương ứng vẫn train `3dpw-train`, chọn best trên **3DPW test**: đây là kết quả phát triển, không phải đánh giá cuối bằng test độc lập.
+
+Mốc baseline lịch sử trong YAML là 78.23 / 94.37 mm, nên spread giảm 0.64 / 0.20 mm trong phép đối chiếu số đã báo. Chưa chạy lại hai best checkpoint cùng evaluator/batch size để xác nhận đối chứng; chênh lệch nhỏ của một run không chứng minh lợi ích ổn định. Augmentation: người dùng báo không hiệu quả, chưa cung cấp số chi tiết.
+
+`main/inspect_student_spread.py` đã code, **chưa chạy/chưa có kết quả kiểm chứng**. Chỉ suy luận trên một checkpoint Student spread, không train lại hoặc đổi kiến trúc:
+
+- `real`: gọi `ARTS.forward_student` như lúc eval; hook lấy chính feature ảnh, pose S=1 và std/embedding thực đã dùng. Hook được tháo sau mỗi lần gọi.
+- `off`: dùng lại ảnh/pose/PE2D, bỏ toàn bộ embedding spread, bao gồm bias của Linear. Không tương đương chỉ đưa std=0.
+- `shuffle`: đổi cả tensor std `(17,3)` giữa các mẫu trong cùng batch; giữ thứ tự khớp. Không có mẫu tự nhận spread của chính mình. Batch cuối chỉ một mẫu không tính shuffle; các delta chỉ tính trên cặp có đủ metric.
+- Tất cả metric mesh gọi `dataset.evaluate`; tương quan spread với lỗi lifter dùng H36M-17, bỏ pelvis (16 khớp còn lại). Báo cả Spearman gộp và theo từng khớp.
+- Xuất `samples.csv`, `joints.csv`, `joint_summary.csv`, `quartiles.csv`, `summary.json`, `inspect_log.txt`, `overview.png` và `vis/*.png`. Hình gồm crop + 2D tô màu theo spread, S=1/GT/K pose, mesh real/off/GT nhìn trước/ngang; đây là hình trực giao đã căn root, không phải overlay camera lên ảnh.
+- Mẫu improved/worsened chọn theo MPJPE **off - real trên cùng checkpoint**; thêm mẫu ngẫu nhiên, giới hạn bộ nhớ mesh chỉ giữ các mẫu cần vẽ. Không được hiểu đây là ảnh so với checkpoint baseline khác.
+- Kiểm tra ở batch đầu: replay embedding thật phải khớp output mesh của wrapper (sai khác tối đa 1e-6 mét), sai thì dừng. Checkpoint nạp strict; thiếu spread/backbone hay sai kiến trúc thì báo lỗi.
+
+Giữ một GPU và batch size như phép đo cần đối chiếu (YAML hiện tại 32), vì wrapper đặt lại seed DDIM=0 mỗi batch; thay batch/GPU có thể đổi nhiễu của mỗi mẫu. `--seed` chỉ đổi lựa chọn donor/mẫu vẽ, không thay seed nội bộ lifter. `--max_batches` chỉ là kết quả tập con. `--num_vis 0` bỏ hình và không cần matplotlib.
+
+Cách đọc: real tốt hơn shuffle hỗ trợ việc model dùng spread phù hợp từng mẫu; real tốt hơn off cho thấy phụ thuộc nhánh spread. Bỏ nhánh là can thiệp khác phân phối train, không thay thế đối chứng retrain baseline. Shuffle trong batch có thể yếu do các frame gần nhau có spread tương tự; chênh lệch nhỏ không đủ kết luận model bỏ qua spread. Chưa dùng kết quả chẩn đoán để sửa gate/kiến trúc.

@@ -25,10 +25,10 @@ Teacher/KD, MotionBERT và PMCE vẫn có trong source để đối chiếu. Ch�
 
 ## Trạng thái hiện tại
 
-- `train_student_v2_diff_aug.yml`: người dùng đang train trên server; chưa có kết quả cuối được cung cấp.
+- Augmentation: người dùng báo không hiệu quả. Spread: best trên 3DPW được báo là MPJPE 77.59 / MPVPE 94.17 mm; công cụ chẩn đoán đã code, chưa chạy (mục 9 của `experiment.md`).
 - GCN + attention song song: đã đối chiếu best epoch 6 với attention baseline tại S=1/K=1; chỉ H36M giảm lỗi, 3DPW/OC/PC tăng. Giữ `r25_cam` làm mốc chính; bảng số ở mục 5 của `experiment.md`.
 - Prior nhiễu có điều kiện từ SimCC/GMM: tạm hoãn. Code probe SimCC được giữ để nghiên cứu sau.
-- Các YAML Student diffusion đang dùng (`diff`, `diff_aug`, `diff_sel`) hiện chọn best trên **3DPW test**, dù một số comment còn ghi val. Lifter chọn best theo `3dpw-val`; chi tiết trong [bối cảnh dự án](01_PROJECT_CONTEXT.md#6-giao-thức-và-chọn-checkpoint).
+- Các YAML Student diffusion đang dùng (`diff`, `diff_aug`, `diff_sel`, `diff_spread`) hiện chọn best trên **3DPW test**, dù một số comment còn ghi val. Lifter chọn best theo `3dpw-val`; chi tiết trong [bối cảnh dự án](01_PROJECT_CONTEXT.md#6-giao-thức-và-chọn-checkpoint).
 
 ## Cấu trúc chính
 
@@ -65,7 +65,7 @@ Phân tích lỗi và trực quan hóa lifter:
 python main/inspect_difflifter.py --cfg config/finetune_difflifter_r25_cam_gcn_attn.yaml --gpu 0 --ckpt experiment/finetune_difflifter_r25_cam_gcn_attn/best_epoch.bin
 ```
 
-Lệnh tạo một run Student augmentation mới, tương ứng YAML đang được người dùng train:
+Ví dụ lệnh đã dùng cho bản Student augmentation (người dùng hiện báo không hiệu quả):
 
 ```bash
 python main/train.py --cfg config/train_student_v2_diff_aug.yml --exp_name student_v2_diff_aug --gpu 0
@@ -94,3 +94,18 @@ README này mô tả FuseKin hiện tại, không phải bản phát hành chín
   year={2024}
 }
 ```
+
+## Kiểm tra Student spread trên server
+
+Dùng đúng YAML train và `checkpoint/best.pth.tar` của run spread. Ví dụ dưới đây dùng tên run `student_v2_diff_spread`; thay đường dẫn nếu run thực có tên khác. Không cần train lại.
+
+```bash
+python main/inspect_student_spread.py \
+  --cfg config/train_student_v2_diff_spread.yml \
+  --ckpt experiment/student_v2_diff_spread/checkpoint/best.pth.tar \
+  --gpu 0 --set 3dpw --batch_size 32 --num_vis 4
+```
+
+Mặc định chạy toàn tập, tạo thư mục kết quả mới `inspect_spread_3dpw_<timestamp>` cạnh checkpoint. So real/off/shuffle trên cùng checkpoint, in MPJPE/PA-MPJPE/MPVPE mesh, tỷ lệ tốt/xấu và nhóm spread thấp/cao. Xuất CSV từng mẫu/khớp, `summary.json`, `inspect_log.txt`, `overview.png` và hình trong `vis/`. Hình có crop/keypoint và pose/mesh nhìn trước/ngang, không phải overlay camera.
+
+Thêm `--max_batches 10` để kiểm tra nhanh trên tập con; thêm `--num_vis 0` nếu chỉ cần bảng/CSV. Dùng `--out_dir <thu_muc_moi>` nếu muốn chọn nơi lưu; script từ chối thư mục không rỗng. Giữ cùng batch size và một GPU để đối chiếu vì wrapper đặt lại seed DDIM theo batch. Chẩn đoán đã code, chưa chạy; xem cách diễn giải và giới hạn tại mục 9 của `experiment.md`.

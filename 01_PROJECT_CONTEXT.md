@@ -7,7 +7,7 @@ Cập nhật **2026-10-23**. Nội dung kỹ thuật đối chiếu với code/Y
 - Bài toán hiện tại: **image-based**, một ảnh, `seqlen: 1`.
 - Hai phần được train riêng: lifter 2D→3D; Student kết hợp ảnh + pose để dự đoán mesh.
 - Lifter đang dùng trong các YAML Student diffusion: `r25_cam`, đóng băng, checkpoint `experiment/finetune_difflifter_r25_cam/best_epoch.bin`.
-- Người dùng đang train Student augmentation; GCN + attention đã đối chiếu với attention baseline ngày 23/10: cùng best epoch 6, S=1/K=1; chỉ H36M giảm lỗi, 3DPW/OC/PC tăng. Giữ `r25_cam` làm mốc chính.
+- Augmentation: người dùng báo không hiệu quả, chưa có số chi tiết. Spread: người dùng báo best trên 3DPW 77.59 / 94.17 mm; chẩn đoán chưa chạy. GCN + attention chưa cải thiện tổng thể; giữ lifter `r25_cam`. Xem mục 5 và 9 của `experiment.md`.
 - Selector đã có trong code nhưng chưa chứng minh được lợi ích trên mesh. KD/hint hạ ưu tiên; khởi tạo nhiễu SimCC/GMM tạm hoãn.
 
 ## 2. Student v2 và tích hợp DiffLifter
@@ -121,7 +121,7 @@ Các ghi chú cũ về mesh target/mask/collate khi train **mesh đa dataset** c
 | Phép đo/run | Giao thức đang có trong source/YAML |
 |---|---|
 | Lifter `r25_cam` và bản GCN + attention | Train H36M + MuCo + MSCOCO + CrowdPose; không `3dpw-train`; best theo **`3dpw-val`**, có log test trong train |
-| Student `train_student_v2_diff.yml`, `_diff_aug.yml`, `_diff_sel.yml` | Train **`3dpw-train`**; `test_list=['3dpw']`, `TEST.select_dataset='3dpw'` → chọn best trên **test** |
+| Student `train_student_v2_diff.yml`, `_diff_aug.yml`, `_diff_sel.yml`, `_diff_spread.yml` | Train **`3dpw-train`**; `test_list=['3dpw']`, `TEST.select_dataset='3dpw'` → chọn best trên **test** |
 | Mesh best | `main/train.py` xét cải thiện MPJPE **hoặc** MPVPE trên tập được chọn; không phải chỉ một metric |
 
 Comment “mỗi epoch chỉ val” trong các YAML Student trên đang không khớp giá trị thật. Đợt cập nhật tài liệu không thay YAML hoặc thay run đang train. Các kết quả chọn theo test là kết quả phát triển, cần giao thức tách validation trước khi dùng làm bảng đánh giá cuối.
@@ -134,3 +134,7 @@ Mục tiêu so với JOTR là **toàn pipeline không dùng dữ liệu 3DPW đ�
 | `dataset.evaluate`, 14 khớp, MPJPE/PA-MPJPE/MPVPE mm | So mesh/FuseKin |
 
 Không so trực tiếp hai loại MPJPE. Oracle dùng GT để chọn là phép đo tiềm năng, không phải kết quả triển khai không có GT.
+
+## 7. Chẩn đoán Student spread
+
+`main/inspect_student_spread.py` là công cụ suy luận riêng, không thêm cờ model hoặc sửa API/config train. Công cụ gọi đường `forward_student` thật, lấy feature/giả thuyết/std qua hook tạm, rồi giữ nguyên feature ảnh/pose S=1/PE2D để so embedding spread thật, bỏ embedding và hoán đổi std giữa mẫu trong batch. Không bỏ sót bias khi tắt embedding. Mesh đo bằng `dataset.evaluate`; chẩn đoán lỗi lifter giữ H36M-17 và bỏ pelvis. Kiểm tra replay và strict load checkpoint chặn phân tích sai kiến trúc. Chi tiết số liệu, đầu ra và giới hạn ở mục 9 của `experiment.md`; lệnh chạy ở README. Công cụ đã code, chưa chạy trên server.
