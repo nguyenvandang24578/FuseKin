@@ -117,6 +117,10 @@ cfg.DATASET.halpe26_conf_thr = 0.3
 # joints_mask MEM: khop hop le (score > nguong, nam trong crop) mang gia tri = score Halpe (cat ve [0, 1]) thay vi 1.
 # Khop khong hop le van = 0. Ap dung cho Halpe-26 cua H36M / MuCo / 3DPW. Mac dinh TAT (mask nhi phan nhu cu).
 cfg.DATASET.lift_soft_conf = False
+# Mau train FuseKin (Teacher / Student, co anh) THONG NHAT cho Human36M / MuCo / MSCOCO / CrowdPose
+# (lib/utils/fusekin_sample.py): cung bo key voi 3DPW train, 2D Halpe-26, GT 3D / mesh tu SMPL NeuralAnnot,
+# MSCOCO / CrowdPose xoay sang camera uoc luong. Can h36m_2d_source / muco_2d_source = 'halpe26'. Mac dinh TAT.
+cfg.DATASET.fusekin_unified = False
 # Probe SimCC chay rieng trong moi truong pose2d; mac dinh khong kich hoat.
 # tools/probe_halpe26_simcc.py doc rieng nhom nay tu YAML, khong import config.py
 # de tranh tao thu muc experiment va phu thuoc moi truong train.
@@ -335,6 +339,10 @@ cfg.TRAIN = edict()
 cfg.TRAIN.print_freq = 20
 cfg.TRAIN.batch_size = 32
 cfg.TRAIN.shuffle = True
+# Tron nhieu bo train FuseKin theo ti le (theo thu tu DATASET.train_list), vd [0.25, 0.25, 0.25, 0.25].
+# [] = TAT (cach cu: MultipleDatasets keo moi bo bang bo lon nhat). samples_per_epoch: so mau / epoch (0 = tong so mau).
+cfg.TRAIN.dataset_ratio = []
+cfg.TRAIN.samples_per_epoch = 0
 cfg.TRAIN.begin_epoch = 1
 cfg.TRAIN.end_epoch = 20
 cfg.TRAIN.curriculum_epochs = 15.0

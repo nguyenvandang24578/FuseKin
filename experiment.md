@@ -12,7 +12,7 @@ Kiến trúc và giao thức hiện tại: [01_PROJECT_CONTEXT.md](01_PROJECT_CO
 | Student diffusion baseline | `train_student_v2_diff.yml` | Mốc S=1, K=1; người dùng báo mesh khoảng 78.2 / 94.4 mm |
 | Selector theo khớp bằng ảnh | `train_student_v2_diff_sel.yml` | Có kết quả: pose tốt hơn nhưng mesh chưa tốt hơn; xem mục 3 |
 | Augmentation bằng pose diffusion | `train_student_v2_diff_aug.yml` | Người dùng báo không hiệu quả; chưa có số liệu/checkpoint chi tiết |
-| Spread vào fusion | `train_student_v2_diff_spread.yml` | Người dùng báo best trên 3DPW: MPJPE 77.59 / MPVPE 94.17 mm; công cụ chẩn đoán đã code, chưa chạy; xem mục 9 |
+| Spread vào fusion | `train_student_v2_diff_spread.yml` | Đã có log chẩn đoán toàn bộ 35,515 mẫu do người dùng gửi: real/off/shuffle gần như ngang nhau; chưa thấy lợi ích rõ của spread lúc inference, xem mục 9 |
 | GCN + attention song song | `finetune_difflifter_r25_cam_gcn_attn.yaml` | Đã đối chiếu hai best checkpoint epoch 6, S=1/K=1: chỉ H36M giảm lỗi, 3DPW/OC/PC tăng; chưa thay baseline, xem mục 5 |
 | Prior SimCC/GMM | `probe_halpe26_simcc*.yaml` | Đã probe 32 người tập val; **tạm hoãn** phát triển prior |
 | Teacher / KD / hint | Các YAML Teacher/KD hiện có | Hướng phụ, hạ ưu tiên; không tiếp tục thêm biến thể nếu chưa có lý do mới |
@@ -152,7 +152,7 @@ Người dùng gửi dòng log: `chon best theo: ['3dpw'] | MPJPE 77.59 | MPVPE 
 
 Mốc baseline lịch sử trong YAML là 78.23 / 94.37 mm, nên spread giảm 0.64 / 0.20 mm trong phép đối chiếu số đã báo. Chưa chạy lại hai best checkpoint cùng evaluator/batch size để xác nhận đối chứng; chênh lệch nhỏ của một run không chứng minh lợi ích ổn định. Augmentation: người dùng báo không hiệu quả, chưa cung cấp số chi tiết.
 
-`main/inspect_student_spread.py` đã code, **chưa chạy/chưa có kết quả kiểm chứng**. Chỉ suy luận trên một checkpoint Student spread, không train lại hoặc đổi kiến trúc:
+`main/inspect_student_spread.py` đã code và **người dùng đã gửi kết quả chạy đủ 35,515 mẫu 3DPW**; bảng kết quả ở cuối mục này. Đây không phải phép chạy lại do trợ lý thực hiện. Chỉ suy luận trên một checkpoint Student spread, không train lại hoặc đổi kiến trúc:
 
 - `real`: gọi `ARTS.forward_student` như lúc eval; hook lấy chính feature ảnh, pose S=1 và std/embedding thực đã dùng. Hook được tháo sau mỗi lần gọi.
 - `off`: dùng lại ảnh/pose/PE2D, bỏ toàn bộ embedding spread, bao gồm bias của Linear. Không tương đương chỉ đưa std=0.
@@ -165,3 +165,48 @@ Mốc baseline lịch sử trong YAML là 78.23 / 94.37 mm, nên spread giảm 0
 Giữ một GPU và batch size như phép đo cần đối chiếu (YAML hiện tại 32), vì wrapper đặt lại seed DDIM=0 mỗi batch; thay batch/GPU có thể đổi nhiễu của mỗi mẫu. `--seed` chỉ đổi lựa chọn donor/mẫu vẽ, không thay seed nội bộ lifter. `--max_batches` chỉ là kết quả tập con. `--num_vis 0` bỏ hình và không cần matplotlib.
 
 Cách đọc: real tốt hơn shuffle hỗ trợ việc model dùng spread phù hợp từng mẫu; real tốt hơn off cho thấy phụ thuộc nhánh spread. Bỏ nhánh là can thiệp khác phân phối train, không thay thế đối chứng retrain baseline. Shuffle trong batch có thể yếu do các frame gần nhau có spread tương tự; chênh lệch nhỏ không đủ kết luận model bỏ qua spread. Chưa dùng kết quả chẩn đoán để sửa gate/kiến trúc.
+
+### Log chẩn đoán người dùng gửi sau khi chạy
+
+Đầu ra: `experiment/student_v2_diff_spread/checkpoint/inspect_spread_3dpw_20261023_165208_598609/`. Log ghi đủ 35,515 mẫu cho cả real/off/shuffle và đã lưu 12 hình. Đoạn trích không có header checkpoint/epoch/seed/batch size hoặc dòng kiểm tra replay; chưa xác nhận độc lập các giá trị này. Ban đầu chỉ phân tích log; sau đó đã xem trực tiếp ba hình mẫu và biểu đồ tổng hợp người dùng gửi (ghi nhận bên dưới), chưa có CSV đầy đủ.
+
+| Điều kiện trên cùng checkpoint | MPJPE (14) | PA-MPJPE | MPVPE |
+|---|---:|---:|---:|
+| real | 77.594 | 53.186 | 94.169 |
+| off | 77.570 | 53.077 | 94.258 |
+| shuffle trong batch | 77.592 | 53.173 | 94.162 |
+
+Đơn vị mm. Delta dùng dòng thống kê ghép cặp chưa làm tròn: real - off = **+0.023 / +0.109 / -0.089**; real - shuffle = **+0.002 / +0.013 / +0.008** (MPJPE/PA/MPVPE). Chênh giữa các số đã làm tròn trong bảng có thể lệch 0.001 mm với mean delta in riêng.
+
+Real tốt hơn off trên 49.2% mẫu về MPJPE và 53.4% về MPVPE khi yêu cầu cải thiện >0.1 mm; xấu đi lần lượt 42.8% và 39.9%; phần còn lại 8.0% và 6.6%. Median delta real-off MPJPE=-0.080, MPVPE=-0.188 mm. Tỷ lệ tốt hơn không nói lên độ lớn lợi ích; các mẫu xấu đi có thể triệt tiêu mức tăng của đa số mẫu. Ngưỡng 0.1 mm là ngưỡng mô tả của script, không phải kiểm định ý nghĩa thống kê.
+
+| Nhóm | n | Spread trung bình (mm) | MPJPE real | MPJPE off | Gain off-real (mm) |
+|---|---:|---:|---:|---:|---:|
+| Q1 | 8,879 | 26.28 | 65.596 | 65.603 | +0.007 |
+| Q2 | 8,878 | 33.85 | 70.377 | 70.462 | +0.085 |
+| Q3 | 8,879 | 40.62 | 79.552 | 79.613 | +0.061 |
+| Q4 | 8,879 | 53.95 | 94.849 | 94.602 | -0.247 |
+
+Spread cao đi kèm lỗi mesh cao hơn giữa các nhóm trong log, song nhánh cộng embedding không giảm được lỗi nhóm Q4; MPJPE còn tăng 0.247 mm khi bật spread. Không đồng nhất Q4 với nhóm che khuất vì chưa kiểm tra nhãn/ảnh.
+
+Spearman(spread, lỗi pose S=1) gộp 16 khớp không pelvis = **0.5591**. Theo từng khớp chỉ **0.091–0.311**: R/L ankle=0.091/0.103; L/R wrist=0.311/0.258; L/R elbow=0.250/0.262. Con số gộp có thể chịu ảnh hưởng của khác biệt loại khớp; chưa có bằng chứng để xem spread là confidence lỗi từng khớp đã hiệu chuẩn.
+
+**Kết luận trong phạm vi run này:** chưa thấy lợi ích rõ của thông tin spread đúng mẫu với cách cộng token hiện tại. Off giữ chất lượng gần real; shuffle trong batch cũng gần real. Không kết luận model hoàn toàn bỏ qua spread vì có khác biệt từng mẫu, và donor trong batch có thể là các frame gần nhau. Mức 77.59/94.17 thấp hơn baseline lịch sử 78.23/94.37 không thể quy ngay cho việc tận dụng bất định lúc inference: tắt nhánh vẫn gần như giữ nguyên kết quả; tác động trong train và biến thiên giữa các run chưa được tách.
+
+**Bước tiếp:** xem `overview.png`, ảnh improved/worsened/random và phân phối delta trong `samples.csv` để biết các ca xấu/tốt có ý nghĩa thực tế hay chỉ thay đổi rất nhỏ. Nếu cần kết luận sâu về phụ thuộc spread theo mẫu, đề xuất phép hoán đổi khác sequence/người vì shuffle cục bộ có thể quá nhẹ; chưa code/chưa duyệt thay đổi đó. Chưa thêm gate hoặc mở run train mới chỉ từ bảng này. Mọi số trên vẫn thuộc giao thức chọn best theo 3DPW test đã ghi rõ ở trên.
+
+### Đối chiếu bốn ảnh người dùng gửi
+
+Đã xem trực tiếp `image(2).png`, `image(3).png`, `image(4).png`, `image(5).png` sau khi đọc ảnh đính kèm. Đây là ba mẫu riêng và một biểu đồ tổng hợp, không phải toàn bộ 12 hình. Số trong bảng là nhãn trên ảnh; gain dùng nhãn đã tính trước khi làm tròn metric.
+
+| Ảnh / mẫu | Nhóm | MPJPE real / off, mm | Gain off-real trên nhãn, mm | Quan sát |
+|---|---|---:|---:|---|
+| image(2), #2749, flat_guitar_01 | random | 131.12 / 129.44 | -1.69 | missing=0; real/off khá giống nhau, còn lệch tư thế chân/tay so với GT |
+| image(3), #8785, downtown_runForBus_00 | worsened | 94.31 / 87.63 | -6.67 | missing=1; real/off giữ tư thế tổng thể tương tự, real tăng MPVPE từ 108.27 lên 121.33 mm |
+| image(4), #17500, downtown_car_00 | improved | 469.33 / 481.27 | +11.93 | missing=16; crop chủ yếu là nội thất xe và một phần tay. Cả real/off vẫn lệch rõ hướng toàn thân và bố trí chi so với GT; giảm số không đồng nghĩa cứu được ca này |
+
+Biểu đồ image(5): phân phối MPJPE off-real tập trung gần 0, có đuôi hai phía; Q4 có gain âm như bảng log. Scatter spread/lỗi phân tán rộng: ở spread tương tự vẫn có lỗi S=1 rất khác nhau. Màu spread của từng hình mẫu được chuẩn hóa riêng, không so độ sáng giữa các ảnh như một thang mm chung.
+
+Các hình củng cố kết luận nhánh cộng std hiện chỉ gây điều chỉnh nhỏ ở nhiều mẫu, chưa cho thấy khả năng sửa các ca sai lớn. `missing=0` chỉ nói mask hợp lệ, không chứng minh detector đúng hoặc 3D không còn mơ hồ. Các pose nhìn trước/ngang đều root-relative; không coi chúng là overlay camera lên ảnh.
+
+Bước chẩn đoán đề xuất tiếp theo là đo oracle/min-K theo từng mẫu xấu (GT chỉ dùng phân tích) để tách: K có chứa pose hợp GT mà fusion chưa dùng, hay cả nhóm giả thuyết đã sai theo đầu vào 2D. Ba giá trị std mất thông tin hướng sửa và cấu trúc từng nghiệm; thêm gate không tự tạo được nghiệm đúng khi cả K đều sai. Chưa code hoặc chạy phép min-K theo các ID này, chưa đổi kiến trúc hay mở run mới.

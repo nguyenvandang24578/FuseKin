@@ -7,7 +7,7 @@ Cập nhật **2026-10-23**. Nội dung kỹ thuật đối chiếu với code/Y
 - Bài toán hiện tại: **image-based**, một ảnh, `seqlen: 1`.
 - Hai phần được train riêng: lifter 2D→3D; Student kết hợp ảnh + pose để dự đoán mesh.
 - Lifter đang dùng trong các YAML Student diffusion: `r25_cam`, đóng băng, checkpoint `experiment/finetune_difflifter_r25_cam/best_epoch.bin`.
-- Augmentation: người dùng báo không hiệu quả, chưa có số chi tiết. Spread: người dùng báo best trên 3DPW 77.59 / 94.17 mm; chẩn đoán chưa chạy. GCN + attention chưa cải thiện tổng thể; giữ lifter `r25_cam`. Xem mục 5 và 9 của `experiment.md`.
+- Augmentation: người dùng báo không hiệu quả, chưa có số chi tiết. Spread: người dùng báo best trên 3DPW 77.59 / 94.17 mm; chẩn đoán 35,515 mẫu đã có log: real/off/shuffle gần nhau, chưa thấy lợi ích rõ lúc inference. GCN + attention chưa cải thiện tổng thể; giữ lifter `r25_cam`. Xem mục 5 và 9 của `experiment.md`.
 - Selector đã có trong code nhưng chưa chứng minh được lợi ích trên mesh. KD/hint hạ ưu tiên; khởi tạo nhiễu SimCC/GMM tạm hoãn.
 
 ## 2. Student v2 và tích hợp DiffLifter
@@ -137,4 +137,4 @@ Không so trực tiếp hai loại MPJPE. Oracle dùng GT để chọn là phép
 
 ## 7. Chẩn đoán Student spread
 
-`main/inspect_student_spread.py` là công cụ suy luận riêng, không thêm cờ model hoặc sửa API/config train. Công cụ gọi đường `forward_student` thật, lấy feature/giả thuyết/std qua hook tạm, rồi giữ nguyên feature ảnh/pose S=1/PE2D để so embedding spread thật, bỏ embedding và hoán đổi std giữa mẫu trong batch. Không bỏ sót bias khi tắt embedding. Mesh đo bằng `dataset.evaluate`; chẩn đoán lỗi lifter giữ H36M-17 và bỏ pelvis. Kiểm tra replay và strict load checkpoint chặn phân tích sai kiến trúc. Chi tiết số liệu, đầu ra và giới hạn ở mục 9 của `experiment.md`; lệnh chạy ở README. Công cụ đã code, chưa chạy trên server.
+`main/inspect_student_spread.py` là công cụ suy luận riêng, không thêm cờ model hoặc sửa API/config train. Công cụ gọi đường `forward_student` thật, lấy feature/giả thuyết/std qua hook tạm, rồi giữ nguyên feature ảnh/pose S=1/PE2D để so embedding spread thật, bỏ embedding và hoán đổi std giữa mẫu trong batch. Không bỏ sót bias khi tắt embedding. Mesh đo bằng `dataset.evaluate`; chẩn đoán lỗi lifter giữ H36M-17 và bỏ pelvis. Kiểm tra replay và strict load checkpoint chặn phân tích sai kiến trúc. Chi tiết số liệu, đầu ra và giới hạn ở mục 9 của `experiment.md`; lệnh chạy ở README. Người dùng đã gửi log chạy đủ 35,515 mẫu; real/off/shuffle gần như ngang nhau. Đã xem ba hình mẫu và biểu đồ tổng hợp người dùng gửi, chưa xem đủ 12 hình; quan sát củng cố việc real/off thường gần nhau và chưa sửa được ca sai lớn. Chi tiết và giới hạn ở mục 9 của `experiment.md`.

@@ -14,6 +14,7 @@ from core.config import cfg
 import lmdb
 from utils.posefix import replace_joint_img
 from utils.cam_bbox import cam_bbox_feat
+from utils.fusekin_sample import fusekin_train_sample, keep_unified
 from utils.smpl import SMPL
 from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch_image, augmentation, compute_iou, load_img_from_lmdb, augmentation_noimg
 from utils.transforms import world2cam, cam2pixel, pixel2cam, rigid_align, transform_joint_to_other_db
@@ -74,6 +75,9 @@ class MuCo(torch.utils.data.Dataset):
             raise ValueError(f"cfg.DATASET.muco_2d_source khong hop le: {self.muco_2d_source}")
         self.halpe26_conf_thr = cfg.DATASET.halpe26_conf_thr
         self.datalist = self.load_data()
+        if cfg.DATASET.fusekin_unified and self.data_split == 'train' and not cfg.DATASET.lift_only:
+            assert self.muco_2d_source == 'halpe26', 'fusekin_unified can DATASET.muco_2d_source = halpe26'
+            self.datalist = keep_unified(self.datalist, 'MuCo')
         print("muco data len: ", len(self.datalist))
 
     def load_data(self):
@@ -290,6 +294,12 @@ class MuCo(torch.utils.data.Dataset):
             img = load_img(img_path)
             img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split)
             img = self.transform(img.astype(np.float32))/255.
+        if cfg.DATASET.fusekin_unified and self.data_split == 'train' and not lift_only:
+            # Mau FuseKin thong nhat (giong 3DPW train): 2D Halpe, GT 3D / mesh tu SMPL NeuralAnnot (camera that)
+            xy, mask = self._halpe_input(data, do_flip, img_shape, img2bb_trans)
+            mesh, _, pose, shape = self.get_smpl_coord(smpl_param, cam_param, do_flip, img_shape)
+            return fusekin_train_sample(self, img, img2bb_trans, rot, do_flip, bbox, img_shape, img_path,
+                                        xy, mask, mesh / 1000., pose, shape, cam_param, cam_param)
 
         # muco gt
         muco_joint_img = data['joint_img']

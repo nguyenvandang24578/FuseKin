@@ -44,6 +44,23 @@ def get_dataloader(args, dataset_names, is_train):
     if not is_train:
         return dataset_list, dataloader_list
     else:
+        ratio = list(cfg.TRAIN.get('dataset_ratio', []) or [])
+        if ratio:
+            # Tron theo ti le: noi cac bo (khong lap), moi mau trong so = ti le bo / so mau bo
+            assert len(ratio) == len(dataset_list), f'TRAIN.dataset_ratio {ratio} phai co {len(dataset_list)} phan tu'
+            trainset_loader = MultipleDatasets(dataset_list, make_same_len=False)
+            rs = np.asarray(ratio, dtype=np.float64) / float(sum(ratio))
+            weights = np.concatenate([np.full(len(ds), r / len(ds)) for ds, r in zip(dataset_list, rs)])
+            n_ep = int(cfg.TRAIN.get('samples_per_epoch', 0)) or len(trainset_loader)
+            sampler = torch.utils.data.WeightedRandomSampler(torch.as_tensor(weights), num_samples=n_ep,
+                                                             replacement=True)
+            for name, ds, r in zip(dataset_names, dataset_list, rs):
+                print(f'# ti le {name}: {r:.2f} ({len(ds)} mau) -> ~{r * n_ep / len(ds):.2f} lan / epoch')
+            print(f'# mau / epoch: {n_ep}')
+            batch_generator = DataLoader(dataset=trainset_loader,
+                                         batch_size=batch_per_dataset * len(dataset_names), sampler=sampler,
+                                         num_workers=cfg.DATASET.workers, pin_memory=False)
+            return dataset_list, batch_generator
         trainset_loader = MultipleDatasets(dataset_list, make_same_len=True)
         batch_generator = DataLoader(dataset=trainset_loader, \
                           batch_size=batch_per_dataset * len(dataset_names), \

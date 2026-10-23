@@ -17,7 +17,9 @@ from utils.smpl import SMPL
 from utils.preprocessing import load_img, process_bbox, augmentation, compute_iou, load_img_from_lmdb
 # from utils.vis import vis_bbox, render_mesh
 from utils.transforms import world2cam, cam2pixel, pixel2cam, transform_joint_to_other_db
-from utils.lift_pseudo3d import lift_pseudo3d_sample, load_halpe_into_datalist
+from utils.lift_pseudo3d import lift_pseudo3d_sample, load_halpe_into_datalist, halpe_to_crop
+from utils.fusekin_sample import fusekin_train_sample
+from utils.cam_bbox import est_cam
 
 
 
@@ -55,8 +57,8 @@ class MSCOCO(torch.utils.data.Dataset):
         self.face_kps_vertex = self.smpl.face_kps_vertex
 
         self.datalist = self.load_data()
-        if cfg.DATASET.lift_only and self.data_split == 'train':
-            # Lifter: chi giu nguoi co NeuralAnnot + Halpe-26 (tools/extract_halpe26_coco.py --dataset mscoco)
+        if (cfg.DATASET.lift_only or cfg.DATASET.fusekin_unified) and self.data_split == 'train':
+            # Lifter / FuseKin thong nhat: chi giu nguoi co NeuralAnnot + Halpe-26 (tools/extract_halpe26_coco.py --dataset mscoco)
             self.datalist = load_halpe_into_datalist(self, 'MSCOCO', self.datalist, 'smpl_param', cfg.DATASET.jotr_data_root)
         print("coco data len: ", len(self.datalist))
 
@@ -248,6 +250,14 @@ class MSCOCO(torch.utils.data.Dataset):
         # img = load_img_from_lmdb(img_path, self.lmdb)
         img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split)
         img = self.transform(img.astype(np.float32))/255.
+        if cfg.DATASET.fusekin_unified and self.data_split == 'train':
+            # Mau FuseKin thong nhat: 2D Halpe; pseudo-GT NeuralAnnot xoay tu camera ao sang camera uoc luong
+            sp = data['smpl_param']
+            xy, mask = halpe_to_crop(data['halpe_h36m'], do_flip, img_shape, img2bb_trans, self.halpe26_conf_thr)
+            mesh, _, pose, shape = self.get_smpl_coord(sp['smpl_param'], sp['cam_param'], do_flip, img_shape)
+            return fusekin_train_sample(self, img, img2bb_trans, rot, do_flip, bbox, img_shape, img_path,
+                                        xy, mask, mesh, pose, shape, sp['cam_param'], est_cam(img_shape),
+                                        use_view_rot=True)
         
         if self.data_split == 'train':
             # coco gt
