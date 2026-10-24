@@ -415,6 +415,14 @@ cfg.MOTIONBERT.joint_drop_prob = 0.0
 # Checkpoint dung cho lan test cuoi: 'best' (theo val_set, nhu cu) | 'latest' (epoch cuoi, khong chon theo val --
 # dung khi val_set la tap khong duoc phep dung de chon model, vd 3dpw-val vi 3DPW-Crowd lay tu split validation)
 cfg.MOTIONBERT.final_ckpt = 'best'
+# Cac key moi 2026-10-24 (mac dinh TAT = hanh vi cu), dong bo voi DIFFLIFT:
+cfg.MOTIONBERT.dataset_ratio = []        # tron theo ti le (thu tu train_list), [] = TAT
+cfg.MOTIONBERT.samples_per_epoch = 0     # so mau / epoch khi dung dataset_ratio
+cfg.MOTIONBERT.train_eval_samples = 0    # MPJPE/PA tren N mau co dinh moi bo train cuoi moi epoch
+cfg.MOTIONBERT.select_metric = 'mpjpe'   # chon best theo 'mpjpe' | 'pa_mpjpe' tren val_set
+cfg.MOTIONBERT.epoch_eval_sets = []      # danh gia them moi epoch (chi log), vd ['3dpw']
+cfg.MOTIONBERT.full_eval_sets = []       # danh gia moi full_eval_freq epoch (chi log)
+cfg.MOTIONBERT.full_eval_freq = 5
 
 """ PMCE (GraphormerNet lifter, main/finetune_pmce.py + tools/extract_img_feat.py) """
 cfg.PMCE = edict()

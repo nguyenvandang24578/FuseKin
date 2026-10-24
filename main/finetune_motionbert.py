@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 # Import qua 'core.*' / 'utils.*' (KHONG qua 'lib.core.*'): dataset cung import 'core.config',
@@ -126,8 +126,29 @@ def get_train_2d(inputs_b, targets_b, meta_b, mb_cfg, device):
     return xy, conf
 
 
-def train_epoch(mb_cfg, model, train_loader, optimizer, device, rootrel, drop_idx):
+class TagDataset(torch.utils.data.Dataset):
+    """Gan chi so bo train (meta['ds_id']) de log loi rieng tung bo; khong doi du lieu."""
+    def __init__(self, ds, ds_id):
+        self.ds, self.ds_id = ds, ds_id
+
+    def __len__(self):
+        return len(self.ds)
+
+    def __getitem__(self, i):
+        inputs, targets, meta = self.ds[i]
+        meta = dict(meta)
+        meta['ds_id'] = self.ds_id
+        return inputs, targets, meta
+
+
+SHORT_NAMES = {'Human36M': 'H36M', 'MuCo': 'MuCo', 'MSCOCO': 'COCO', 'CrowdPose': 'Crowd', '3dpw-train': '3DPW'}
+
+
+def train_epoch(mb_cfg, model, train_loader, optimizer, device, rootrel, drop_idx, ds_names=None):
     model.train()
+    ds_names = list(ds_names or [])
+    ds_sum = np.zeros(len(ds_names))
+    ds_cnt = np.zeros(len(ds_names))
     losses = {
         '3d_pos': 0.0, '3d_scale': 0.0, '3d_velocity': 0.0,
         'lv': 0.0, 'lg': 0.0, 'angle': 0.0, 'angle_velocity': 0.0, 'total': 0.0
@@ -136,7 +157,8 @@ def train_epoch(mb_cfg, model, train_loader, optimizer, device, rootrel, drop_id
     iters = mb_cfg.iters_per_epoch
     total = min(len(train_loader), iters) if iters > 0 else len(train_loader)
 
-    for i, (inputs_b, targets_b, meta_b) in tqdm(enumerate(train_loader), total=total):
+    pbar = tqdm(enumerate(train_loader), total=total)
+    for i, (inputs_b, targets_b, meta_b) in pbar:
         if iters > 0 and i >= iters:
             break
         xy, conf = get_train_2d(inputs_b, targets_b, meta_b, mb_cfg, device)
@@ -193,8 +215,28 @@ def train_epoch(mb_cfg, model, train_loader, optimizer, device, rootrel, drop_id
         losses['total']           += loss_total.item()
         n_batches += 1
 
+        # MPJPE chay tung bo train (du doan luc train: co dropout + aug), hien tren thanh tien do
+        if ds_names and 'ds_id' in meta_b:
+            with torch.no_grad():
+                e = torch.norm(predicted_3d.detach()[:, 0] - target_3d_seq[:, 0], dim=-1)   # (B, 17)
+                w = valid_seq[:, 0, :, 0]
+                per = (e * w).sum(1) / w.sum(1).clamp(min=1.0)
+                ids = meta_b['ds_id'].to(device)
+                for k in range(len(ds_names)):
+                    sel = ids == k
+                    if sel.any():
+                        ds_sum[k] += per[sel].sum().item()
+                        ds_cnt[k] += int(sel.sum())
+            if i % 50 == 0:
+                post = {'mpjpe': f'{loss_3d_pos.item() * 1000:.1f}'}
+                for k, nm in enumerate(ds_names):
+                    if ds_cnt[k] > 0:
+                        post[SHORT_NAMES.get(nm, nm[:5])] = f'{ds_sum[k] / ds_cnt[k] * 1000:.1f}'
+                pbar.set_postfix(post)
+
     for k in losses:
         losses[k] /= max(n_batches, 1)
+    losses['per_ds'] = {nm: ds_sum[k] / ds_cnt[k] * 1000 for k, nm in enumerate(ds_names) if ds_cnt[k] > 0}
     return losses
 
 
@@ -207,7 +249,8 @@ def evaluate(model, loader, h36m_regressor, device, rootrel, drop_idx, desc):
     reg = torch.as_tensor(h36m_regressor, dtype=torch.float32, device=device)  # (17, 6890)
     err_sum, pa_sum, n = 0.0, 0.0, 0
     with torch.no_grad():
-        for inputs_b, targets_b, meta_b in tqdm(loader, desc=desc):
+        pbar = tqdm(loader, desc=desc)
+        for inputs_b, targets_b, meta_b in pbar:
             xy = inputs_b['joints'][..., :2].to(device).float()
             conf = inputs_b['joints_mask'].to(device).float()
             if 'orig_joint_cam' in targets_b:
@@ -223,6 +266,7 @@ def evaluate(model, loader, h36m_regressor, device, rootrel, drop_idx, desc):
             err_sum += torch.norm(pred - gt, dim=-1).mean(-1).sum().item()
             pa_sum += batch_pa_errors(pred, gt).sum().item()
             n += pred.shape[0]
+            pbar.set_postfix({'MPJPE': f'{err_sum / n * 1000:.1f}', 'PA': f'{pa_sum / n * 1000:.1f}'})
     return {'mpjpe': err_sum / max(n, 1) * 1000, 'pa_mpjpe': pa_sum / max(n, 1) * 1000, 'n': n}
 
 
@@ -289,14 +333,36 @@ def main():
         log(f"# train {name}: {len(ds)}")
     # Tron nhieu dataset: balance_datasets=True -> lay mau ngang nhau (make_same_len);
     # False -> noi thang, moi epoch duyet moi mau dung 1 lan
-    train_dataset = train_sets[0] if len(train_sets) == 1 else \
-        MultipleDatasets(train_sets, make_same_len=mb_cfg.balance_datasets)
+    # Tap con CO DINH tung bo train (MPJPE/PA cuoi moi epoch, giu aug train, seed co dinh)
+    n_tr_eval = int(mb_cfg.get('train_eval_samples', 0))
+    train_eval_loaders = []
+    if n_tr_eval > 0:
+        for name, ds in zip(train_names, train_sets):
+            idx = np.sort(np.random.default_rng(0).choice(len(ds), min(n_tr_eval, len(ds)), replace=False))
+            train_eval_loaders.append((name, DataLoader(Subset(ds, idx.tolist()), batch_size=mb_cfg.batch_size,
+                                                        shuffle=False, num_workers=0)))
+    train_sets = [TagDataset(ds, k) for k, ds in enumerate(train_sets)]
+    ratio = list(mb_cfg.get('dataset_ratio', []))
+    sampler = None
+    if ratio:
+        # Tron theo ti le giong finetune_difflifter (co hoan lai, samples_per_epoch mau / epoch)
+        assert len(ratio) == len(train_sets), f'dataset_ratio {ratio} phai co {len(train_sets)} phan tu'
+        train_dataset = MultipleDatasets(train_sets, make_same_len=False)
+        rs = np.asarray(ratio, dtype=np.float64) / float(sum(ratio))
+        weights = np.concatenate([np.full(len(ds), r / len(ds)) for ds, r in zip(train_sets, rs)])
+        n_ep = int(mb_cfg.get('samples_per_epoch', 0)) or len(train_dataset)
+        sampler = torch.utils.data.WeightedRandomSampler(torch.as_tensor(weights), num_samples=n_ep, replacement=True)
+        log(f"# dataset_ratio={ratio} | mau / epoch: {n_ep}")
+    else:
+        train_dataset = train_sets[0] if len(train_sets) == 1 else \
+            MultipleDatasets(train_sets, make_same_len=mb_cfg.balance_datasets)
     log(f"# train tong: {len(train_dataset)} mau | balance_datasets={mb_cfg.balance_datasets}")
     workers = cfg.DATASET.workers
     train_loader = DataLoader(
         dataset=train_dataset,
         batch_size=mb_cfg.batch_size,
-        shuffle=True,
+        shuffle=sampler is None,
+        sampler=sampler,
         num_workers=workers,
         pin_memory=True,
         persistent_workers=workers > 0,
@@ -305,6 +371,44 @@ def main():
     val_dataset, val_loader = make_eval_loader(mb_cfg.val_set, mb_cfg)
     log(f"# val {mb_cfg.val_set}: {len(val_dataset)}")
     h36m_regressor = val_dataset.dataset.h36m_joint_regressor
+    sel_metric = mb_cfg.get('select_metric', 'mpjpe')
+    if sel_metric not in ('mpjpe', 'pa_mpjpe'):
+        raise ValueError(f"MOTIONBERT.select_metric phai la 'mpjpe' hoac 'pa_mpjpe', nhan {sel_metric}")
+    log(f"select_metric={sel_metric} | halpe_gt_mask_thr={cfg.DATASET.get('halpe_gt_mask_thr', 0.0)} | "
+        f"lift_soft_conf={cfg.DATASET.lift_soft_conf} | train_eval_samples={n_tr_eval}")
+    extra_loaders = {}
+    for name in list(mb_cfg.get('epoch_eval_sets', [])) + list(mb_cfg.get('full_eval_sets', [])):
+        if name in extra_loaders or name == mb_cfg.val_set:
+            continue
+        try:
+            ds_e, ld_e = make_eval_loader(name, mb_cfg)
+            extra_loaders[name] = (ds_e, ld_e)
+            log(f"# eval them {name}: {len(ds_e)}")
+        except Exception as e:
+            log(f"# eval them {name}: LOI {type(e).__name__}: {e}")
+
+    def eval_extra(names, epoch_no):
+        for name in names:
+            if name not in extra_loaders:
+                continue
+            ds_e, ld_e = extra_loaders[name]
+            r = evaluate(model, ld_e, ds_e.dataset.h36m_joint_regressor, device, rootrel, drop_idx, desc=f'Eval {name}')
+            log(f"    [Ep {epoch_no} | {name}] MPJPE: {r['mpjpe']:.2f} mm | PA: {r['pa_mpjpe']:.2f} mm (n={r['n']})")
+
+    def eval_train_subsets(epoch_no):
+        if not train_eval_loaders:
+            return
+        st = (random.getstate(), np.random.get_state(), torch.get_rng_state())
+        parts = []
+        for name, ld in train_eval_loaders:
+            random.seed(1234)
+            np.random.seed(1234)
+            r = evaluate(model, ld, h36m_regressor, device, rootrel, drop_idx, desc=f'Train-sub {name}')
+            parts.append(f"{SHORT_NAMES.get(name, name)} {r['mpjpe']:.2f}/{r['pa_mpjpe']:.2f}")
+        random.setstate(st[0])
+        np.random.set_state(st[1])
+        torch.set_rng_state(st[2])
+        log(f"    [Ep {epoch_no} | train subset n<={n_tr_eval}/bo, MPJPE/PA mm, co aug train] " + ' | '.join(parts))
 
     # ---------------- Model ----------------
     model = build_model(mb_cfg)
@@ -354,13 +458,20 @@ def main():
     for epoch in range(mb_cfg.epochs):
         start_time = time.time()
 
-        losses = train_epoch(mb_cfg, model, train_loader, optimizer, device, rootrel, drop_idx)
+        losses = train_epoch(mb_cfg, model, train_loader, optimizer, device, rootrel, drop_idx, ds_names=train_names)
         val = evaluate(model, val_loader, h36m_regressor, device, rootrel, drop_idx, desc=f'Val {mb_cfg.val_set}')
 
         elapsed = (time.time() - start_time) / 60
         log(f"[Epoch {epoch+1}/{mb_cfg.epochs}] Time: {elapsed:.2f}m | LR: {lr:.6f} | "
             f"Train MPJPE: {losses['3d_pos']*1000:.2f} mm (total {losses['total']:.5f}) | "
             f"Val({mb_cfg.val_set}) MPJPE: {val['mpjpe']:.2f} mm, PA: {val['pa_mpjpe']:.2f} mm")
+        if losses.get('per_ds'):
+            log('    [train MPJPE tung bo (luc train), mm] ' +
+                ' | '.join(f"{SHORT_NAMES.get(k, k)} {v:.2f}" for k, v in losses['per_ds'].items()))
+        eval_train_subsets(epoch + 1)
+        eval_extra(list(mb_cfg.get('epoch_eval_sets', [])), epoch + 1)
+        if (epoch + 1) % int(mb_cfg.get('full_eval_freq', 5)) == 0:
+            eval_extra(list(mb_cfg.get('full_eval_sets', [])), epoch + 1)
 
         lr *= lr_decay
         for param_group in optimizer.param_groups:
@@ -371,11 +482,11 @@ def main():
             save(os.path.join(save_dir, f'epoch_{epoch+1}.bin'), epoch + 1, min_loss)
 
         # val_loss tinh bang met nhu ban cu (min_loss trong checkpoint giu don vi cu)
-        val_loss_m = val['mpjpe'] / 1000
+        val_loss_m = val[sel_metric] / 1000
         if val_loss_m < min_loss:
             min_loss = val_loss_m
             save(best_path, epoch + 1, min_loss)
-            log(f"--> Saved new best model (Val MPJPE={val['mpjpe']:.2f} mm) to {best_path}")
+            log(f"--> Saved new best model (Val {sel_metric}={val[sel_metric]:.2f} mm) to {best_path}")
 
     # ---------------- Test 1 lan voi checkpoint cuoi (MOTIONBERT.final_ckpt: 'best' | 'latest') ----------------
     final_kind = mb_cfg.get('final_ckpt', 'best')
