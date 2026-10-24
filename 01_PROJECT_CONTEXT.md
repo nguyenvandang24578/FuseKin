@@ -193,3 +193,7 @@ Có sẵn `config/train_student_init_v2_diff_jotr.yml`, đã so toàn bộ giá 
 Sửa validation trước đó chỉ hết ValueError nhưng vẫn ép Crowd dùng HHRNet, chưa đúng pipeline Halpe theo yêu cầu người dùng. PW3D.load_data nay chọn self.use_halpe26 theo pw3d_2d_source cho mọi split: Crowd dùng 3DPW_validation_halpe26.json (cùng ann_id với 3DPW_latest_validation.json) và giữ lọc courtyard_hug_00/courtyard_dancing_00. Khi chọn Halpe không mở file HHRNet, không fallback OpenPose; thiếu file/ann_id Halpe báo lỗi rõ. OC/PC vẫn dùng file riêng; openpose giữ hành vi HHRNet cũ trên Crowd. __getitem__ đã ưu tiên halpe_h36m nên không cần đổi.
 
 Không đổi YAML/default key hay model/train. Kết quả Crowd từ nhánh HHRNet/OpenPose trước đây thuộc nguồn detector khác; cần đánh giá lại khi chuyển Halpe. Chỉ rà source/diff, chưa chạy Python/test; xem experiment.md mục 21.
+
+## 15. Doi chung KD mot bo 3DPW (2026-10-24)
+
+Theo yeu cau nguoi dung, uu tien doi chung mot bo thay full dataset. config/train_student_init_v2_diff_gate_zero_3dpw.yml sao chep ban KD gate_zero 3DPW, chi doi kd_lambda=0. Giu gate_zero/Teacher init/hard_w1/privileged, lich LR va luong sinh std/forward de so loss KD voi moc 76.11/93.84. Khong phai scratch hay ban khong gate. Run moi student_init_v2_diff_gate_zero_3dpw_s123, chua train; lenh va gioi han o experiment.md muc 22. Khong doi kien truc/default/YAML cu. Nguoi dung xac nhan CrowdPose da full du lieu; khong tiep tuc coi nghi van do phu o muc 12 la blocker hien tai.
