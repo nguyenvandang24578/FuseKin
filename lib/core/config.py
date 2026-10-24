@@ -140,6 +140,10 @@ cfg.HALPE_SIMCC.temperatures = []
 cfg.DATASET.pw3d_test_gt2d = False
 # Tat augmentation xoay (giu scale/flip). Bat khi lifter = PMCE (2D anh goc khong xoay) de khop 3D GT.
 cfg.DATASET.no_rot_aug = False
+# Mask khop Halpe SAI bang GT 2D (chi tap TRAIN Human36M / MuCo / MSCOCO / CrowdPose): khop Halpe hop le lech
+# GT 2D > nguong (ty le canh crop, vd 0.1) -> mask = 0 (toa do ve 0). Khop khong co GT tuong ung (vd Torso cua COCO)
+# khong kiem tra. Ap dung ca lifter (lift_only) va Student (fusekin_unified). 0 = TAT (hanh vi cu).
+cfg.DATASET.halpe_gt_mask_thr = 0.0
 # Nguon 2D dau vao cua Human36M (train + test):
 #   'gt_posefix' (mac dinh, giong JOTR): train = GT 2D + nhieu PoseFix, test = GT 2D sach
 #   'halpe26'   : Human36M_{split}_halpe26.npz tu tools/extract_halpe26_h36m.py (nguong = halpe26_conf_thr)
@@ -474,6 +478,11 @@ cfg.DIFFLIFT.dataset_ratio = []
 cfg.DIFFLIFT.samples_per_epoch = 0    # so mau moi epoch khi dung dataset_ratio (0 = tong so mau cac tap)
 cfg.DIFFLIFT.drop_rate = 0.0          # dropout trong attention/MLP cua denoiser (chong overfit)
 cfg.DIFFLIFT.drop_path_rate = 0.1     # stochastic depth (truoc day co dinh 0.1)
+# Cuoi moi epoch: MPJPE S=1 tren N mau CO DINH cua tung bo train (giu augmentation train, seed co dinh
+# -> so duoc giua cac epoch). 0 = TAT.
+cfg.DIFFLIFT.train_eval_samples = 0
+# Chi so chon best tren val_set: 'mpjpe' (mac dinh, hanh vi cu) | 'pa_mpjpe'
+cfg.DIFFLIFT.select_metric = 'mpjpe'
 
 """ Diffusion (SMPL_HyperDiff) """
 cfg.DIFF = edict()

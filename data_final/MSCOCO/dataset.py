@@ -17,7 +17,7 @@ from utils.smpl import SMPL
 from utils.preprocessing import load_img, process_bbox, augmentation, compute_iou, load_img_from_lmdb
 # from utils.vis import vis_bbox, render_mesh
 from utils.transforms import world2cam, cam2pixel, pixel2cam, transform_joint_to_other_db
-from utils.lift_pseudo3d import lift_pseudo3d_sample, load_halpe_into_datalist, halpe_to_crop
+from utils.lift_pseudo3d import lift_pseudo3d_sample, load_halpe_into_datalist, halpe_to_crop, gt_mask_halpe
 from utils.fusekin_sample import fusekin_train_sample
 from utils.cam_bbox import est_cam
 
@@ -236,6 +236,7 @@ class MSCOCO(torch.utils.data.Dataset):
         #                     readahead=False, meminit=False)
         #     self.lmdb = env.begin(write=False)
         data = copy.deepcopy(self.datalist[idx])
+        data['gt2d_px'] = np.asarray(data['joint_img'])[:, :2].copy()   # GT 2D goc cho halpe_gt_mask_thr
         img_path, img_shape, bbox = data['img_path'], data['img_shape'], data['bbox']
         if cfg.update_bbox:
             height, width = img_shape
@@ -254,6 +255,7 @@ class MSCOCO(torch.utils.data.Dataset):
             # Mau FuseKin thong nhat: 2D Halpe; pseudo-GT NeuralAnnot xoay tu camera ao sang camera uoc luong
             sp = data['smpl_param']
             xy, mask = halpe_to_crop(data['halpe_h36m'], do_flip, img_shape, img2bb_trans, self.halpe26_conf_thr)
+            mask = gt_mask_halpe(self, data, xy, mask, do_flip, img_shape, img2bb_trans)
             mesh, _, pose, shape = self.get_smpl_coord(sp['smpl_param'], sp['cam_param'], do_flip, img_shape)
             return fusekin_train_sample(self, img, img2bb_trans, rot, do_flip, bbox, img_shape, img_path,
                                         xy, mask, mesh, pose, shape, sp['cam_param'], est_cam(img_shape),

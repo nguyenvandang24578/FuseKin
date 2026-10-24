@@ -18,6 +18,7 @@ from utils.smpl import SMPL
 from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch_image, augmentation, load_img_from_lmdb, augmentation_noimg
 from utils.transforms import world2cam, cam2pixel, pixel2cam, rigid_align, transform_joint_to_other_db
 from utils.h36m_adapter import halpe26_to_human36m
+from utils.lift_pseudo3d import gt_mask_halpe
 # from utils.vis import vis_mesh, save_obj
 
 
@@ -239,6 +240,7 @@ class Human36M(torch.utils.data.Dataset):
         if cfg.DATASET.lift_soft_conf:
             # giu score lien tuc cho khop hop le (tin hieu che khuat cho lifter)
             mask = mask * np.clip(k[:, 2:3], 0.0, 1.0).astype(np.float32)
+        mask = gt_mask_halpe(self, data, xy, mask, do_flip, img_shape, img2bb_trans)
         return xy.astype(np.float32), mask
 
     def get_smpl_coord(self, smpl_param, cam_param, do_flip, img_shape):
@@ -317,6 +319,7 @@ class Human36M(torch.utils.data.Dataset):
         #                     readahead=False, meminit=False)
         #     self.lmdb = env.begin(write=False)
         data = copy.deepcopy(self.datalist[idx])
+        data['gt2d_px'] = np.asarray(data['joint_img'])[:, :2].copy()   # GT 2D goc cho halpe_gt_mask_thr
         img_path, img_shape, bbox, smpl_param, cam_param = data['img_path'], data['img_shape'], data['bbox'], data['smpl_param'], data['cam_param']
         if cfg.update_bbox:
             height, width = img_shape

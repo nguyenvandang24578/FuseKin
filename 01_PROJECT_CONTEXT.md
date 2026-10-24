@@ -197,3 +197,9 @@ Không đổi YAML/default key hay model/train. Kết quả Crowd từ nhánh HH
 ## 15. Doi chung KD mot bo 3DPW (2026-10-24)
 
 Theo yeu cau nguoi dung, uu tien doi chung mot bo thay full dataset. config/train_student_init_v2_diff_gate_zero_3dpw.yml sao chep ban KD gate_zero 3DPW, chi doi kd_lambda=0. Giu gate_zero/Teacher init/hard_w1/privileged, lich LR va luong sinh std/forward de so loss KD voi moc 76.11/93.84. Khong phai scratch hay ban khong gate. Run moi student_init_v2_diff_gate_zero_3dpw_s123, chua train; lenh va gioi han o experiment.md muc 22. Khong doi kien truc/default/YAML cu. Nguoi dung xac nhan CrowdPose da full du lieu; khong tiep tuc coi nghi van do phu o muc 12 la blocker hien tai.
+
+## 15. Key moi 2026-10-24 (mac dinh tat)
+- `DATASET.halpe_gt_mask_thr` (0): tap train 4 bo, khop Halpe lech GT 2D > nguong (ty le canh crop) -> mask=0; ham `lib/utils/lift_pseudo3d.gt_mask_halpe`, GT tu `data['gt2d_px']`. Ap dung ca lifter lan Student unified.
+- `DIFFLIFT.train_eval_samples` (0): MPJPE/PA S=1 cuoi moi epoch tren tap con co dinh moi bo train (co aug train).
+- `DIFFLIFT.select_metric` ('mpjpe' | 'pa_mpjpe'): chi so chon best tren val_set.
+- `main/finetune_difflifter.py` log loss x0 tung bo train (TagDataset gan meta['ds_id']).

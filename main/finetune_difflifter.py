@@ -30,7 +30,7 @@ import time
 import numpy as np
 import torch
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 from core.config import update_config, cfg
@@ -218,10 +218,32 @@ def ema_update(ema, model, decay, step):
             e.copy_(m)
 
 
-def train_epoch(model, loader, optimizer, device, dl_cfg, epoch, ema=None, step0=0):
+class TagDataset(torch.utils.data.Dataset):
+    """Gan chi so bo train (meta['ds_id']) de log loss rieng tung bo; khong doi du lieu."""
+    def __init__(self, ds, ds_id):
+        self.ds, self.ds_id = ds, ds_id
+
+    def __len__(self):
+        return len(self.ds)
+
+    def __getitem__(self, i):
+        inputs, targets, meta = self.ds[i]
+        meta = dict(meta)
+        meta['ds_id'] = self.ds_id
+        return inputs, targets, meta
+
+
+SHORT_NAMES = {'Human36M': 'H36M', 'MuCo': 'MuCo', 'MSCOCO': 'COCO', 'CrowdPose': 'Crowd', '3dpw-train': '3DPW'}
+
+
+def train_epoch(model, loader, optimizer, device, dl_cfg, epoch, ema=None, step0=0, ds_names=None):
     model.train()
     total_loss = 0.0
     n = 0
+    # Loss (MPJPE x0, mm) chay rieng tung bo train -- loss diffusion o t ngau nhien, KHONG phai MPJPE eval S=1
+    ds_names = list(ds_names or [])
+    ds_sum = np.zeros(len(ds_names))
+    ds_cnt = np.zeros(len(ds_names))
     iters = getattr(dl_cfg, 'iters_per_epoch', 0)
     total = min(len(loader), iters) if iters > 0 else len(loader)
 
@@ -253,8 +275,25 @@ def train_epoch(model, loader, optimizer, device, dl_cfg, epoch, ema=None, step0
         total_loss += loss.item()
         n += 1
 
+        if ds_names and 'ds_id' in meta_b:
+            with torch.no_grad():
+                e = torch.norm(pred_x0.detach() - gt_3d, dim=-1)                        # (B, 17)
+                w = meta_b['orig_joint_valid'].to(device).float()[..., 0] \
+                    if 'orig_joint_valid' in meta_b else torch.ones_like(e)
+                per = (e * w).sum(1) / w.sum(1).clamp(min=1.0)                       # (B,)
+                ids = meta_b['ds_id'].to(device)
+                for k in range(len(ds_names)):
+                    sel = ids == k
+                    if sel.any():
+                        ds_sum[k] += per[sel].sum().item()
+                        ds_cnt[k] += int(sel.sum())
+
         if i % getattr(dl_cfg, 'print_freq', 50) == 0:
-            pbar.set_postfix({'loss_mm': f'{loss.item()*1000:.2f}'})
+            post = {'loss_mm': f'{loss.item()*1000:.2f}'}
+            for k, nm in enumerate(ds_names):
+                if ds_cnt[k] > 0:
+                    post[SHORT_NAMES.get(nm, nm[:5])] = f'{ds_sum[k] / ds_cnt[k] * 1000:.1f}'
+            pbar.set_postfix(post)
 
         if i == 0 and epoch <= 2:
             print(f'\n[Epoch {epoch} batch 0] xy_conf range: '
@@ -262,7 +301,8 @@ def train_epoch(model, loader, optimizer, device, dl_cfg, epoch, ema=None, step0
                   f'gt_3d range: {gt_3d.min().item():.3f}..{gt_3d.max().item():.3f} | '
                   f'pred_x0 range: {pred_x0.min().item():.3f}..{pred_x0.max().item():.3f}')
 
-    return total_loss / max(n, 1), n
+    ds_avg = {nm: ds_sum[k] / ds_cnt[k] * 1000 for k, nm in enumerate(ds_names) if ds_cnt[k] > 0}
+    return total_loss / max(n, 1), n, ds_avg
 
 
 # ============================================================
@@ -322,6 +362,8 @@ def evaluate(model, loader, h36m_regressor, device, desc='Val', seed=0):
         mink_sum += errs_k.min(dim=1).values.sum().item()
 
         n += mean_pose.shape[0]
+        # Sai so chay (mm) ngay tren thanh tien do: val / test / tap con train tung bo
+        pbar.set_postfix({'MPJPE': f'{err_sum / n * 1000:.1f}', 'PA': f'{pa_sum / n * 1000:.1f}'})
 
     return {
         'mpjpe':    err_sum / max(n, 1) * 1000,
@@ -452,6 +494,12 @@ def main():
     log(f'ema_decay={getattr(dl_cfg, "ema_decay", 0.0)} | occ_aug_prob={getattr(dl_cfg, "occ_aug_prob", 0.0)} | '
         f'soft_conf={cfg.DATASET.lift_soft_conf} | drop_rate={getattr(dl_cfg, "drop_rate", 0.0)} | '
         f'dataset_ratio={list(getattr(dl_cfg, "dataset_ratio", []))} | balance_datasets={getattr(dl_cfg, "balance_datasets", True)}')
+    sel_metric = getattr(dl_cfg, 'select_metric', 'mpjpe')
+    if sel_metric not in ('mpjpe', 'pa_mpjpe'):
+        raise ValueError(f"DIFFLIFT.select_metric phai la 'mpjpe' hoac 'pa_mpjpe', nhan {sel_metric}")
+    log(f'select_metric={sel_metric} | halpe_gt_mask_thr={cfg.DATASET.get("halpe_gt_mask_thr", 0.0)} | '
+        f'train_eval_samples={getattr(dl_cfg, "train_eval_samples", 0)} | joint_drop={getattr(dl_cfg, "joint_drop_prob", 0.0)} | '
+        f'limb_drop={getattr(dl_cfg, "limb_drop_prob", 0.0)} | drop_path={getattr(dl_cfg, "drop_path_rate", 0.1)}')
 
     start_epoch = 0
     step = 0
@@ -488,6 +536,17 @@ def main():
     train_sets = [get_train_dataset(name, opts) for name in train_names]
     for name, ds in zip(train_names, train_sets):
         log(f'# train {name}: {len(ds)}')
+
+    # Tap con CO DINH tung bo train de do MPJPE S=1 cuoi moi epoch (giu aug train, seed co dinh)
+    n_tr_eval = int(getattr(dl_cfg, 'train_eval_samples', 0))
+    train_eval_loaders = []
+    if n_tr_eval > 0:
+        for name, ds in zip(train_names, train_sets):
+            idx = np.sort(np.random.default_rng(0).choice(len(ds), min(n_tr_eval, len(ds)), replace=False))
+            train_eval_loaders.append((name, DataLoader(Subset(ds, idx.tolist()), batch_size=dl_cfg.batch_size,
+                                                        shuffle=False, num_workers=0)))
+    # Gan ds_id cho moi mau (log loss tung bo); khong doi du lieu hay thu tu
+    train_sets = [TagDataset(ds, k) for k, ds in enumerate(train_sets)]
 
     balance = getattr(dl_cfg, 'balance_datasets', True)
     ratio = list(getattr(dl_cfg, 'dataset_ratio', []))
@@ -540,6 +599,22 @@ def main():
         except Exception as e:
             log(f'# eval them {name}: LOI {type(e).__name__}: {e}')
 
+    def eval_train_subsets(eval_model, epoch_no):
+        if not train_eval_loaders:
+            return
+        # Giu nguyen RNG cua vong train; seed co dinh -> cung augmentation moi epoch
+        st = (random.getstate(), np.random.get_state(), torch.get_rng_state())
+        parts = []
+        for name, ld in train_eval_loaders:
+            random.seed(1234)
+            np.random.seed(1234)
+            r = evaluate(eval_model, ld, val_reg, device, desc=f'Train-sub {name}')
+            parts.append(f'{SHORT_NAMES.get(name, name)} {r["mpjpe"]:.2f}/{r["pa_mpjpe"]:.2f}')
+        random.setstate(st[0])
+        np.random.set_state(st[1])
+        torch.set_rng_state(st[2])
+        log(f'    [Ep {epoch_no} | train subset n<={n_tr_eval}/bo, S=1, MPJPE/PA mm, co aug train] ' + ' | '.join(parts))
+
     def eval_extra(names, eval_model, epoch_no):
         for name in names:
             if name not in extra_loaders:
@@ -559,8 +634,8 @@ def main():
     for epoch in range(start_epoch, dl_cfg.epochs):
         t0 = time.time()
 
-        train_loss, n_it = train_epoch(model, train_loader, optimizer, device, dl_cfg, epoch + 1,
-                                       ema=ema, step0=step)
+        train_loss, n_it, ds_avg = train_epoch(model, train_loader, optimizer, device, dl_cfg, epoch + 1,
+                                               ema=ema, step0=step, ds_names=train_names)
         step += n_it
         eval_model = ema if ema is not None else model
         val_res    = evaluate(eval_model, val_loader, val_reg, device, desc=f'Val {dl_cfg.val_set}')
@@ -572,6 +647,9 @@ def main():
             f'PA: {val_res["pa_mpjpe"]:.2f} mm | '
             f'min-K: {val_res["min_k"]:.2f} mm | '
             f'LR: {lr:.6f}')
+        if ds_avg:
+            log('    [train loss x0 tung bo, mm] ' + ' | '.join(f'{SHORT_NAMES.get(k, k)} {v:.2f}' for k, v in ds_avg.items()))
+        eval_train_subsets(eval_model, epoch + 1)
 
         # Danh gia them (chi log, KHONG dung de chon best)
         eval_extra(list(getattr(dl_cfg, 'epoch_eval_sets', [])), eval_model, epoch + 1)
@@ -584,10 +662,10 @@ def main():
             pg['lr'] = lr
 
         # Checkpoint: cap nhat best TRUOC de latest luu dung best_val (resume khong bi lech)
-        if val_res['mpjpe'] < best_val:
-            best_val = val_res['mpjpe']
+        if val_res[sel_metric] < best_val:
+            best_val = val_res[sel_metric]
             save_ckpt(best_path, model, optimizer, epoch + 1, best_val, dl_cfg, ema, step)
-            log(f'--> Best model saved (Val MPJPE={best_val:.2f} mm)')
+            log(f'--> Best model saved (Val {sel_metric}={best_val:.2f} mm)')
 
         save_ckpt(latest_path, model, optimizer, epoch + 1, best_val, dl_cfg, ema, step)
 
