@@ -56,6 +56,9 @@ parser.add_argument('--use_thresh', type=float, default=3.0,
                     help='(mm) mean - that duoi nguong nay -> coi nhu KHONG dung thong tin anh rieng tung mau')
 parser.add_argument('--set', type=str, default='',
                     help='tap test (3dpw, 3dpw-oc, 3dpw-pc, 3dpw-crowd, 3dpw-val); rong = cfg.DATASET.test_list[0]')
+parser.add_argument('--oracle_mask_thr', type=float, default=0.0,
+                    help='>0: them 2 dieu kien Student dung GT 2D (chi chan doan): khop Halpe lech GT > nguong '
+                         '(ty le canh crop, vd 0.1) bi MASK hoac bi THAY bang GT 2D. Can tap 3DPW. 0 = tat')
 parser.add_argument('--out_dir', type=str, default='',
                     help='thu muc MOI: luu samples.csv (tung mau, tung dieu kien) va summary.txt; rong = chi in')
 args = parser.parse_args()
@@ -278,6 +281,12 @@ def main():
 
     hr("Dang chuan bi tap test...")
     test_name = args.set or cfg.DATASET.test_list[0]
+    if args.oracle_mask_thr > 0:
+        if not test_name.startswith('3dpw'):
+            print('[LOI] --oracle_mask_thr chi ho tro tap 3DPW (can GT 2D tu mesh)')
+            sys.exit(1)
+        cfg.DATASET.pw3d_test_gt2d = True   # tra them targets['orig_joint_img'] (khung output_hm_shape)
+    oracle_stats = {'joints': 0, 'wrong': 0, 'samples': 0, 's_any': 0, 's_3': 0}
     base_ds = get_test_dataset(test_name, None)
     dataset = IndexedDataset(base_ds)
     gen = torch.Generator().manual_seed(args.seed)
@@ -343,28 +352,51 @@ def main():
             # ---------------- Student ----------------
             if student is not None:
                 feat_s, _ = student.get_image_features(img)
-                # Chon lifter dung loai (MotionBERT / DiffLifter / PMCE)
-                if getattr(student, 'use_diff', False):
-                    cam_bbox = inputs.get('cam_bbox', torch.zeros(img.shape[0], 3)).to(DEVICE).float()
-                    pose_3d = student.lift_diffusion(joints2d, joints_mask, cam_bbox)
-                    lifter_name = 'DiffLifter'
-                elif getattr(student, 'use_pmce', False):
-                    joints_raw = inputs.get('joints_raw', joints2d).to(DEVICE).float()
-                    global_feat = student.get_image_features(img)[1]
-                    pose_3d = student.lift_pmce(joints_raw, joints_mask, global_feat)
-                    lifter_name = 'PMCE'
-                else:
-                    pose_3d = student.lift_2d_to_3d(joints2d, joints_mask=joints_mask)
-                    lifter_name = 'MotionBERT'
-                pose_3d = pose_3d - pose_3d[:, 0:1]
-                name = 'Student' + (' S-hint' if getattr(student, 'student_hint', False) else '') + f' (joint {lifter_name})'
-                results.setdefault(name, new_cond())
-                e_in = (torch.norm(pose_3d - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu()
-                inp_err.setdefault(name, []).append(e_in)
-                # Student v2 (joint_pe2d): truyen CUNG 2D dua vao lifter cho PE vi tri trong fusion
-                per = run_three(student, pose_3d, feat_s, results[name], reg, gt_mesh,
-                                **student._pe2d_kwargs(joints2d, joints_mask))
-                add_rows(rows, name, idx, e_in, per)
+                variants_2d = [('', joints2d, joints_mask)]
+                if args.oracle_mask_thr > 0:
+                    # Oracle (dung GT 2D): khop Halpe hop le lech GT > nguong (ty le canh crop) coi la SAI.
+                    gt2d = targets['orig_joint_img'][..., :2].to(DEVICE).float()
+                    gt_n = torch.stack([gt2d[..., 0] / cfg.output_hm_shape[2] * 2 - 1,
+                                        gt2d[..., 1] / cfg.output_hm_shape[1] * 2 - 1], dim=-1)
+                    err_crop = torch.norm(joints2d[..., :2] - gt_n, dim=-1) / 2.0
+                    wrong = (err_crop > args.oracle_mask_thr) & (joints_mask[..., 0] > 0)
+                    keep = (~wrong).float()[..., None]
+                    j_mask = joints2d.clone()
+                    j_mask[..., :2] = j_mask[..., :2] * keep
+                    m_mask = joints_mask * keep
+                    j_fix = joints2d.clone()
+                    j_fix[..., :2] = torch.where(wrong[..., None], gt_n, joints2d[..., :2])
+                    variants_2d += [(' [oracle mask]', j_mask, m_mask), (' [oracle fix]', j_fix, joints_mask)]
+                    oracle_stats['joints'] += int((joints_mask[..., 0] > 0).sum())
+                    oracle_stats['wrong'] += int(wrong.sum())
+                    nw = wrong.sum(1).cpu()
+                    oracle_stats['samples'] += int(nw.numel())
+                    oracle_stats['s_any'] += int((nw >= 1).sum())
+                    oracle_stats['s_3'] += int((nw >= 3).sum())
+                for tag, j2, jm in variants_2d:
+                    # Chon lifter dung loai (MotionBERT / DiffLifter / PMCE)
+                    if getattr(student, 'use_diff', False):
+                        cam_bbox = inputs.get('cam_bbox', torch.zeros(img.shape[0], 3)).to(DEVICE).float()
+                        pose_3d = student.lift_diffusion(j2, jm, cam_bbox)
+                        lifter_name = 'DiffLifter'
+                    elif getattr(student, 'use_pmce', False):
+                        joints_raw = inputs.get('joints_raw', j2).to(DEVICE).float()
+                        global_feat = student.get_image_features(img)[1]
+                        pose_3d = student.lift_pmce(joints_raw, jm, global_feat)
+                        lifter_name = 'PMCE'
+                    else:
+                        pose_3d = student.lift_2d_to_3d(j2, joints_mask=jm)
+                        lifter_name = 'MotionBERT'
+                    pose_3d = pose_3d - pose_3d[:, 0:1]
+                    name = 'Student' + (' S-hint' if getattr(student, 'student_hint', False) else '') \
+                        + f' (joint {lifter_name})' + tag
+                    results.setdefault(name, new_cond())
+                    e_in = (torch.norm(pose_3d - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu()
+                    inp_err.setdefault(name, []).append(e_in)
+                    # Student v2 (joint_pe2d): truyen CUNG 2D dua vao lifter cho PE vi tri trong fusion
+                    per = run_three(student, pose_3d, feat_s, results[name], reg, gt_mesh,
+                                    **student._pe2d_kwargs(j2, jm))
+                    add_rows(rows, name, idx, e_in, per)
 
             if n_batches % 5 == 0:
                 print(f"  ... da xu ly {n_batches}/{args.max_batches} batch")
@@ -394,6 +426,13 @@ def main():
     def log(msg):
         print(msg)
         lines.append(msg)
+
+    if args.oracle_mask_thr > 0 and oracle_stats['samples'] > 0:
+        o = oracle_stats
+        log(f"\n  Oracle 2D (nguong {args.oracle_mask_thr} x canh crop): khop hop le bi coi la SAI = "
+            f"{o['wrong']}/{o['joints']} ({o['wrong'] / max(o['joints'], 1):.1%}); mau co >=1 khop sai = "
+            f"{o['s_any'] / o['samples']:.1%}; >=3 khop sai = {o['s_3'] / o['samples']:.1%}")
+        log("  [oracle mask] = bo khop sai (mo phong bo phat hien hoan hao); [oracle fix] = thay bang GT 2D (can tren 2D)")
 
     hr("THEO NHOM LOI POSE DAU VAO (MPJPE 17 khop H36M root-rel tu mesh, KHONG phai dataset.evaluate 14 khop)")
     log(f"  tap: {test_name} | n mau duyet: {len(set(r['index'] for r in rows))}")
