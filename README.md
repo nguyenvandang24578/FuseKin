@@ -300,3 +300,32 @@ Chua co checkpoint relation thi bo ca hai co nay, van ve Teacher + Student hien 
 Tat ca cung loader Student hien tai; moi model nap strict va forward trong snapshot YAML RIENG tu default, tranh ro key giua Teacher/Student. Teacher dung GT3D, Student dung lifter trong checkpoint. Neu co hai Student, pose S1 phai khop <=1e-6 met; std cung duoc so neu ca hai gate. Khac pose/std thi dung ro loi, khong so nhu ablation cung input. Config train khac ngoai hai co relation/log se duoc luu va canh bao; input parity khop khong du chung minh chi khac loss.
 
 **Before/after fusion** la vi tri token; **KD hien tai/KD quan he** la hai run train. Relation MSE o day do cosine token tho, khong qua projector va khong phai full loss KD E1. Gan Teacher ve quan he chua chac giam loi mesh; MPJPE tren hinh la **H36M17**, khong phai MPJPE14 evaluator. Kiem tra bang van ban/source/diff; chua chay Python/model/test local theo AGENTS.
+
+## Visual attention joint -> image cua Teacher va Student hien tai
+
+Khac voi `teacher_relation` (cosine joint-joint 17x17), mode `attention` lay **softmax attention that** `feat_layers[block]['attn_joint_to_img']` (B,heads,17,64), trung binh qua heads thanh 17 ban do 8x8. Mac dinh chon block cuoi (`--attn_block -1`); giu ca hai checkpoint eval, khong train/them loss KD.
+
+```bash
+python main/inspect_student_spread.py \
+  --mode attention \
+  --cfg config/train_teacher_k16_v2.yml \
+  --ckpt experiment/teacher_gt_v2/checkpoint/best.pth.tar \
+  --student_cfg config/train_student_kd_e1_v2_diff_spread_gate_zero.yml \
+  --student_ckpt experiment/student_kd_e1_v2_diff_spread_gate_zero/checkpoint/best.pth.tar \
+  --set 3dpw --max_samples 512 --num_vis 12 --attn_block -1 \
+  --batch_size 32 --workers 0 --seed 123 --gpu 0
+```
+
+Doi checkpoint/YAML theo dung run da train neu ten thu muc khac. Co the dung Student KD khong gate. Khong truyen relation_cfg/ckpt trong mode nay. `--max_samples` la alias cua --relation_samples; 0=toan tap, mac dinh512 mau ngau nhien khong hoan lai. `--sample_ids` chon index cu the. Mac dinh ve 6 khop co tay/khuyu/co chan; thong ke van du17 khop. Dung `--attn_joints all` de ve het hoac `--attn_joints L_Wrist R_Wrist Head_top`. Block danh so tu0, -1 la cuoi. Chi ho tro grid anh8x8, shape sai bao loi.
+
+Dau ra mac dinh thu muc `compare_attention_<split>_<timestamp>` canh checkpoint Student; co the dat --out_dir moi:
+
+- `attention_overview.png`: mean attention Teacher/Student, mean abs difference T-S tren TUNG mau, TV tung khop, entropy va lien he voi loi input pose.
+- `vis_attention/*_attention.png`: moi hang mot joint; 4 cot crop/detector, Teacher overlay8x8, Student overlay8x8, hieu Student-Teacher. Cung color scale tren cac model/mau, khong rescale rieng moi heatmap. Vong cyan la detector2D (co the sai), khong phai GT va khong ep attention phai peak tai day.
+- `joints.csv`, `joint_summary.csv`: TV/JS/KL, entropy, do da dang giua heads, loi pose joint va detector_valid.
+- `samples.csv`, `groups.csv`: mau va nhom Q1-Q4 theo loi input pose16 (bo pelvis), khong chia theo loi output Student. Metric mesh tren cac file nay la MPJPE17 root-relative, khong phai MPJPE14 evaluator.
+- `attention.npz`, `summary.json`, YAML tung model/log: attention mean-head, poses/indices/grid xy, epoch va thong ke.
+
+TV va JS chuan hoa nam trong [0,1], gan0 la mean-head attention gan nhau; KL Teacher||Student dung log tu nhien. Entropy chia log64: gan1 la attention trai deu, **khong phai confidence pose**. Teacher-vs-own-template TV so tung map voi mean Teacher cua CUNG joint qua cac mau: gan0 voi nhieu mau la it bien thien. Do da dang giua heads nhac rang trung binh co the che khac biet head; khong gia dinh head thu k o hai model co cung y nghia.
+
+Tieu chi doc: khac ro + Teacher co tin hieu rieng theo mau/khop thi co co so THU attention KD; gan nhau hoac ca hai ganuniform/co dinh thi mean-head KD it tin hieu moi. Khac nhau khong tu chung minh Teacher dung hon hay KD se cai thien. Chua dat nguong auto chon/train theo test. Chi sua inspector va helper `lib/utils/attention_diagnostics.py`, khong sua model/loss/YAML train; **chua chay Python/import/test/GPU local** theo AGENTS.

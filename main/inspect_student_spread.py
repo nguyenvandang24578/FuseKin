@@ -6,6 +6,7 @@ Giu pose S1, feature anh va PE2D cua real khi replay, kiem tra output trung wrap
 --mode gate la mac dinh; --mode spread la alias cu, cung chi ho tro gate.
 --mode teacher doc GT 3D, co the doi chieu CSV da luu bang --spread_csv.
 --mode teacher_relation ve cosine(LN(token)) truoc/sau fusion, trung binh va bien thien theo mau.
+--mode attention so attention joint->image that cua Teacher/Student, overlay crop va thong ke do lech.
 --mode compare so scratch/KD (DiffLifter thuan hoac gate) voi Teacher GT.
 Metric mesh dung dataset.evaluate (14 khop); chan doan lifter dung H36M-17 bo pelvis.
 Nhanh cong embedding spread da duoc go bo; khong nap checkpoint nhanh cu.
@@ -29,7 +30,7 @@ for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
 
 def parse_args():
     p = argparse.ArgumentParser(description='Chan doan gate/Teacher GT hoac so scratch-KD, khong train')
-    p.add_argument('--mode', choices=['gate', 'spread', 'teacher', 'teacher_relation', 'compare'], default='gate')
+    p.add_argument('--mode', choices=['gate', 'spread', 'teacher', 'teacher_relation', 'attention', 'compare'], default='gate')
     p.add_argument('--cfg', required=True)
     p.add_argument('--ckpt', required=True)
     p.add_argument('--gpu', default='0', help='mot GPU, giong cau hinh eval batch=32')
@@ -40,12 +41,15 @@ def parse_args():
     p.add_argument('--seed', type=int, default=0, help='chon donor shuffle va mau ngau nhien; lifter giu seed eval=0')
     p.add_argument('--num_vis', type=int, default=4,
                    help='teacher_relation: tong so hinh mau; mode khac: so mau moi nhom; 0: bo hinh mau')
-    p.add_argument('--student_cfg', default='', help='teacher_relation: YAML Student KD hien tai')
-    p.add_argument('--student_ckpt', default='', help='teacher_relation: checkpoint Student KD hien tai')
+    p.add_argument('--student_cfg', default='', help='teacher_relation/attention: YAML Student KD hien tai')
+    p.add_argument('--student_ckpt', default='', help='teacher_relation/attention: checkpoint Student KD hien tai')
     p.add_argument('--relation_cfg', default='', help='teacher_relation: YAML Student KD quan he, tuy chon')
     p.add_argument('--relation_ckpt', default='', help='teacher_relation: checkpoint KD quan he da train, tuy chon')
-    p.add_argument('--relation_samples', type=int, default=512,
-                   help='teacher_relation: toi da N mau ngau nhien khong hoan lai; 0=toan tap')
+    p.add_argument('--attn_block', type=int, default=-1, help='attention: index block tu 0; -1 la block cuoi')
+    p.add_argument('--attn_joints', nargs='+', default=['L_Wrist', 'R_Wrist', 'L_Elbow', 'R_Elbow', 'L_Ankle', 'R_Ankle'],
+                   help='attention: ten khop H36M can ve; all de ve 17 khop, thong ke luon du 17')
+    p.add_argument('--relation_samples', '--max_samples', dest='relation_samples', type=int, default=512,
+                   help='teacher_relation/attention: toi da N mau ngau nhien khong hoan lai; 0=toan tap')
     p.add_argument('--out_dir', default='', help='mac dinh tao thu muc moi canh checkpoint')
     p.add_argument('--sample_ids', type=int, nargs='+', default=None,
                    help='teacher/teacher_relation: chi eval cac sample nay; compare: them hinh, van eval ca tap')
@@ -64,13 +68,15 @@ def parse_args():
         p.error('Dung mot GPU; cac so luong phai >= 0')
     if args.spread_csv and args.mode != 'teacher':
         p.error('--spread_csv chi dung cho --mode teacher')
-    if args.sample_ids is not None and args.mode not in ('teacher', 'teacher_relation', 'compare'):
-        p.error('--sample_ids chi dung cho --mode teacher/teacher_relation/compare')
+    if args.sample_ids is not None and args.mode not in ('teacher', 'teacher_relation', 'attention', 'compare'):
+        p.error('--sample_ids chi dung cho --mode teacher/teacher_relation/attention/compare')
     relation_paths = (args.student_cfg, args.student_ckpt, args.relation_cfg, args.relation_ckpt)
-    if any(relation_paths) and args.mode != 'teacher_relation':
-        p.error('Cac co student_cfg/ckpt va relation_cfg/ckpt chi dung cho --mode teacher_relation')
+    if any(relation_paths) and args.mode not in ('teacher_relation', 'attention'):
+        p.error('Cac co student_cfg/ckpt va relation_cfg/ckpt chi dung cho --mode teacher_relation/attention')
     if bool(args.student_cfg) != bool(args.student_ckpt) or bool(args.relation_cfg) != bool(args.relation_ckpt):
         p.error('Moi Student can DU cap --*_cfg va --*_ckpt')
+    if args.mode == 'attention' and (not args.student_cfg or args.relation_cfg):
+        p.error('attention can Teacher + Student hien tai; dat student_cfg/ckpt va bo relation_cfg/ckpt')
     if args.relation_cfg and not args.student_cfg:
         p.error('So truoc/sau KD quan he can Student KD hien tai qua --student_cfg/--student_ckpt')
     compare_paths = (args.baseline_cfg, args.baseline_ckpt, args.teacher_cfg, args.teacher_ckpt)
@@ -1086,6 +1092,12 @@ def inspect_relation_compare(args, defaults):
     global plt
     import matplotlib.pyplot as plt
 
+    attention_mode = args.mode == 'attention'
+    if attention_mode:
+        from utils.attention_diagnostics import extract_joint_image_attention, save_attention_diagnostics
+        bad_joints = set(args.attn_joints) - set(JOINT_NAMES) - {'all'}
+        if bad_joints or ('all' in args.attn_joints and len(args.attn_joints) != 1):
+            raise ValueError(f'attn_joints khong hop le: {args.attn_joints}')
     if not torch.cuda.is_available():
         raise RuntimeError('Chay tren server GPU co CUDA')
     paths = {'teacher': (args.cfg, args.ckpt), 'kd_current': (args.student_cfg, args.student_ckpt)}
@@ -1139,12 +1151,14 @@ def inspect_relation_compare(args, defaults):
     if batch_size < 1:
         raise ValueError('batch_size phai >=1')
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    output_prefix = 'compare_attention' if attention_mode else 'compare_relations'
     out_dir = (Path(args.out_dir) if args.out_dir else
-               Path(args.student_ckpt).parent / f'compare_relations_{args.set}_{stamp}')
+               Path(args.student_ckpt).parent / f'{output_prefix}_{args.set}_{stamp}')
     out_dir.mkdir(parents=True, exist_ok=True)
     if any(out_dir.iterdir()):
         raise FileExistsError(f'Thu muc ket qua khong rong: {out_dir}')
-    (out_dir / 'vis').mkdir()
+    if not attention_mode:
+        (out_dir / 'vis').mkdir()
     lines = []
 
     def log(message):
@@ -1170,8 +1184,10 @@ def inspect_relation_compare(args, defaults):
     log('Before/after FUSION la vi tri feature; kd_current/kd_relation la HAI RUN, khong phai hai luot cua mot model.')
     names = list(paths)
     offdiag = ~np.eye(17, dtype=bool)
-    raw = {name: {'before': [], 'after': [], 'pose': []} for name in names}
+    raw = {name: {} for name in names}
     rows, payloads, gt_poses = [], {}, []
+    if attention_mode:
+        log(f'ATTENTION joint->image that, block={args.attn_block} (-1=cuoi), mean heads; khong cosine joint-joint.')
     # Giu cau hinh du lieu Student khi iterator/worker chay; chi doi cfg trong moi forward.
     with compare_config(configs['kd_current']):
         ds = get_test_dataset(args.set, None)
@@ -1191,7 +1207,7 @@ def inspect_relation_compare(args, defaults):
         log(f'Set={args.set} n={len(selected)}/{len(ds)} seed={args.seed} batch={batch_size}; vis={len(visual_ids)}')
         seen = 0
         with torch.no_grad():
-            for inputs, targets, meta in tqdm(loader, desc=f'Compare relations {args.set}'):
+            for inputs, targets, meta in tqdm(loader, desc=f'{output_prefix} {args.set}'):
                 image = inputs['img'].to(device).float()
                 p2 = inputs['joints'].to(device).float()
                 mask = inputs['joints_mask'].to(device).float()
@@ -1227,15 +1243,22 @@ def inspect_relation_compare(args, defaults):
                     out = outputs[name]
                     pred = torch.matmul(reg[None], out['smpl_mesh_cam'])
                     pred = pred - pred[:, 0:1]
-                    values = {'before': joint_relation_matrix(out['feat_joint_in']).cpu().numpy(),
-                              'after': joint_relation_matrix(out['feat_joint']).cpu().numpy(), 'pose': pred.cpu().numpy()}
+                    if attention_mode:
+                        values = extract_joint_image_attention(out, args.attn_block)
+                        values['detector_mask'] = mask.cpu().numpy().reshape(len(image), 17)
+                        values['input_pose'] = (out['teacher_input_joints'] if name == 'teacher'
+                                                else out['lifted_joints_3d']).cpu().numpy()
+                        values['pose'] = pred.cpu().numpy()
+                    else:
+                        values = {'before': joint_relation_matrix(out['feat_joint_in']).cpu().numpy(),
+                                  'after': joint_relation_matrix(out['feat_joint']).cpu().numpy(), 'pose': pred.cpu().numpy()}
                     if any(not np.isfinite(value).all() for value in values.values()):
                         raise RuntimeError(f'{name}: feature/pose NaN/Inf')
-                    if values['after'].shape[1:] != (17, 17) or values['before'].shape[1:] != (17, 17):
+                    if not attention_mode and (values['after'].shape[1:] != (17, 17) or values['before'].shape[1:] != (17, 17)):
                         raise RuntimeError('Can token H36M17')
                     batch_data[name] = values
                     for key, value in values.items():
-                        raw[name][key].append(value)
+                        raw[name].setdefault(key, []).append(value)
                 gt_np = gt.cpu().numpy()
                 gt_poses.append(gt_np)
                 for i in range(len(image)):
@@ -1244,9 +1267,10 @@ def inspect_relation_compare(args, defaults):
                            'ann_id': value_at(meta, 'aid', i), 'missing_2d': int((mask[i] <= 0).sum().item())}
                     for name in names:
                         row[f'{name}_mpjpe17_mm'] = float(np.linalg.norm(batch_data[name]['pose'][i] - gt_np[i], axis=-1).mean() * 1000)
-                        for stage in ('before', 'after'):
-                            delta = batch_data[name][stage][i] - batch_data['teacher'][stage][i]
-                            row[f'{name}_{stage}_mse_vs_teacher'] = float((delta[offdiag] ** 2).mean())
+                        if not attention_mode:
+                            for stage in ('before', 'after'):
+                                delta = batch_data[name][stage][i] - batch_data['teacher'][stage][i]
+                                row[f'{name}_{stage}_mse_vs_teacher'] = float((delta[offdiag] ** 2).mean())
                     for name in student_names:
                         row[f'{name}_input_mpjpe17_mm'] = float(torch.norm(outputs[name]['lifted_joints_3d'][i] - gt[i], dim=-1).mean().item() * 1000)
                     if 'kd_relation' in paths:
@@ -1263,6 +1287,10 @@ def inspect_relation_compare(args, defaults):
         raise RuntimeError('Khong du mau trong danh sach da chon')
     for name in names:
         raw[name] = {key: np.concatenate(value) for key, value in raw[name].items()}
+    if attention_mode:
+        save_attention_diagnostics(args, out_dir, raw, rows, payloads, np.concatenate(gt_poses),
+                                   selected, JOINT_NAMES, epochs, parity, len(ds), log)
+        return
     write_csv(out_dir / 'samples.csv', rows)
     archive = {'sample_ids': np.asarray(selected), 'joint_names': np.asarray(JOINT_NAMES), 'gt_pose_m': np.concatenate(gt_poses)}
     for name in names:
@@ -1581,13 +1609,16 @@ def main():
     from models.diff_lifter import H36M_PARENTS
     from tqdm import tqdm
 
-    defaults = copy.deepcopy(cfg) if args.mode in ('compare', 'teacher_relation') else None
+    defaults = copy.deepcopy(cfg) if args.mode in ('compare', 'teacher_relation', 'attention') else None
     update_config(args.cfg)
     JOINT_NAMES = list(HUMAN36M_JOINTS)
     BONES = [(j, p) for j, p in enumerate(H36M_PARENTS) if p >= 0]
     METRICS = ('mpjpe', 'pa_mpjpe', 'mpvpe')
     if args.mode == 'compare':
         inspect_compare(args, defaults)
+        return
+    if args.mode == 'attention':
+        inspect_relation_compare(args, defaults)
         return
     if args.mode == 'teacher_relation':
         if args.student_cfg:
