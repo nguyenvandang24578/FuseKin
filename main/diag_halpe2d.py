@@ -9,6 +9,11 @@ Moi mau:
 Tuy chon --lifter_csv: samples.csv cua main/eval_difflifter_3dpw.py (cung YAML, --max_samples 0)
   -> ghep theo (dataset, index) de xem loi lifter co tang theo loi 2D khong.
 Chi so khop co GT nam trong anh; Pelvis/Torso cua Halpe la khop noi suy (trung diem), van tinh rieng.
+--target_samples N (mac dinh 5000, 0 = tat): kiem tra target 3D tren N mau ngau nhien co NeuralAnnot:
+  (1) chieu lai GT 3D native (f, c cua dataset) so voi GT 2D -> 3D va anh co nhat quan khong;
+  (2) chieu lai H36M-17 tu SMPL NeuralAnnot so voi GT 2D;
+  (3) chenh lech root-relative giua target native (lifter dang hoc) va H36M regressor x SMPL NeuralAnnot
+      (quy uoc COCO/CrowdPose/Student va GT 3DPW). H36M la moc: mocap va regressor von gan nhau.
 
 Vi du:
   python main/diag_halpe2d.py --cfg config/eval_difflifter_r25_cam_norot.yaml --sets MuCo,Human36M \
@@ -47,6 +52,7 @@ def parse_args():
     p.add_argument('--bad_min_joints', type=int, default=3, help='so khop sai toi thieu de nghi bat nham nguoi')
     p.add_argument('--swap_ratio', type=float, default=0.6, help='loi sau doi L/R < ratio * loi goc -> nghi hoan doi')
     p.add_argument('--lifter_csv', default='', help='samples.csv cua eval_difflifter_3dpw.py de ghep loi lifter')
+    p.add_argument('--target_samples', type=int, default=5000, help='so mau kiem tra target 3D; 0 = tat')
     p.add_argument('--out_dir', required=True, help='thu muc MOI de luu ket qua')
     return p.parse_args()
 
@@ -74,7 +80,111 @@ def ranks(x):
     return r
 
 
-def analyze(name, args, lifter_err, log, writer):
+def native3d_h36m17(ds, name, data):
+    """GT 3D native (17, 3) mm, toa do camera, thu tu HUMAN36M_JOINTS (chua tru root)."""
+    if name == 'Human36M':
+        names, src = ds.h36m_joints_name, np.asarray(data['joint_cam'], dtype=np.float64)
+    else:
+        names, src = ds.muco_joints_name_h36m_alias, np.asarray(data['joint_cam'], dtype=np.float64)
+    return np.stack([src[names.index(jn)] for jn in HUMAN36M_JOINTS])
+
+
+def project(cam, cam_param):
+    f = np.asarray(cam_param['focal'], dtype=np.float64).reshape(-1)
+    c = np.asarray(cam_param['princpt'], dtype=np.float64).reshape(-1)
+    if f.size == 1:
+        f = np.repeat(f, 2)
+    z = np.where(np.abs(cam[:, 2]) < 1e-6, 1e-6, cam[:, 2])
+    return np.stack([cam[:, 0] / z * f[0] + c[0], cam[:, 1] / z * f[1] + c[1]], 1)
+
+
+def target_check(name, ds, args, lifter_err, log, writer):
+    datalist = ds.datalist
+    cand = [i for i in range(len(datalist)) if datalist[i].get('smpl_param') is not None]
+    n_no_smpl = len(datalist) - len(cand)
+    if not cand:
+        log(f'  [target3d] {name}: khong co mau nao co NeuralAnnot -> bo qua')
+        return None
+    rng = np.random.default_rng(args.seed + 1)
+    pick = np.sort(rng.choice(len(cand), min(args.target_samples, len(cand)), replace=False))
+    idxs = [cand[k] for k in pick]
+    rep_nat, rep_smpl, rr_diff, root_diff, sizes, used = [], [], [], [], [], []
+    n_fail = 0
+    for i in idxs:
+        data = datalist[i]
+        try:
+            gt2d = gt2d_h36m17(ds, name, data)
+            nat = native3d_h36m17(ds, name, data)
+            mesh = ds.get_smpl_coord(data['smpl_param'], data['cam_param'], False, data['img_shape'])[0]
+            smpl17 = np.asarray(ds.h36m_joint_regressor, dtype=np.float64) @ np.asarray(mesh, dtype=np.float64)
+        except Exception as e:  # mau loi tham so -> dem, khong dung lai
+            n_fail += 1
+            if n_fail <= 3:
+                log(f'  [target3d] loi mau {i}: {type(e).__name__}: {e}')
+            continue
+        h, w = data['img_shape']
+        ins = (gt2d[:, 0] >= 0) & (gt2d[:, 0] < w) & (gt2d[:, 1] >= 0) & (gt2d[:, 1] < h)
+        tb = np.asarray(data['tight_bbox'], dtype=np.float64)
+        size = max(tb[2], tb[3], 1.0)
+        e_nat = np.linalg.norm(project(nat, data['cam_param']) - gt2d, axis=1)
+        e_smpl = np.linalg.norm(project(smpl17, data['cam_param']) - gt2d, axis=1)
+        e_nat[~ins] = np.nan
+        e_smpl[~ins] = np.nan
+        rep_nat.append(e_nat)
+        rep_smpl.append(e_smpl)
+        rr_diff.append(np.linalg.norm((nat - nat[0]) - (smpl17 - smpl17[0]), axis=1))
+        root_diff.append(float(np.linalg.norm(nat[0] - smpl17[0])))
+        sizes.append(size)
+        used.append(i)
+    if not used:
+        log(f'  [target3d] {name}: tat ca mau loi -> bo qua')
+        return None
+    rep_nat, rep_smpl = np.asarray(rep_nat), np.asarray(rep_smpl)
+    rr_diff, root_diff, sizes = np.asarray(rr_diff), np.asarray(root_diff), np.asarray(sizes)
+    samp_rr = rr_diff[:, 1:].mean(1)
+    res = {'n': len(used), 'n_no_smpl': n_no_smpl, 'n_fail': n_fail,
+           'reproj_native_px_mean': float(np.nanmean(rep_nat)),
+           'reproj_native_norm_mean': float(np.nanmean(rep_nat / sizes[:, None])),
+           'reproj_smpl_px_mean': float(np.nanmean(rep_smpl)),
+           'reproj_smpl_norm_mean': float(np.nanmean(rep_smpl / sizes[:, None])),
+           'root_diff_mm_median': float(np.median(root_diff)),
+           'rr_diff_mm_mean': float(samp_rr.mean()), 'rr_diff_mm_median': float(np.median(samp_rr)),
+           'rr_diff_mm_p90': float(np.quantile(samp_rr, 0.9)),
+           'pct_rr_diff_gt50mm': float((samp_rr > 50).mean()),
+           'per_joint': {jn: {'rr_diff_mm': float(rr_diff[:, j].mean()),
+                              'reproj_native_px': float(np.nanmean(rep_nat[:, j])) if np.isfinite(rep_nat[:, j]).any() else None,
+                              'reproj_smpl_px': float(np.nanmean(rep_smpl[:, j])) if np.isfinite(rep_smpl[:, j]).any() else None}
+                         for j, jn in enumerate(HUMAN36M_JOINTS)}}
+    log(f'\n  [target3d] {name}: n={len(used)} (khong NeuralAnnot={n_no_smpl}, loi={n_fail})')
+    log(f'    chieu lai GT3D native -> GT2D: {res["reproj_native_px_mean"]:.1f} px ({res["reproj_native_norm_mean"]:.4f} x bbox)')
+    log(f'    chieu lai SMPL H36M17 -> GT2D: {res["reproj_smpl_px_mean"]:.1f} px ({res["reproj_smpl_norm_mean"]:.4f} x bbox)')
+    log(f'    native vs SMPL, root-relative (bo pelvis): mean {res["rr_diff_mm_mean"]:.1f} | median {res["rr_diff_mm_median"]:.1f}'
+        f' | p90 {res["rr_diff_mm_p90"]:.1f} mm | >50mm: {100 * res["pct_rr_diff_gt50mm"]:.1f}% | lech root median {res["root_diff_mm_median"]:.0f} mm')
+    log('    Tung khop: ten | native-vs-SMPL mm | chieu lai native px | chieu lai SMPL px')
+    for jn, v in res['per_joint'].items():
+        rn = f'{v["reproj_native_px"]:.1f}' if v['reproj_native_px'] is not None else '-'
+        rs = f'{v["reproj_smpl_px"]:.1f}' if v['reproj_smpl_px'] is not None else '-'
+        log(f'      {jn:<10} | {v["rr_diff_mm"]:7.1f} | {rn:>7} | {rs:>7}')
+    if lifter_err is not None:
+        lif = np.array([lifter_err.get((name, i), np.nan) for i in used])
+        ok = np.isfinite(lif)
+        if ok.sum() > 10:
+            sp = float(np.corrcoef(ranks(samp_rr[ok]), ranks(lif[ok]))[0, 1])
+            res['spearman_rrdiff_vs_lifter'] = sp
+            hi = samp_rr[ok] > 50
+            res['lifter_mpjpe_rrdiff_gt50'] = float(lif[ok][hi].mean()) if hi.any() else None
+            res['lifter_mpjpe_rrdiff_le50'] = float(lif[ok][~hi].mean()) if (~hi).any() else None
+            log(f'    Spearman(native-vs-SMPL, MPJPE17 lifter) = {sp:.3f} | MPJPE lifter khi lech>50mm = '
+                f'{res["lifter_mpjpe_rrdiff_gt50"]} / <=50mm = {res["lifter_mpjpe_rrdiff_le50"]}')
+    for r, i in enumerate(used):
+        writer.writerow({'dataset': name, 'index': i, 'rr_diff_mm': f'{samp_rr[r]:.2f}',
+                         'root_diff_mm': f'{root_diff[r]:.1f}',
+                         'reproj_native_px': f'{np.nanmean(rep_nat[r]):.2f}' if np.isfinite(rep_nat[r]).any() else '',
+                         'reproj_smpl_px': f'{np.nanmean(rep_smpl[r]):.2f}' if np.isfinite(rep_smpl[r]).any() else ''})
+    return res
+
+
+def analyze(name, args, lifter_err, log, writer, twriter=None):
     ds = TRAIN_DATASETS[name](transforms.ToTensor(), 'train')
     datalist = ds.datalist
     total = len(datalist)
@@ -211,6 +321,8 @@ def analyze(name, args, lifter_err, log, writer):
                          'n_gt_inside': int(inside[r].sum()),
                          'lifter_mpjpe17_mm': (f'{lif[r]:.3f}' if lif is not None and np.isfinite(lif[r]) else ''),
                          **{f'norm_{jn}': f'{err_n[r, j]:.4f}' for j, jn in enumerate(HUMAN36M_JOINTS)}})
+    if args.target_samples > 0 and twriter is not None:
+        res['target3d'] = target_check(name, ds, args, lifter_err, log, twriter)
     return res
 
 
@@ -250,12 +362,16 @@ def main():
     fields = ['dataset', 'index', 'img_path', 'mean_norm_err', 'n_bad_joints', 'suspect_wrong_person', 'lr_swap',
               'n_gt_inside', 'lifter_mpjpe17_mm'] + [f'norm_{jn}' for jn in HUMAN36M_JOINTS]
     summary = {'args': vars(args), 'results': []}
-    with (out_dir / 'samples_2d.csv').open('w', encoding='utf-8', newline='') as f:
+    tfields = ['dataset', 'index', 'rr_diff_mm', 'root_diff_mm', 'reproj_native_px', 'reproj_smpl_px']
+    with (out_dir / 'samples_2d.csv').open('w', encoding='utf-8', newline='') as f, \
+            (out_dir / 'samples_target3d.csv').open('w', encoding='utf-8', newline='') as tf:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
+        twriter = csv.DictWriter(tf, fieldnames=tfields)
+        twriter.writeheader()
         for nm in names:
             log(f'==================== {nm} ====================')
-            summary['results'].append(analyze(nm, args, lifter_err, log, writer))
+            summary['results'].append(analyze(nm, args, lifter_err, log, writer, twriter))
     (out_dir / 'summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding='utf-8')
     log(f'\nKet qua: {out_dir}')
 
