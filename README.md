@@ -216,3 +216,87 @@ In **MPJPE17** có pelvis, **MPJPE16** bỏ pelvis, lỗi từng khớp, số ch
 Train giữ augmentation của dataset/YAML, test dùng loader eval; 3DPW-train-noaug vẫn có thể dùng khi muốn so tập train tắt augmentation. Với `fusekin_unified=True`, 4 bộ train đều dùng target hồi quy từ mesh NeuralAnnot, ghi rõ **pseudo-GT**; không coi chênh lệch với 3DPW GT là thuần lỗi tổng quát hóa. Human36M test riêng dùng mocap/GT 2D sạch và được ghi nhãn riêng. Script dùng chung `diag_difflifter.build_model/get_gt/make_cond`, không sửa kiến trúc/checkpoint lifter hay các run đang train. Dataset lỗi được ghi riêng, chạy tiếp bộ còn lại và cuối cùng trả exit code 1.
 
 Trạng thái: đã sửa và rà source/diff, **chưa chạy/import/kiểm cú pháp Python hoặc đánh giá trên GPU tại local**.
+## Thử KD quan hệ joint trên 3DPW
+
+Bản mới giữ gate_zero, Teacher init và global KD như run E1 gate_zero; chỉ thay loss KD joint sau fusion bằng MSE ma trận quan hệ cosine(LN(token)) 17x17. Mask cặp dùng GT hợp lệ hai đầu, bỏ đường chéo. Hai cờ mới mặc định tắt, YAML/run cũ giữ công thức cũ.
+
+```bash
+python main/train.py \
+  --cfg config/train_student_kd_relation_v2_diff_gate_zero_3dpw.yml \
+  --exp_name student_kd_relation_v2_diff_gate_zero_3dpw_s123 \
+  --seed 123 --gpu 0
+```
+
+Giữ đúng phiên bản trọng số Teacher/lifter và seed của run KD gate_zero làm đối chứng; đường dẫn lifter giống nhau chưa bảo đảm cùng file lúc train. Không thay checkpoint lifter bằng L2 mới nếu muốn so riêng tác động loss với run cũ. Mốc KD gate_zero người dùng báo 76.11/93.84 mm; init-only TEST CUỐI 77.65/51.72/94.51 mm. Bản relation chưa có kết quả.
+
+Log khởi động cần có `KD joint = relation`. `J` là loss quan hệ, `G` vẫn là global feature KD. Cuối epoch có `KD joint RELATION` và số cặp hợp lệ/mẫu (tối đa 272 với 17 khớp, tính hai chiều). `KD relation grad@fusion` ở batch đầu mỗi epoch báo norm gradient J/G/hard đã nhân trọng số trên cùng tham số fusion; chỉ để chẩn đoán, không tự cân bằng loss. W&B lưu `kd_joint_relation`, `kd_relation_pairs`, `kd_rel_grad_joint/global/hard`. Log gradient thêm chi phí backward tại batch đó; có thể tắt bằng `MODEL.kd_joint_relation_log_grad=False` trong cấu hình run mới trước khi chạy.
+
+Checkpoint mới nằm ở `experiment/student_kd_relation_v2_diff_gate_zero_3dpw_s123/checkpoint/best.pth.tar`. Không đổi kiến trúc model hoặc inference; test dùng đúng YAML của run:
+
+```bash
+python main/test_ckpt.py \
+  --cfg config/train_student_kd_relation_v2_diff_gate_zero_3dpw.yml \
+  --ckpt experiment/student_kd_relation_v2_diff_gate_zero_3dpw_s123/checkpoint/best.pth.tar \
+  --test_list 3dpw --gpu 0
+```
+
+Chọn best trên 3DPW test như đối chứng chỉ là giao thức phát triển. Đã rà source/diff/YAML bằng văn bản; **chưa chạy/import/kiểm cú pháp Python hay train/test local**. Chi tiết mục 27 của experiment.md.
+
+## Xem ma trận quan hệ Teacher trước khi train KD mới
+
+Đã mở rộng script hiện có, không dựng thêm Teacher builder. Mode `teacher_relation` yêu cầu YAML/checkpoint **Teacher GT thuần** và nạp strict; ảnh + GT3D sạch, PE2D detector theo YAML. Dùng chung `utils.joint_relation.joint_relation_matrix` với loss KD để tính cosine(LN(token)) đúng công thức, trước/sau fusion.
+
+```bash
+python main/inspect_student_spread.py \
+  --mode teacher_relation \
+  --cfg config/train_teacher_k16_v2.yml \
+  --ckpt experiment/teacher_gt_v2/checkpoint/best.pth.tar \
+  --set 3dpw --relation_samples 512 --num_vis 12 \
+  --batch_size 32 --workers 0 --seed 123 --gpu 0
+```
+
+Phải dùng YAML kiến trúc của đúng Teacher checkpoint (gồm img_probe); không dùng YAML Student/KD. Mặc định tạo thư mục mới `teacher_relation_3dpw_<timestamp>` cạnh checkpoint và in đường dẫn. Có thể đặt `--out_dir <thu_muc_moi>`; thư mục có nội dung bị từ chối. `--relation_samples 0` chạy toàn tập; `--sample_ids 10 200 1000` chọn index dataset cụ thể. Thống kê lấy tối đa 512 mẫu ngẫu nhiên không hoàn lại, không lấy 512 frame đầu; seed cố định. `--num_vis` là tổng số hình mẫu trong mode này. Có thể đổi `--set` sang `3dpw-pc` hoặc `3dpw-crowd`, giữ đúng file Halpe của split.
+
+Đầu ra:
+
+- `overview.png`: quan hệ trung bình và độ lệch chuẩn **giữa các mẫu**, trước/sau fusion. Đường chéo tô xám, không tính thống kê.
+- `vis/*_teacher_relation.png`: ảnh crop + detector 2D, GT/Teacher pose nhìn trước/ngang, heatmap trước/sau fusion và phần lệch so với ma trận trung bình. Màu cosine cố định [-1,1]; thang màu phần lệch dùng chung giữa các ảnh.
+- `relations.npz`: toàn bộ ma trận, GT/Teacher pose mét, sample_ids và joint_names.
+- `pairs.csv`: mean/std của từng cặp trong 136 cặp khác nhau; `samples.csv`, `summary.json`, `config.yml`, `inspect_log.txt` để đối chiếu mẫu/checkpoint.
+
+Đọc `STD across samples` để biết **cùng một cặp khớp có thay đổi giữa các mẫu không**. `constant-template MSE` là lỗi dùng duy nhất ma trận trung bình để mô tả các mẫu, không phải KD loss Student. Ma trận biến thiên chưa chứng minh tín hiệu có ích cho KD hay đến từ ảnh; GT pose/định danh token cũng ảnh hưởng. Không có ngưỡng tự kết luận tốt/xấu. Test có GT mesh đầy đủ 17 khớp; không dùng detector mask để xóa cặp quan hệ. Pose trên hình dùng MPJPE17 từ mesh, không phải metric mesh14; đây không phải attention hay khoảng cách 3D. Mới đọc/rà source/diff, **chưa chạy Python/test/model local** theo AGENTS.
+
+## So heatmap Teacher / Student KD hien tai / Student KD quan he
+
+Van dung `--mode teacher_relation`. `--cfg/--ckpt` la Teacher; them cap `--student_cfg/--student_ckpt` de ve cung Student KD hien tai. Vi du dung gate_zero lam doi chung 3DPW:
+
+```bash
+python main/inspect_student_spread.py \
+  --mode teacher_relation \
+  --cfg config/train_teacher_k16_v2.yml \
+  --ckpt experiment/teacher_gt_v2/checkpoint/best.pth.tar \
+  --student_cfg config/train_student_kd_e1_v2_diff_spread_gate_zero.yml \
+  --student_ckpt experiment/student_kd_e1_v2_diff_spread_gate_zero/checkpoint/best.pth.tar \
+  --set 3dpw --relation_samples 512 --num_vis 12 \
+  --batch_size 32 --workers 0 --seed 123 --gpu 0
+```
+
+Neu ten run that khac vi du, doi `--student_ckpt` sang best.pth.tar cua run do va dung dung YAML train. Co the dung KD khong gate, mien la Student KD feat DiffLifter S1K1 (khong selector/hint). Teacher phai dung checkpoint/YAML Teacher can doi chieu; khong tu suy Teacher moi nhat tu thu muc.
+
+Sau khi **DA TRAIN** Student KD quan he, them hai tham so vao lenh tren:
+
+```bash
+  --relation_cfg config/train_student_kd_relation_v2_diff_gate_zero_3dpw.yml \
+  --relation_ckpt experiment/student_kd_relation_v2_diff_gate_zero_3dpw_s123/checkpoint/best.pth.tar
+```
+
+Chua co checkpoint relation thi bo ca hai co nay, van ve Teacher + Student hien tai. Khong thay checkpoint cu bang YAML bat co de gia lap ket qua train relation. Mac dinh luu thu muc `compare_relations_<split>_<timestamp>` canh checkpoint Student hien tai, khong ghi de; co the dat --out_dir moi.
+
+- `overview.png`: moi cot la mot checkpoint, cac hang mean/std quan he truoc/sau **fusion**. Cung phep LN/cosine va thang mau.
+- `vis/*_compare_relations.png`: chung crop/pose; cac cot Teacher, KD hien tai, KD quan he neu co; ma tran truoc/sau fusion va hieu Student AFTER - Teacher AFTER. Thang hieu dung chung cho cac model/mau; duong cheo bo.
+- `samples.csv`: MPJPE17 tu mesh, loi pose lifter, MSE relation tho so Teacher truoc/sau fusion; neu co relation checkpoint them gain KD hien tai - KD moi cho ca relation MSE va MPJPE17. Duong la tot hon.
+- `relations.npz`, `pairs.csv`, `summary.json`, YAML rieng tung model va log: luu indices/names/ma tran/pose/epoch/cau hinh, input_parity va khac biet cau hinh train.
+
+Tat ca cung loader Student hien tai; moi model nap strict va forward trong snapshot YAML RIENG tu default, tranh ro key giua Teacher/Student. Teacher dung GT3D, Student dung lifter trong checkpoint. Neu co hai Student, pose S1 phai khop <=1e-6 met; std cung duoc so neu ca hai gate. Khac pose/std thi dung ro loi, khong so nhu ablation cung input. Config train khac ngoai hai co relation/log se duoc luu va canh bao; input parity khop khong du chung minh chi khac loss.
+
+**Before/after fusion** la vi tri token; **KD hien tai/KD quan he** la hai run train. Relation MSE o day do cosine token tho, khong qua projector va khong phai full loss KD E1. Gan Teacher ve quan he chua chac giam loi mesh; MPJPE tren hinh la **H36M17**, khong phai MPJPE14 evaluator. Kiem tra bang van ban/source/diff; chua chay Python/model/test local theo AGENTS.

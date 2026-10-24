@@ -448,7 +448,7 @@ Người dùng xác nhận muốn Crowd cùng pipeline Halpe và gửi log HHRNe
 
 Chưa có kết quả Crowd Halpe sau sửa. Log PC người dùng báo n=2218, MPJPE=95.31/PA=61.91/MPVPE=120.91 mm, nhãn toan bo/ro ri; chưa gắn cho run cụ thể vì chưa có YAML/checkpoint header. Các kết quả Crowd HHRNet/OpenPose cũ không được đổi tên thành Halpe. Chỉ đọc lại source/diff, không chạy/import/kiểm cú pháp Python hay test tại local. Đồng bộ loader và chạy lại lệnh eval cũ; nếu thiếu file Halpe validation thì dùng tools/extract_halpe26_3dpw.py --data_root data_final/PW3D --splits validation trên server, môi trường pose2d.
 
-## 22. Doi chung loss KD tren mot bo 3DPW (2026-10-24, da chuan bi/chua train)
+## 22. Doi chung loss KD tren mot bo 3DPW (2026-10-24, da co ket qua; xem muc 26)
 
 Nguoi dung chon train rieng 3dpw-train de rut ngan thoi gian, khong chay doi chung full luc nay. Nguoi dung xac nhan CrowdPose da full du lieu; lo ngai 280 mau o muc 18 la chan doan lich su, khong coi do phu CrowdPose la blocker hien tai. Chua co metric CrowdPose moi de thay bang cu.
 
@@ -483,3 +483,63 @@ Ket qua L2 nguoi dung gui (2026-10-24 toi): best theo PA 3dpw-val = epoch 11/40.
 
 ## 25. Phep thu MotionBERT cung du lieu L2 - da code, cho chay (2026-10-24)
 Muc dich: kiem tra kien truc/pretrain co phai nut that lifter. config/finetune_motionbert_jotr4_gtmask.yaml: 4 bo JOTR, Halpe, soft conf, ratio 0.25, 512000 mau/epoch, halpe_gt_mask_thr 0.1, chon best PA 3dpw-val, 20 epoch, MB_release.bin; khac DiffLifter o aug 2D (chi joint_drop 0.1) va loss. main/finetune_motionbert.py them (mac dinh tat): MOTIONBERT.dataset_ratio/samples_per_epoch/train_eval_samples/select_metric/epoch_eval_sets/full_eval_sets/full_eval_freq, MPJPE tung bo tren thanh tien do (TagDataset), MPJPE/PA tren thanh eval. Neu ~72-75 tren 3dpw -> tran do du lieu/mo ho; neu < ~68 -> kien truc/pretrain co tac dung. Chua chay.
+
+## 26. Init-only gate_zero 3DPW: ket qua TEST CUOI (2026-10-24)
+
+Nguoi dung gui header TEST CUOI: experiment/student_init_v2_diff_gate_zero_3dpw_s123/checkpoint/best.pth.tar, epoch12, thieu0/thua0 key. Test 3DPW Halpe-26, 35,515 mau, MPJPE14=77.65, PA-MPJPE=51.72, MPVPE=94.51 mm. Da co ket qua thuc te tren server; khong phai ket qua local. Ban nay van Teacher-init/gate_zero/hard_w1/privileged, chi loss KD lambda0 theo YAML da chuan bi o muc22.
+
+| Cau hinh | MPJPE14 | PA-MPJPE | MPVPE | Muc xac nhan |
+|---|---:|---:|---:|---|
+| Init-only + gate_zero, lambda0 | 77.65 | 51.72 | 94.51 | TEST CUOI best epoch12, n35515, strict keys khop |
+| KD + gate_zero, lambda1 | 76.11 | chua co | 93.84 | Moc nguoi dung bao truoc; chua co header TEST CUOI/epoch |
+| Gain init-only - KD | +1.54 | chua tinh | +0.67 | So hai moc da bao |
+
+Hai YAML local chi khac kd_lambda0/1 (da doi chieu lai bang van ban). Ket qua ung ho giu loss KD trong cau hinh gate_zero/3DPW, thay vi quy toan bo loi ich cho Teacher init. Mot cap run khong du ket luan y nghia thong ke, gate co loi, std huu ich hay KD full dataset co cung gain. Truoc khi quy chenh lech RIENG cho KD can xac minh seed, Teacher va trong so diff_lifter trong hai checkpoint that trung nhau: cac muc22-24 ghi duong dan r25_cam da co nhieu phien ban/epoch tren server. Cung chuoi difflift_checkpoint trong YAML khong dam bao cung trong so luc train. Thieu0/thua0 key chi xac nhan nap du kien truc, khong xac nhan lifter giong run KD cu. Chua co header lifter train init-only moi de giai quyet diem nay.
+
+Buoc tiep: xac nhan best checkpoint KD gate_zero va lifter/Teacher/seed chung; sau do so theo mau/nhom loi input chung (neu pose khop) de xem KD sua ca nao. Lap them cap seed neu muon ket luan on dinh. Khong uu tien tang lambda/them spread chi tu hai mean nay. Ca hai chon best 3DPW test, van la giao thuc phat trien. Chi cap nhat tai lieu va doc/diff, khong sua source/YAML, khong chay Python/train/test local.
+
+## 27. KD quan hệ thay MSE joint, giữ global KD (2026-10-24, đã code/chờ train)
+
+Người dùng duyệt thử phương pháp KD khác. Một yếu tố của mục tiêu train đổi: thay MSE feature từng joint qua projector bằng MSE quan hệ cosine giữa các token joint trong cùng mẫu. Giữ KD feature global và mọi thành phần còn lại của run KD gate_zero/3dpw-train. Đây là biến thể lấy ý tưởng relational distillation áp dụng giữa token khớp; không phải quan hệ giữa các sample của RKD gốc, không cam kết buộc Student dùng ảnh hay cải thiện mesh.
+
+Source: lib/core/config.py thêm MODEL.kd_joint_relation=False và kd_joint_relation_log_grad=False. lib/core/base.py: Student_Trainer.__init__ xác minh chế độ và in mục tiêu; _kd_joint_relation tính LN/L2 normalize FP32, R17x17, mask GT hai đầu/bỏ đường chéo, Teacher detach, loss mỗi mẫu rồi mean; train chỉ chọn loss joint mới khi cờ bật. Mẫu <2 khớp hợp lệ loss0, không NaN do chia0. Cấm noise weighting trong chế độ mới để không âm thầm đổi nghĩa trọng số. Giữ tạo projector joint dù loss mới không dùng, nhằm không đổi RNG/nhóm optimizer/resume checkpoint cũ. Không thay kiến trúc/gate/lifter/builder hoặc đường inference.
+
+Log thêm kd_joint_relation/kd_relation_pairs trong W&B và dòng tổng kết epoch; J trên thanh tiến độ là loss quan hệ khi bật cờ, không còn MSE joint vector. Tùy chọn log_grad=True tính norm gradient J/G/hard đã nhân trọng số trên cùng tham số fusion ở batch đầu mỗi epoch qua autograd.grad; không đi vào optimizer .grad/không đổi loss hay tự điều chỉnh hệ số. Log gradient là norm, không đo độ đồng thuận hướng gradient hay chứng minh đường ảnh đã học tốt hơn. Chi phí tăng ba lượt grad tại batch đó; không phải mỗi batch.
+
+YAML mới config/train_student_kd_relation_v2_diff_gate_zero_3dpw.yml: sao từ config/train_student_kd_e1_v2_diff_spread_gate_zero.yml, đối chiếu các key/giá trị sau bỏ comment chỉ thêm hai cờ True. Vẫn Teacher teacher_gt_v2, lifter r25_cam S1K1/std S5K20, gate_zero/initTeacher, kd_lambda=1/w_joint=1/w_global=1, hard_w1, privileged, batch32, 30epoch, LR[5,10,15,22,27], chọn best3DPW test. Không sửa YAML/run cũ, không đổi tỷ lệ loss tự động theo dữ liệu/test. Loss quan hệ khác thang đo MSE cũ; xem norm gradient để nhận biết tín hiệu quá yếu trước kết luận phương pháp không hiệu quả.
+
+Lenh server:
+python main/train.py --cfg config/train_student_kd_relation_v2_diff_gate_zero_3dpw.yml --exp_name student_kd_relation_v2_diff_gate_zero_3dpw_s123 --seed 123 --gpu 0
+
+Dự kiến checkpoint experiment/student_kd_relation_v2_diff_gate_zero_3dpw_s123/checkpoint/best.pth.tar. Mốc so: KD gate_zero 76.11/93.84, init-only77.65/51.72/94.51; kết quả relation CHƯA CÓ. Phải cùng Teacher/lifter weights và seed thực, không chỉ YAML path, vì r25_cam trên server có nhiều phiên bản. Đánh giá mesh14 theo dataset.evaluate; phân nhóm theo lỗi input chung nếu đã xác nhận input khớp, không chỉ nhóm theo output scratch. Mới một seed và chọn best trên test nên chỉ kết luận phát triển. Không gán gain cho gate/std hay toàn bộ giao thức full dataset.
+
+Xác minh local chỉ đọc source/diff, so YAML bằng PowerShell và kiểm tra key có khai báo trong config.py. Đã rà các nhánh cờ tắt, mask rỗng/một khớp, detach Teacher và đường gradient Student theo source; CHƯA chạy kiểm thử số, import, kiểm cú pháp Python hoặc train/test do AGENTS.md. Không coi bước rà văn bản là test đã pass trên GPU.
+
+## 28. Visual Teacher relation trước khi train KD (2026-10-24, đã code/chờ chạy)
+
+Người dùng yêu cầu nạp Teacher, chạy và xuất ảnh để xem ma trận quan hệ thực tế trước khi đánh giá phương pháp KD mới. Đã rà các script main: inspect_student_spread.py có strict load Teacher GT/GT input và hàm vẽ pose dùng được; content_ablation_test.py dùng cho ảnh mean/blind, chưa có heatmap token relation. Chọn mở rộng script đầu, không viết Teacher builder mới.
+
+Đổi main/inspect_student_spread.py: parse_args/load_model/main hỗ trợ --mode teacher_relation; thêm inspect_teacher_relation. Chọn tối đa512 mẫu ngẫu nhiên toàn split, seed cố định, sample_ids tùy chọn; Teacher.eval/no_grad với GT3D sạch, xác minh input thực trùng GT, PE2D detector. Thu feat_joint_in trước và feat_joint sau fusion, dùng shared helper cosine(LN(token)) FP32. GT mesh đủ17 khớp: không mask theo detector; loại đường chéo khi thống kê/vẽ. Hình overview mean/std giữa mẫu trước-sau fusion, mỗi hình mẫu gồm crop/detector/GT-pred pose/front-side/ma trận trước-sau/phần lệch mean. Dùng chung thang [-1,1] cho cosine và chung biên màu phần lệch, không tự phóng đại từng mẫu. Matrix diagonal màu xám. Xuất NPZ ma trận/GT-pred pose/indices/names, CSV mẫu và136 cặp, summary/config/log. Không có annotation Student/KD hay chạy thêm Student/lifter.
+
+Gom phép tính relation vào lib/utils/joint_relation.py::joint_relation_matrix, dùng lại trong Student_Trainer._kd_joint_relation để visualization và target KD không lệch công thức. Giữ nguyên LN/L2 normalize/FP32, detach Teacher/mask/chia số cặp/loss/gradient Student; không đổi mặc định hay YAML/run đang train.
+
+Lenh:
+python main/inspect_student_spread.py --mode teacher_relation --cfg config/train_teacher_k16_v2.yml --ckpt experiment/teacher_gt_v2/checkpoint/best.pth.tar --set 3dpw --relation_samples 512 --num_vis 12 --batch_size 32 --workers 0 --seed 123 --gpu 0
+
+Đầu ra mặc định cạnh checkpoint trong teacher_relation_3dpw_<timestamp>, không ghi đè thư mục có dữ liệu. Cần đúng YAML Teacher checkpoint, kể cả img_probe; strict load không bỏ key để giả nạp được. Metric pose trên hình là MPJPE17 từ mesh, không phải mesh14. Before đã chứa joint encoder/PE2D, không phải pose 3D thuần. STD là cùng cặp thay đổi giữa mẫu, không phải khác biệt giữa cặp trong một mẫu. Constant-template MSE dùng ma trận trung bình toàn tập con, là thống kê mô tả/không phải kết quả test độc lập. Chưa có hình/CSV/log GPU nên chưa kết luận quan hệ có thay đổi đủ hay hữu ích cho KD; sự thay đổi cũng có thể do GT pose/identity token, không riêng nội dung ảnh.
+
+Chỉ đọc lại source/diff/luồng args và phép biến đổi tensor bằng văn bản; CHƯA chạy model/import/kiểm cú pháp Python hay test/train local theo AGENTS. Người dùng chạy server rồi gửi overview/hình mẫu/summary để phân tích.
+
+## 29. Heatmap Teacher / KD hien tai / KD relation (2026-10-24, da code/cho chay)
+
+Nguoi dung duyet mo rong visual Teacher de xem ca Student KD hien tai va so voi Student sau train KD quan he. Da sua main/inspect_student_spread.py: parse_args them cac cap --student_cfg/--student_ckpt va --relation_cfg/--relation_ckpt (chi teacher_relation, yeu cau du cap; relation can Student hien tai). main giu defaults truoc update_config va route inspect_relation_compare neu co student_cfg; Teacher-only cu van chay. plot_joint_relation tach dung chung cho hai duong visual. Khong sua loss/config model/YAML/run train trong luot nay.
+
+inspect_relation_compare dung lai builder load_model strict va snapshot config hien co. Teacher/Student la cac model rieng, moi forward phuc hoi dung cfg cua model. Cung dataset loader Student KD hien tai, mau chon ngau nhien khong hoan lai/seed/sample_ids, detector/crop/camera/GT chung. Teacher inputGT duoc xac minh, Student input la lifter cua checkpoint. Chi ho tro Student feat KD DiffLifter S1K1 root-relative, khong selector/hint; current YAML co kd_joint_relation=False, new YAML True. Khong tu lay checkpoint "gan nhat" hay tao model relation chua train. Khi hai Student cung co: kiem tra pose S1 maxabs <=1e-6m, std neu ca hai gate; sai thi dung ro loi. Config train khac ngoai co relation/log duoc luu/canh bao, parity khop khong dong nghia da tach moi confounder train.
+
+Output overview.png: cot tung model, hang mean before/after fusion va std across samples before/after. Hinh moi mau: crop/GT va pose ba model, matrix before/after, delta Student AFTER - Teacher AFTER; cung thang [-1,1] cho cosine va chung thang delta tren tat ca model/mau. Chua co relation checkpoint thi hien Teacher+current, cot relation khong gia lap. Samples.csv ghi MPJPE17 tu mesh, loi input lifter, MSE raw relation vsTeacher tung stage; neu co new thi gain current-new cho relation MSE va MPJPE17. NPZ luu matrices/poses/sample_ids/names, pairs.csv mean/std136cap tung model, summaryJSON epoch/config differences/parity, YAML moi model va log.
+
+Lenh Teacher+KD gate_zero hien tai:
+python main/inspect_student_spread.py --mode teacher_relation --cfg config/train_teacher_k16_v2.yml --ckpt experiment/teacher_gt_v2/checkpoint/best.pth.tar --student_cfg config/train_student_kd_e1_v2_diff_spread_gate_zero.yml --student_ckpt experiment/student_kd_e1_v2_diff_spread_gate_zero/checkpoint/best.pth.tar --set 3dpw --relation_samples 512 --num_vis 12 --batch_size 32 --workers 0 --seed 123 --gpu 0
+Sau khi train relation, them --relation_cfg config/train_student_kd_relation_v2_diff_gate_zero_3dpw.yml --relation_ckpt experiment/student_kd_relation_v2_diff_gate_zero_3dpw_s123/checkpoint/best.pth.tar. Dung ten run/checkpoint thuc neu khac vi du. Output moi mac dinh compare_relations_<split>_<timestamp> canh checkpoint current, khong ghi de.
+
+MSE relation la raw cosine gap khong projector, khong dong nhat loss KD E1 current; nho hon chi cho thay gan Teacher o thong ke nay, can doc ca MPJPE17, khong suy ra mesh14. Truoc/sau fusion la feature stages, current/relation la hai run; chua co ket qua relation de ket luan. Tat ca mode la chan doan, khong train/chon checkpoint. Moi ra source/diff/luong args/ctx/shape theo van ban, CHUA chay model/import/kiem cu phap Python hay train/test local theo AGENTS.

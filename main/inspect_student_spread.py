@@ -5,6 +5,7 @@ real dung gate da hoc; off dat gate=1; shuffle doi std giua mau trong cung batch
 Giu pose S1, feature anh va PE2D cua real khi replay, kiem tra output trung wrapper.
 --mode gate la mac dinh; --mode spread la alias cu, cung chi ho tro gate.
 --mode teacher doc GT 3D, co the doi chieu CSV da luu bang --spread_csv.
+--mode teacher_relation ve cosine(LN(token)) truoc/sau fusion, trung binh va bien thien theo mau.
 --mode compare so scratch/KD (DiffLifter thuan hoac gate) voi Teacher GT.
 Metric mesh dung dataset.evaluate (14 khop); chan doan lifter dung H36M-17 bo pelvis.
 Nhanh cong embedding spread da duoc go bo; khong nap checkpoint nhanh cu.
@@ -28,20 +29,26 @@ for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
 
 def parse_args():
     p = argparse.ArgumentParser(description='Chan doan gate/Teacher GT hoac so scratch-KD, khong train')
-    p.add_argument('--mode', choices=['gate', 'spread', 'teacher', 'compare'], default='gate')
+    p.add_argument('--mode', choices=['gate', 'spread', 'teacher', 'teacher_relation', 'compare'], default='gate')
     p.add_argument('--cfg', required=True)
     p.add_argument('--ckpt', required=True)
     p.add_argument('--gpu', default='0', help='mot GPU, giong cau hinh eval batch=32')
-    p.add_argument('--set', default='3dpw', choices=['3dpw', '3dpw-val', '3dpw-oc', '3dpw-pc'])
+    p.add_argument('--set', default='3dpw', choices=['3dpw', '3dpw-val', '3dpw-oc', '3dpw-pc', '3dpw-crowd'])
     p.add_argument('--batch_size', type=int, default=0, help='0: dung TEST.batch_size trong YAML')
     p.add_argument('--workers', type=int, default=0)
     p.add_argument('--max_batches', type=int, default=0, help='0: toan tap; >0: chi chan doan tap con')
     p.add_argument('--seed', type=int, default=0, help='chon donor shuffle va mau ngau nhien; lifter giu seed eval=0')
     p.add_argument('--num_vis', type=int, default=4,
-                   help='so mau moi nhom; compare: improved/worsened/hard_random va fixed; 0: bo hinh')
+                   help='teacher_relation: tong so hinh mau; mode khac: so mau moi nhom; 0: bo hinh mau')
+    p.add_argument('--student_cfg', default='', help='teacher_relation: YAML Student KD hien tai')
+    p.add_argument('--student_ckpt', default='', help='teacher_relation: checkpoint Student KD hien tai')
+    p.add_argument('--relation_cfg', default='', help='teacher_relation: YAML Student KD quan he, tuy chon')
+    p.add_argument('--relation_ckpt', default='', help='teacher_relation: checkpoint KD quan he da train, tuy chon')
+    p.add_argument('--relation_samples', type=int, default=512,
+                   help='teacher_relation: toi da N mau ngau nhien khong hoan lai; 0=toan tap')
     p.add_argument('--out_dir', default='', help='mac dinh tao thu muc moi canh checkpoint')
     p.add_argument('--sample_ids', type=int, nargs='+', default=None,
-                   help='teacher: chi eval cac sample nay; compare: them vao hinh, van eval ca tap')
+                   help='teacher/teacher_relation: chi eval cac sample nay; compare: them hinh, van eval ca tap')
     p.add_argument('--spread_csv', default='',
                    help='chi cho mode teacher: samples.csv cua spread, xac minh dung anh/ann_id va so metric')
     p.add_argument('--baseline_cfg', default='', help='compare: YAML scratch da train')
@@ -53,12 +60,19 @@ def parse_args():
     p.add_argument('--expected_epoch', type=int, default=None,
                    help='compare: dung neu epoch checkpoint KD khac gia tri nay')
     args = p.parse_args()
-    if ',' in args.gpu or args.batch_size < 0 or args.workers < 0 or args.max_batches < 0 or args.num_vis < 0:
+    if ',' in args.gpu or args.batch_size < 0 or args.workers < 0 or args.max_batches < 0 or args.num_vis < 0 or args.relation_samples < 0:
         p.error('Dung mot GPU; cac so luong phai >= 0')
     if args.spread_csv and args.mode != 'teacher':
         p.error('--spread_csv chi dung cho --mode teacher')
-    if args.sample_ids is not None and args.mode not in ('teacher', 'compare'):
-        p.error('--sample_ids chi dung cho --mode teacher/compare')
+    if args.sample_ids is not None and args.mode not in ('teacher', 'teacher_relation', 'compare'):
+        p.error('--sample_ids chi dung cho --mode teacher/teacher_relation/compare')
+    relation_paths = (args.student_cfg, args.student_ckpt, args.relation_cfg, args.relation_ckpt)
+    if any(relation_paths) and args.mode != 'teacher_relation':
+        p.error('Cac co student_cfg/ckpt va relation_cfg/ckpt chi dung cho --mode teacher_relation')
+    if bool(args.student_cfg) != bool(args.student_ckpt) or bool(args.relation_cfg) != bool(args.relation_ckpt):
+        p.error('Moi Student can DU cap --*_cfg va --*_ckpt')
+    if args.relation_cfg and not args.student_cfg:
+        p.error('So truoc/sau KD quan he can Student KD hien tai qua --student_cfg/--student_ckpt')
     compare_paths = (args.baseline_cfg, args.baseline_ckpt, args.teacher_cfg, args.teacher_ckpt)
     if args.mode == 'compare' and not all(compare_paths):
         p.error('compare can baseline_cfg/baseline_ckpt/teacher_cfg/teacher_ckpt; cfg/ckpt la KD')
@@ -157,7 +171,7 @@ def load_model(args, device):
             raise ValueError('Mode gate can YAML bat difflift_spread_gate; nhanh cong spread cu da bo')
         if not any('.image_gate.net.' in key for key in state):
             raise ValueError('YAML gate nhung checkpoint khong co gate da train')
-    if args.mode == 'teacher':
+    if args.mode in ('teacher', 'teacher_relation'):
         # Alias checkpoint cu da duoc ho tro trong core.base; van nap strict sau khi doi ten.
         old_prefix = 'teacher_model.'
         state = {('smpl_model.' + k[len(old_prefix):] if k.startswith(old_prefix) else k): v
@@ -1060,6 +1074,498 @@ def inspect_compare(args, defaults):
     log(f'Ket qua: {out_dir}')
 
 
+def inspect_relation_compare(args, defaults):
+    """So Teacher, KD hien tai va KD quan he (neu co) tren cung mau/crop."""
+    from types import SimpleNamespace
+    from torch.utils.data import DataLoader, Subset
+    from utils.jotr_dataset import get_test_dataset
+    from utils.joint_relation import joint_relation_matrix
+    from tqdm import tqdm
+    import matplotlib
+    matplotlib.use('Agg')
+    global plt
+    import matplotlib.pyplot as plt
+
+    if not torch.cuda.is_available():
+        raise RuntimeError('Chay tren server GPU co CUDA')
+    paths = {'teacher': (args.cfg, args.ckpt), 'kd_current': (args.student_cfg, args.student_ckpt)}
+    if args.relation_cfg:
+        paths['kd_relation'] = (args.relation_cfg, args.relation_ckpt)
+    for pair in paths.values():
+        for path in pair:
+            if not Path(path).is_file():
+                raise FileNotFoundError(path)
+    configs = {name: read_compare_config(pair[0], defaults) for name, pair in paths.items()}
+    teacher_cfg = configs['teacher'].MODEL
+    if teacher_cfg.name != 'teacher' or teacher_cfg.teacher_hint or teacher_cfg.teacher_lift_alpha_max != 0:
+        raise ValueError('--cfg phai la Teacher GT thuan, khong hint/tron lifter')
+    student_names = [name for name in paths if name != 'teacher']
+    for name, snapshot in configs.items():
+        if snapshot.DATASET.seqlen != 1 or snapshot.DATASET.input_joint_set != 'human36' or snapshot.DATASET.target_joint_set != 'human36':
+            raise ValueError(f'{name}: can seqlen1 va joint H36M17')
+        for key in ('input_img_shape', 'output_hm_shape', 'focal', 'princpt', 'bbox_3d_size', 'camera_3d_size'):
+            if key in defaults and snapshot[key] != configs['kd_current'][key]:
+                raise ValueError(f'{name}: khac {key}; can cung crop/camera')
+        for key in ('pw3d_2d_source', 'halpe26_conf_thr', 'use_gt_input'):
+            if snapshot.DATASET[key] != configs['kd_current'].DATASET[key]:
+                raise ValueError(f'{name}: khac DATASET.{key}; can cung detector/PE2D')
+        if name == 'teacher':
+            continue
+        mc = snapshot.MODEL
+        if (mc.name != 'student' or mc.pose_lifter != 'diffusion' or mc.difflift_steps != 1 or mc.difflift_k != 1
+                or mc.difflift_select or mc.student_hint or not mc.student_3d_rootrel
+                or not mc.student_use_kd or mc.kd_mode != 'feat' or mc.kd_lambda <= 0):
+            raise ValueError(f'{name}: can Student KD feat DiffLifter S1K1 root-relative, khong selector/hint')
+        if bool(mc.kd_joint_relation) != (name == 'kd_relation'):
+            raise ValueError(f'{name}: co kd_joint_relation khong khop vai tro checkpoint/YAML')
+    # So khac cau hinh train de tranh quy moi chenh lech cho mot loss.
+    train_differences = {}
+    if 'kd_relation' in paths:
+        for section in ('DATASET', 'MODEL', 'TRAIN'):
+            for key, old in configs['kd_current'][section].items():
+                if section == 'MODEL' and key in ('kd_joint_relation', 'kd_joint_relation_log_grad'):
+                    continue
+                new = configs['kd_relation'][section][key]
+                if old != new:
+                    train_differences[f'{section}.{key}'] = {'current': old, 'relation': new}
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    rng = np.random.RandomState(args.seed)
+    device = torch.device('cuda')
+    batch_size = args.batch_size or int(configs['kd_current'].TEST.batch_size)
+    if batch_size < 1:
+        raise ValueError('batch_size phai >=1')
+    stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    out_dir = (Path(args.out_dir) if args.out_dir else
+               Path(args.student_ckpt).parent / f'compare_relations_{args.set}_{stamp}')
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if any(out_dir.iterdir()):
+        raise FileExistsError(f'Thu muc ket qua khong rong: {out_dir}')
+    (out_dir / 'vis').mkdir()
+    lines = []
+
+    def log(message):
+        print(message, flush=True)
+        lines.append(message)
+        (out_dir / 'inspect_log.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+    models, epochs = {}, {}
+    for name, (config_path, checkpoint_path) in paths.items():
+        with compare_config(configs[name]):
+            mode = 'teacher' if name == 'teacher' else 'compare'
+            models[name], epochs[name] = load_model(SimpleNamespace(mode=mode, ckpt=checkpoint_path), device)
+        (out_dir / f'{name}_config.yml').write_text(Path(config_path).read_text(encoding='utf-8-sig'), encoding='utf-8')
+        log(f'{name}: cfg={config_path} | ckpt={checkpoint_path} | epoch={epochs[name]} | '
+            f'train={list(configs[name].DATASET.train_list)} | select={configs[name].TEST.select_dataset}')
+    if train_differences:
+        log('HAI STUDENT KHAC CAU HINH NGOAI LOSS: ' + ', '.join(train_differences) + '; khong quy gain rieng cho KD quan he.')
+    compare_std = len(student_names) == 2 and all(configs[name].MODEL.difflift_spread_gate for name in student_names)
+    parity = {'pose_max_abs_m': None if len(student_names) < 2 else 0.0,
+              'std_compared': compare_std, 'std_max_abs_m': 0.0 if compare_std else None,
+              'teacher_gt_max_error_mm': 0.0}
+    log('Cung anh/crop/detector. Teacher nhan GT3D; Student nhan lifter cua chinh checkpoint, khong dung GT dau vao.')
+    log('Before/after FUSION la vi tri feature; kd_current/kd_relation la HAI RUN, khong phai hai luot cua mot model.')
+    names = list(paths)
+    offdiag = ~np.eye(17, dtype=bool)
+    raw = {name: {'before': [], 'after': [], 'pose': []} for name in names}
+    rows, payloads, gt_poses = [], {}, []
+    # Giu cau hinh du lieu Student khi iterator/worker chay; chi doi cfg trong moi forward.
+    with compare_config(configs['kd_current']):
+        ds = get_test_dataset(args.set, None)
+        if not len(ds):
+            raise ValueError('Dataset rong')
+        if args.sample_ids is not None:
+            selected = sorted(set(args.sample_ids))
+            if not selected or selected[0] < 0 or selected[-1] >= len(ds):
+                raise ValueError(f'sample_ids phai nam trong [0, {len(ds)-1}]')
+        else:
+            selected = sorted(rng.choice(len(ds), size=min(args.relation_samples or len(ds), len(ds)), replace=False).tolist())
+        if args.max_batches:
+            selected = selected[:args.max_batches * batch_size]
+        visual_ids = set(rng.choice(selected, size=min(args.num_vis, len(selected)), replace=False).tolist())
+        loader = DataLoader(Subset(ds, selected), batch_size=batch_size, shuffle=False, num_workers=args.workers)
+        reg = torch.as_tensor(ds.h36m_joint_regressor, device=device, dtype=torch.float32)
+        log(f'Set={args.set} n={len(selected)}/{len(ds)} seed={args.seed} batch={batch_size}; vis={len(visual_ids)}')
+        seen = 0
+        with torch.no_grad():
+            for inputs, targets, meta in tqdm(loader, desc=f'Compare relations {args.set}'):
+                image = inputs['img'].to(device).float()
+                p2 = inputs['joints'].to(device).float()
+                mask = inputs['joints_mask'].to(device).float()
+                cam = inputs['cam_bbox'].to(device).float()
+                gt = torch.matmul(reg[None], targets['smpl_mesh_cam'].to(device).float())
+                gt = gt - gt[:, 0:1]
+                if not torch.isfinite(gt).all() or (gt.abs().sum(dim=(1, 2)) == 0).any():
+                    raise RuntimeError('GT rong hoac NaN/Inf')
+                outputs = {}
+                for name in names:
+                    with compare_config(configs[name]):
+                        pose_input = gt if name == 'teacher' else p2
+                        extra = {} if name == 'teacher' else {'cam_bbox': cam}
+                        outputs[name] = models[name](image, pose_input, is_train=False,
+                                                     pose_2d=p2, joints_mask=mask, **extra)
+                gt_error = torch.norm(outputs['teacher']['teacher_input_joints'] - gt, dim=-1).max().item() * 1000
+                if not np.isfinite(gt_error) or gt_error > 1e-3:
+                    raise RuntimeError('Teacher khong nhan dung GT 3D')
+                parity['teacher_gt_max_error_mm'] = max(parity['teacher_gt_max_error_mm'], gt_error)
+                if len(student_names) == 2:
+                    a, b = [outputs[name]['lifted_joints_3d'] for name in student_names]
+                    gap = (a - b).abs().max().item()
+                    if not np.isfinite(gap) or gap > 1e-6:
+                        raise RuntimeError(f'Hai Student khac pose lifter: max_abs={gap} m; kiem tra checkpoint/input')
+                    parity['pose_max_abs_m'] = max(parity['pose_max_abs_m'], gap)
+                    if compare_std:
+                        gap = (outputs['kd_current']['joint_spread_3d'] - outputs['kd_relation']['joint_spread_3d']).abs().max().item()
+                        if not np.isfinite(gap) or gap > 1e-6:
+                            raise RuntimeError(f'Hai Student khac std: max_abs={gap} m')
+                        parity['std_max_abs_m'] = max(parity['std_max_abs_m'], gap)
+                batch_data = {}
+                for name in names:
+                    out = outputs[name]
+                    pred = torch.matmul(reg[None], out['smpl_mesh_cam'])
+                    pred = pred - pred[:, 0:1]
+                    values = {'before': joint_relation_matrix(out['feat_joint_in']).cpu().numpy(),
+                              'after': joint_relation_matrix(out['feat_joint']).cpu().numpy(), 'pose': pred.cpu().numpy()}
+                    if any(not np.isfinite(value).all() for value in values.values()):
+                        raise RuntimeError(f'{name}: feature/pose NaN/Inf')
+                    if values['after'].shape[1:] != (17, 17) or values['before'].shape[1:] != (17, 17):
+                        raise RuntimeError('Can token H36M17')
+                    batch_data[name] = values
+                    for key, value in values.items():
+                        raw[name][key].append(value)
+                gt_np = gt.cpu().numpy()
+                gt_poses.append(gt_np)
+                for i in range(len(image)):
+                    idx = selected[seen + i]
+                    row = {'sample': idx, 'img_path': value_at(meta, 'img_path', i),
+                           'ann_id': value_at(meta, 'aid', i), 'missing_2d': int((mask[i] <= 0).sum().item())}
+                    for name in names:
+                        row[f'{name}_mpjpe17_mm'] = float(np.linalg.norm(batch_data[name]['pose'][i] - gt_np[i], axis=-1).mean() * 1000)
+                        for stage in ('before', 'after'):
+                            delta = batch_data[name][stage][i] - batch_data['teacher'][stage][i]
+                            row[f'{name}_{stage}_mse_vs_teacher'] = float((delta[offdiag] ** 2).mean())
+                    for name in student_names:
+                        row[f'{name}_input_mpjpe17_mm'] = float(torch.norm(outputs[name]['lifted_joints_3d'][i] - gt[i], dim=-1).mean().item() * 1000)
+                    if 'kd_relation' in paths:
+                        row['relation_mse_gain_current_minus_new'] = row['kd_current_after_mse_vs_teacher'] - row['kd_relation_after_mse_vs_teacher']
+                        row['mpjpe17_gain_current_minus_new_mm'] = row['kd_current_mpjpe17_mm'] - row['kd_relation_mpjpe17_mm']
+                    rows.append(row)
+                    if idx in visual_ids:
+                        payloads[idx] = {'row': row, 'image': image[i].cpu().numpy().copy(), 'p2': p2[i].cpu().numpy().copy(),
+                                         'mask': mask[i].cpu().numpy().reshape(17).copy(), 'gt': gt_np[i].copy(),
+                                         'models': {name: {key: value[i].copy() for key, value in values.items()}
+                                                    for name, values in batch_data.items()}}
+                seen += len(image)
+    if seen != len(selected):
+        raise RuntimeError('Khong du mau trong danh sach da chon')
+    for name in names:
+        raw[name] = {key: np.concatenate(value) for key, value in raw[name].items()}
+    write_csv(out_dir / 'samples.csv', rows)
+    archive = {'sample_ids': np.asarray(selected), 'joint_names': np.asarray(JOINT_NAMES), 'gt_pose_m': np.concatenate(gt_poses)}
+    for name in names:
+        for key, value in raw[name].items():
+            archive[f'{name}_pose_m' if key == 'pose' else f'{name}_{key}'] = value
+    np.savez_compressed(out_dir / 'relations.npz', **archive)
+    pairs = []
+    for i in range(17):
+        for j in range(i + 1, 17):
+            row = {'joint_i': JOINT_NAMES[i], 'joint_j': JOINT_NAMES[j]}
+            for name in names:
+                for stage in ('before', 'after'):
+                    values = raw[name][stage][:, i, j]
+                    row[f'{name}_{stage}_mean'] = float(values.mean())
+                    row[f'{name}_{stage}_std_across_samples'] = float(values.std())
+            pairs.append(row)
+    write_csv(out_dir / 'pairs.csv', pairs)
+    labels = {'teacher': 'Teacher GT', 'kd_current': 'Student current KD', 'kd_relation': 'Student relation KD'}
+    colors = {'teacher': 'seagreen', 'kd_current': 'darkorange', 'kd_relation': 'steelblue'}
+    fig, axes = plt.subplots(4, len(names), figsize=(6 * len(names), 20), squeeze=False)
+    std_max = max(1e-6, max(float(raw[name][stage].std(0)[offdiag].max()) for name in names for stage in ('before', 'after')))
+    for col, name in enumerate(names):
+        for r, stage in enumerate(('before', 'after')):
+            plot_joint_relation(axes[r, col], raw[name][stage].mean(0), f'{labels[name]} | mean {stage.upper()} FUSION')
+            plot_joint_relation(axes[r + 2, col], raw[name][stage].std(0), f'{labels[name]} | STD across samples {stage}', 0.0, std_max, 'viridis')
+    fig.suptitle(f'Same {seen} samples | {args.set} | columns = separate checkpoints; rows = feature stages\n'
+                 'Feature cosine, NOT attention/3D distance. Gray diagonal excluded.', fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(out_dir / 'overview.png', dpi=150)
+    plt.close(fig)
+    delta_max = max(1e-6, max(float(np.abs(raw[name]['after'] - raw['teacher']['after'])[:, offdiag].max()) for name in student_names))
+    for idx, payload in sorted(payloads.items()):
+        fig, axes = plt.subplots(4, 3, figsize=(18, 19))
+        for ax in axes.flat:
+            ax.axis('off')
+        crop = np.clip(payload['image'].transpose(1, 2, 0), 0, 1)
+        axes[0, 0].imshow(crop)
+        pixels = (payload['p2'][:, :2] + 1) * 0.5 * np.array([crop.shape[1], crop.shape[0]])
+        valid = payload['mask'] > 0
+        axes[0, 0].scatter(pixels[valid, 0], pixels[valid, 1], c='cyan', s=12)
+        axes[0, 0].set_title('Common crop + detector PE2D')
+        for col, horizontal in ((1, 0), (2, 2)):
+            ax = axes[0, col]
+            ax.axis('on')
+            draw_skeleton(ax, payload['gt'] * 1000, horizontal, 'black', lw=2)
+            for name in names:
+                draw_skeleton(ax, payload['models'][name]['pose'] * 1000, horizontal, colors[name])
+            set_view(ax, [payload['gt'] * 1000] + [payload['models'][name]['pose'] * 1000 for name in names], horizontal)
+            legend = 'GT black / ' + ' / '.join(f'{name}: {colors[name]}' for name in names)
+            ax.set_title(legend + ': ' + ('front' if col == 1 else 'side'), fontsize=8)
+        for col, name in enumerate(names):
+            for r, stage in ((1, 'before'), (2, 'after')):
+                axes[r, col].axis('on')
+                plot_joint_relation(axes[r, col], payload['models'][name][stage], f'{labels[name]} | {stage.upper()} FUSION')
+            if name != 'teacher':
+                axes[3, col].axis('on')
+                plot_joint_relation(axes[3, col], payload['models'][name]['after'] - payload['models']['teacher']['after'],
+                                    f'{labels[name]} AFTER - Teacher AFTER', -delta_max, delta_max)
+        if 'kd_relation' not in paths:
+            axes[1, 2].text(0.5, 0.5, 'Relation KD checkpoint not provided', ha='center', va='center',
+                            transform=axes[1, 2].transAxes, fontsize=10)
+        row = payload['row']
+        text = ['MPJPE17 mm / raw relation MSE vs T (after fusion)']
+        for name in names:
+            text.append(f'{labels[name]}: {row[name + "_mpjpe17_mm"]:.2f} / {row[name + "_after_mse_vs_teacher"]:.6f}')
+        axes[3, 0].text(0, 0.95, '\n'.join(text), va='top', fontsize=9, transform=axes[3, 0].transAxes)
+        fig.suptitle(f'#{idx} | ann={row["ann_id"]} | {row["img_path"]}\n'
+                     'Columns = checkpoint comparison, NOT sequential inference. Root-relative pose views, not overlays.', fontsize=10)
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        fig.savefig(out_dir / 'vis' / f'{idx:06d}_compare_relations.png', dpi=140)
+        plt.close(fig)
+    summary = {'mode': 'relation_compare', 'args': vars(args), 'epochs': epochs, 'n': seen,
+               'dataset_n': len(ds), 'subset': seen < len(ds), 'selected_indices': selected,
+               'metric_protocol': 'MPJPE17 root-relative mm; raw cosine(LN(token)) MSE off-diagonal, all mesh GT joints',
+               'input_parity': parity, 'training_config_differences': train_differences, 'models': {}}
+    for name in names:
+        summary['models'][name] = {key: float(np.mean([row[key] for row in rows]))
+                                   for key in rows[0] if key.startswith(name + '_') and isinstance(rows[0][key], (int, float))}
+        log(f'{labels[name]}: MPJPE17={summary["models"][name][name + "_mpjpe17_mm"]:.3f} mm | '
+            f'AFTER relation MSE vs Teacher={summary["models"][name][name + "_after_mse_vs_teacher"]:.6f}')
+    if 'kd_relation' in paths:
+        summary['mean_relation_mse_gain_current_minus_new'] = float(np.mean([r['relation_mse_gain_current_minus_new'] for r in rows]))
+        summary['mean_mpjpe17_gain_current_minus_new_mm'] = float(np.mean([r['mpjpe17_gain_current_minus_new_mm'] for r in rows]))
+    (out_dir / 'summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False), encoding='utf-8')
+    log(f'Input parity: {parity}')
+    log('Relation MSE la raw cosine gap (khong projector/khong full loss KD E1); nho hon chua bao dam mesh tot hon.')
+    log('Before/after fusion khac voi truoc/sau train KD quan he. Teacher GT la oracle; khong phai metric mesh14.')
+    log('Cung pose dau vao chua du chung minh cung Teacher init/hard loss/du lieu/seed train; can doi chieu run.')
+    log(f'Ket qua: {out_dir} | overview.png, vis/, relations.npz, samples.csv, pairs.csv, summary.json')
+
+def plot_joint_relation(ax, matrix, title, vmin=-1.0, vmax=1.0, cmap='coolwarm'):
+    # Duong cheo khong vao loss; dung cung mau/thang cho moi model va mau.
+    offdiag = ~np.eye(len(JOINT_NAMES), dtype=bool)
+    colors = copy.copy(plt.get_cmap(cmap))
+    colors.set_bad('lightgray')
+    im = ax.imshow(np.ma.array(matrix, mask=~offdiag), cmap=colors,
+                   vmin=vmin, vmax=vmax, interpolation='nearest')
+    ax.set_xticks(np.arange(len(JOINT_NAMES)))
+    ax.set_yticks(np.arange(len(JOINT_NAMES)))
+    ax.set_xticklabels(JOINT_NAMES, rotation=90, fontsize=6)
+    ax.set_yticklabels(JOINT_NAMES, fontsize=6)
+    ax.set_title(title, fontsize=9)
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+def inspect_teacher_relation(args):
+    """Ve dung quan he feature Teacher dung lam muc tieu KD, khong train."""
+    from torch.utils.data import DataLoader, Subset
+    from utils.jotr_dataset import get_test_dataset
+    from utils.joint_relation import joint_relation_matrix
+    from tqdm import tqdm
+    import matplotlib
+    matplotlib.use('Agg')
+    global plt
+    import matplotlib.pyplot as plt
+
+    if cfg.MODEL.name != 'teacher' or cfg.MODEL.get('teacher_hint', False):
+        raise ValueError('teacher_relation can YAML Teacher GT thuan, name=teacher va teacher_hint=False')
+    if cfg.DATASET.seqlen != 1 or cfg.MODEL.get('teacher_lift_alpha_max', 0.0) != 0:
+        raise ValueError('Can Teacher GT seqlen1, khong tron lifter')
+    if not torch.cuda.is_available():
+        raise RuntimeError('Chay tren server GPU co CUDA')
+    if not Path(args.ckpt).is_file():
+        raise FileNotFoundError(args.ckpt)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    rng = np.random.RandomState(args.seed)
+    device = torch.device('cuda')
+    batch_size = args.batch_size or int(cfg.TEST.batch_size)
+    if batch_size < 1:
+        raise ValueError('batch_size phai >=1')
+    cfg.DATASET.lift_only = False
+    cfg.render, cfg.vis = False, False
+    stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    out_dir = (Path(args.out_dir) if args.out_dir else
+               Path(args.ckpt).parent / f'teacher_relation_{args.set}_{stamp}')
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if any(out_dir.iterdir()):
+        raise FileExistsError(f'Thu muc ket qua khong rong: {out_dir}')
+    vis_dir = out_dir / 'vis'
+    vis_dir.mkdir()
+    lines = []
+
+    def log(message):
+        print(message, flush=True)
+        lines.append(message)
+        (out_dir / 'inspect_log.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+    model, epoch = load_model(args, device)
+    ds = get_test_dataset(args.set, None)
+    if not len(ds):
+        raise ValueError('Dataset rong')
+    if args.sample_ids is not None:
+        selected = sorted(set(args.sample_ids))
+        if not selected or selected[0] < 0 or selected[-1] >= len(ds):
+            raise ValueError(f'sample_ids phai nam trong [0, {len(ds)-1}]')
+    else:
+        count = min(args.relation_samples or len(ds), len(ds))
+        selected = sorted(rng.choice(len(ds), size=count, replace=False).tolist())
+    if args.max_batches:
+        selected = selected[:args.max_batches * batch_size]
+    visual_ids = set(rng.choice(selected, size=min(args.num_vis, len(selected)), replace=False).tolist())
+    loader = DataLoader(Subset(ds, selected), batch_size=batch_size, shuffle=False, num_workers=args.workers)
+    reg = torch.as_tensor(ds.h36m_joint_regressor, device=device, dtype=torch.float32)
+    rows, before, after, gt_poses, pred_poses, payloads = [], [], [], [], [], {}
+    seen = 0
+    offdiag = ~np.eye(17, dtype=bool)
+    log(f'mode=teacher_relation | cfg={args.cfg}\nckpt={args.ckpt} | epoch={epoch} | set={args.set}')
+    log(f'n={len(selected)}/{len(ds)} | random_seed={args.seed} | batch_size={batch_size} | vis={len(visual_ids)}')
+    log('Teacher eval/no_grad, GT mesh -> H36M17 root-relative met, PE2D detector nhu YAML; khong lifter.')
+    log('R=cosine(LN(token)), FP32, dung CHUNG helper voi loss KD. Before=feat_joint_in; after=feat_joint.')
+    log('Tat ca 17 khop GT mesh hop le; mask detector chi de ve PE2D, KHONG loai cap quan he.')
+    with torch.no_grad():
+        for inputs, targets, meta in tqdm(loader, desc=f'Teacher relation {args.set}'):
+            image = inputs['img'].to(device).float()
+            p2 = inputs['joints'].to(device).float()
+            detector_mask = inputs['joints_mask'].to(device).float()
+            gt_mesh = targets['smpl_mesh_cam'].to(device).float()
+            gt = torch.matmul(reg[None], gt_mesh)
+            gt = gt - gt[:, 0:1]
+            if not torch.isfinite(gt).all() or (gt.abs().sum(dim=(1, 2)) == 0).any():
+                raise RuntimeError('GT 3D rong hoac NaN/Inf; khong tao ma tran gia')
+            output = model(image, gt, is_train=False, pose_2d=p2, joints_mask=detector_mask)
+            input_error = torch.norm(output['teacher_input_joints'] - gt, dim=-1).amax(dim=-1).cpu().numpy() * 1000
+            if not np.isfinite(input_error).all() or input_error.max() > 1e-3:
+                raise RuntimeError('Teacher khong nhan dung GT 3D sach')
+            r_in = joint_relation_matrix(output['feat_joint_in']).cpu().numpy()
+            r_out = joint_relation_matrix(output['feat_joint']).cpu().numpy()
+            pred = torch.matmul(reg[None], output['smpl_mesh_cam'])
+            pred = pred - pred[:, 0:1]
+            gt_np, pred_np = gt.cpu().numpy(), pred.cpu().numpy()
+            if not all(np.isfinite(x).all() for x in (r_in, r_out, pred_np)):
+                raise RuntimeError('Teacher feature/pose co NaN/Inf')
+            if r_in.shape[1:] != (17, 17) or r_out.shape[1:] != (17, 17):
+                raise RuntimeError('Can dung token H36M17')
+            for i in range(len(image)):
+                sample_id = selected[seen + i]
+                row = {'sample': sample_id, 'img_path': value_at(meta, 'img_path', i),
+                       'ann_id': value_at(meta, 'aid', i),
+                       'missing_2d': int((detector_mask[i] <= 0).sum().item()),
+                       'teacher_input_max_error_mm': float(input_error[i]),
+                       'teacher_mpjpe17_mm': float(np.linalg.norm(pred_np[i] - gt_np[i], axis=-1).mean() * 1000),
+                       'before_pair_mean': float(r_in[i][offdiag].mean()),
+                       'after_pair_mean': float(r_out[i][offdiag].mean())}
+                rows.append(row)
+                if sample_id in visual_ids:
+                    payloads[sample_id] = {'row': row, 'image': image[i].cpu().numpy().copy(),
+                                           'p2': p2[i].cpu().numpy().copy(),
+                                           'mask': detector_mask[i].cpu().numpy().reshape(17).copy(),
+                                           'gt': gt_np[i].copy(), 'pred': pred_np[i].copy(),
+                                           'before': r_in[i].copy(), 'after': r_out[i].copy()}
+            before.append(r_in)
+            after.append(r_out)
+            gt_poses.append(gt_np)
+            pred_poses.append(pred_np)
+            seen += len(image)
+    if seen != len(selected):
+        raise RuntimeError('So mau forward khong khop danh sach chi so')
+    before, after = np.concatenate(before), np.concatenate(after)
+    mean_in, mean_out = before.mean(0), after.mean(0)
+    std_in, std_out = before.std(0), after.std(0)
+    for i, row in enumerate(rows):
+        row['before_template_rms'] = float(np.sqrt(((before[i] - mean_in)[offdiag] ** 2).mean()))
+        row['after_template_rms'] = float(np.sqrt(((after[i] - mean_out)[offdiag] ** 2).mean()))
+    write_csv(out_dir / 'samples.csv', rows)
+    pair_rows = []
+    for i in range(17):
+        for j in range(i + 1, 17):
+            pair_rows.append({'joint_i': JOINT_NAMES[i], 'joint_j': JOINT_NAMES[j],
+                              'before_mean': float(mean_in[i, j]), 'before_std_across_samples': float(std_in[i, j]),
+                              'after_mean': float(mean_out[i, j]), 'after_std_across_samples': float(std_out[i, j])})
+    write_csv(out_dir / 'pairs.csv', pair_rows)
+    np.savez_compressed(out_dir / 'relations.npz', sample_ids=np.asarray(selected),
+                        joint_names=np.asarray(JOINT_NAMES), before=before, after=after,
+                        gt_pose_m=np.concatenate(gt_poses), teacher_pose_m=np.concatenate(pred_poses))
+
+    heatmap = plot_joint_relation
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 12))
+    std_max = max(float(std_in[offdiag].max()), float(std_out[offdiag].max()), 1e-6)
+    heatmap(axes[0, 0], mean_in, 'Mean relation BEFORE fusion')
+    heatmap(axes[0, 1], mean_out, 'Mean relation AFTER fusion (KD target)')
+    heatmap(axes[1, 0], std_in, 'STD across samples BEFORE fusion', 0.0, std_max, 'viridis')
+    heatmap(axes[1, 1], std_out, 'STD across samples AFTER fusion', 0.0, std_max, 'viridis')
+    fig.suptitle(f'Teacher GT | {args.set} | n={seen} | gray diagonal excluded\n'
+                 'Feature similarity, NOT attention or 3D distance', fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.savefig(out_dir / 'overview.png', dpi=160)
+    plt.close(fig)
+    delta_max = max(float(np.abs(after - mean_out)[..., offdiag].max()), 1e-6)
+    for sample_id, payload in sorted(payloads.items()):
+        fig, axes = plt.subplots(2, 3, figsize=(18, 11))
+        crop = np.clip(payload['image'].transpose(1, 2, 0), 0, 1)
+        axes[0, 0].imshow(crop)
+        pixels = (payload['p2'][:, :2] + 1) * 0.5 * np.array([crop.shape[1], crop.shape[0]])
+        valid = payload['mask'] > 0
+        for joint, parent in BONES:
+            if valid[joint] and valid[parent]:
+                axes[0, 0].plot(pixels[[joint, parent], 0], pixels[[joint, parent], 1], color='lime', lw=1)
+        axes[0, 0].scatter(pixels[valid, 0], pixels[valid, 1], c='cyan', s=12)
+        for j in np.flatnonzero(valid):
+            axes[0, 0].text(*pixels[j], str(j), fontsize=7, color='yellow')
+        axes[0, 0].set_title('Crop + detector PE2D (numbers = joint indices)', fontsize=9)
+        axes[0, 0].axis('off')
+        for col, horizontal in ((1, 0), (2, 2)):
+            gt_mm, pred_mm = payload['gt'] * 1000, payload['pred'] * 1000
+            draw_skeleton(axes[0, col], gt_mm, horizontal, 'black', lw=2)
+            draw_skeleton(axes[0, col], pred_mm, horizontal, 'tab:blue')
+            set_view(axes[0, col], [gt_mm, pred_mm], horizontal)
+            axes[0, col].set_title('GT black / Teacher mesh joints blue: ' + ('front' if col == 1 else 'side'))
+        heatmap(axes[1, 0], payload['before'], 'Relation BEFORE fusion')
+        heatmap(axes[1, 1], payload['after'], 'Relation AFTER fusion (KD target)')
+        heatmap(axes[1, 2], payload['after'] - mean_out, 'AFTER minus dataset-subset mean', -delta_max, delta_max)
+        row = payload['row']
+        fig.suptitle(f'#{sample_id} | ann={row["ann_id"]} | Teacher MPJPE17={row["teacher_mpjpe17_mm"]:.2f} mm | '
+                     f'relation delta RMS={row["after_template_rms"]:.5f}\n{row["img_path"]}\n'
+                     'Pose views are root-relative, not camera overlays; relation is feature cosine.', fontsize=10)
+        fig.tight_layout(rect=(0, 0, 1, 0.92))
+        fig.savefig(vis_dir / f'{sample_id:06d}_teacher_relation.png', dpi=150)
+        plt.close(fig)
+    summary = {'args': vars(args), 'epoch': epoch, 'n': seen, 'dataset_n': len(ds),
+               'selected_indices': selected, 'joint_names': JOINT_NAMES,
+               'relation': 'cosine(LayerNorm(token)), FP32, same helper as KD; diagonal excluded in stats',
+               'gt_mask': 'all 17 mesh GT joints; detector mask only used by PE2D',
+               'teacher_mpjpe17_mm': float(np.mean([r['teacher_mpjpe17_mm'] for r in rows])),
+               'max_teacher_input_error_mm': float(max(r['teacher_input_max_error_mm'] for r in rows)),
+               'before_std_across_samples_mean': float(std_in[offdiag].mean()),
+               'after_std_across_samples_mean': float(std_out[offdiag].mean()),
+               'before_constant_template_mse': float((std_in[offdiag] ** 2).mean()),
+               'after_constant_template_mse': float((std_out[offdiag] ** 2).mean()),
+               'train_list': list(cfg.DATASET.train_list), 'select_dataset': cfg.TEST.get('select_dataset', '')}
+    (out_dir / 'summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False), encoding='utf-8')
+    (out_dir / 'config.yml').write_text(Path(args.cfg).read_text(encoding='utf-8'), encoding='utf-8')
+    log(f'After: mean STD across samples={summary["after_std_across_samples_mean"]:.6f}; '
+        f'constant-template MSE={summary["after_constant_template_mse"]:.6f}')
+    if seen < 2:
+        log('CHI 1 MAU: std=0 theo dinh nghia, khong du ket luan quan he gan nhu co dinh.')
+    log('STD across samples do cung mot cap joint thay doi giua cac mau; khong phai STD giua cac cap trong mot mau.')
+    log('Before da co joint encoding/PE2D; khong coi la feature pose 3D thuan hay attention map.')
+    log('Quan he thay doi KHONG tu chung minh co ich cho KD/den tu anh; GT pose va dinh danh token cung anh huong.')
+    log('Metric tren hinh la MPJPE17 tu mesh, KHONG phai MPJPE14 dataset.evaluate. Khong train/chon checkpoint.')
+    log(f'Da luu overview.png, {len(payloads)} hinh trong vis/, relations.npz, pairs.csv, samples.csv, summary.json: {out_dir}')
+
 def main():
     args = parse_args()
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -1075,13 +1581,19 @@ def main():
     from models.diff_lifter import H36M_PARENTS
     from tqdm import tqdm
 
-    defaults = copy.deepcopy(cfg) if args.mode == 'compare' else None
+    defaults = copy.deepcopy(cfg) if args.mode in ('compare', 'teacher_relation') else None
     update_config(args.cfg)
     JOINT_NAMES = list(HUMAN36M_JOINTS)
     BONES = [(j, p) for j, p in enumerate(H36M_PARENTS) if p >= 0]
     METRICS = ('mpjpe', 'pa_mpjpe', 'mpvpe')
     if args.mode == 'compare':
         inspect_compare(args, defaults)
+        return
+    if args.mode == 'teacher_relation':
+        if args.student_cfg:
+            inspect_relation_compare(args, defaults)
+        else:
+            inspect_teacher_relation(args)
         return
     if args.mode == 'teacher':
         inspect_teacher(args)

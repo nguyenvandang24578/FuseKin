@@ -16,6 +16,7 @@ from utils.jotr_dataset import get_test_dataset as get_jotr_test_dataset
 from utils.jotr_dataset import get_train_dataset as get_jotr_train_dataset
 from utils.jotr_evaluation import evaluate_3dpw_subset
 from utils.transforms import cam2pixel
+from utils.joint_relation import joint_relation_matrix
 from models.smpl_hyperdiff import axis_angle_to_rot6d, make_noisy_kp2d
 
 def get_dataloader(args, dataset_names, is_train):
@@ -975,6 +976,15 @@ class Student_Trainer:
         self.kd_feat_dist = cfg.MODEL.get('kd_feat_dist', 'mse')            # 'mse' (qua projector) | 'cos'
         self.kd_lambda = float(cfg.MODEL.get('kd_lambda', 1.0))
         self.kd_hard_w = float(cfg.MODEL.get('kd_hard_w', 1.0))
+        self.kd_joint_relation = bool(cfg.MODEL.get('kd_joint_relation', False))
+        self.kd_joint_relation_log_grad = bool(cfg.MODEL.get('kd_joint_relation_log_grad', False))
+        if self.kd_joint_relation:
+            if not self.use_kd or self.kd_mode != 'feat':
+                raise ValueError('kd_joint_relation can student_use_kd=True va kd_mode=feat')
+            if cfg.MODEL.get('kd_noise_weight', False):
+                raise ValueError('kd_joint_relation chua ho tro kd_noise_weight; giu False de tach thi nghiem')
+            if float(cfg.MODEL.kd_w_joint) <= 0:
+                raise ValueError('kd_joint_relation can kd_w_joint > 0')
         self.kd_noise_weight = bool(cfg.MODEL.get('kd_noise_weight', False))
         self.kd_noise_tau = float(cfg.MODEL.get('kd_noise_tau', 0.05))      # met: loi input 50 mm -> trong so 1
         self.kd_noise_wmin = float(cfg.MODEL.get('kd_noise_wmin', 0.2))
@@ -1025,6 +1035,10 @@ class Student_Trainer:
                   f'(tau={self.kd_noise_tau} m, w in [{self.kd_noise_wmin}, {self.kd_noise_wmax}])')
             print(f'     E3 InfoNCE: w={self.kd_nce_w}, temp={self.kd_nce_temp}')
             print('     KD output (hyper/pose/root/latent) va adaptive weight: TAT')
+            if self.kd_joint_relation:
+                print('     KD joint = relation: MSE cosine(LN(token)), bo duong cheo/cap khop GT khong hop le; '
+                      'khong qua projector joint, global KD giu nguyen')
+                print(f'     Log gradient tai fusion (batch dau moi epoch): {self.kd_joint_relation_log_grad}')
         h36m_joints = ('Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck', 'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist')
         smpl30_joints = self.main_dataset.mesh_model.joints_name
         self.h36m_from_smpl30 = [smpl30_joints.index(name) for name in h36m_joints]
@@ -1119,6 +1133,27 @@ class Student_Trainer:
         if self.kd_feat_dist == 'cos':
             return 1.0 - F.cosine_similarity(F.layer_norm(s, s.shape[-1:]), t, dim=-1)
         return ((self.feat_projector[key](s) - t) ** 2).mean(-1)
+
+    def _kd_joint_relation(self, s, t, valid_joint):
+        """MSE quan he token trong cung mau; tra loss va tong trong so cap, shape (B,).
+        Mask la GT nhu loss joint cu, khong phai confidence detector. Ca i->j va j->i
+        deu tinh; chia dung so cap nen tuong duong trung binh tam giac tren.
+        """
+        if s.ndim != 3 or t.ndim != 3 or s.shape[:2] != t.shape[:2]:
+            raise ValueError('KD relation can token Student/Teacher (B,J,C) voi cung B,J')
+        if valid_joint.shape != s.shape[:2]:
+            raise ValueError('Mask KD relation phai co shape (B,J)')
+        # Tinh FP32 de on dinh LN/cosine; ep kieu van giu gradient Student.
+        rs = joint_relation_matrix(s)
+        with torch.no_grad():
+            rt = joint_relation_matrix(t.detach())
+            mask = valid_joint.detach().to(device=s.device, dtype=torch.float32)
+            off_diag = 1.0 - torch.eye(s.shape[1], device=s.device, dtype=torch.float32)
+            pair_mask = mask[:, :, None] * mask[:, None, :] * off_diag
+            pair_count = pair_mask.sum(dim=(1, 2))
+        # Mau co duoi 2 khop hop le: tu so=0, loss=0, khong chia cho 0.
+        per_sample = (((rs - rt) ** 2) * pair_mask).sum(dim=(1, 2)) / pair_count.clamp_min(1.0)
+        return per_sample, pair_count
 
     def _info_nce(self, key, s, t, mask=None):
         """InfoNCE Student->Teacher trong batch: cung mau = duong, mau khac = am (DPMesh NKR).
@@ -1229,6 +1264,7 @@ class Student_Trainer:
             kd_res_ps = zeros_b
             kd_hint_ps = zeros_b
             kd_hfeat_ps = zeros_b
+            kd_relation_pairs = zeros_b
             noise_w_mean = 1.0
             # loi joint dau vao Student (MotionBERT) so voi GT, mm - de kiem tra muc nhieu
             with torch.no_grad():
@@ -1263,8 +1299,12 @@ class Student_Trainer:
                                                                model_output['feat_joint_in'].detach())
                     kd_src = {'feat_joint': jnt_o,
                               'feat_global': torch.cat([img_o.mean(dim=1), jnt_o.mean(dim=1)], dim=1)}
-                kd_joint_ps = (self._kd_dist('joint', kd_src['feat_joint'], t_out['feat_joint'])
-                               * jw_valid).sum(-1) / n_valid
+                if self.kd_joint_relation:
+                    kd_joint_ps, kd_relation_pairs = self._kd_joint_relation(
+                        kd_src['feat_joint'], t_out['feat_joint'], valid_joint)
+                else:
+                    kd_joint_ps = (self._kd_dist('joint', kd_src['feat_joint'], t_out['feat_joint'])
+                                   * jw_valid).sum(-1) / n_valid
                 kd_global_ps = self._kd_dist('global', kd_src['feat_global'], t_out['feat_global']) * sw
                 # Distill phan du (v1): joint-only (truoc fusion) -> feat_joint SAU fusion cua Teacher
                 if self.kd_res_w > 0:
@@ -1392,6 +1432,31 @@ class Student_Trainer:
                 hyp_sel_loss = ((_serr * valid_joint).sum(-1) / n_valid).mean()
                 loss = loss + float(cfg.MODEL.get('difflift_select_w', 1.0)) * hyp_sel_loss
 
+            # Do tren CUNG tham so fusion: feature gather cua DataParallel la cac nhanh rieng,
+            # khong dung grad global/hard theo feature joint gather de tranh log nham bang 0.
+            relation_grad_stats = {}
+            if self.kd_joint_relation and self.kd_joint_relation_log_grad and i == 0:
+                grad_terms = {
+                    'kd_rel_grad_joint': self.kd_lambda * w_joint * kd_joint_ps.mean(),
+                    'kd_rel_grad_global': self.kd_lambda * w_global * kd_global_ps.mean(),
+                    'kd_rel_grad_hard': self.kd_hard_w * hard_loss,
+                }
+                fusion_params = tuple(p for p in self.model.module.smpl_model.fusion.parameters()
+                                      if p.requires_grad)
+                if not fusion_params:
+                    raise RuntimeError('Log gradient KD relation can tham so fusion dang train')
+                for name, term in grad_terms.items():
+                    grads = (torch.autograd.grad(term, fusion_params, retain_graph=True,
+                                                 allow_unused=True) if term.requires_grad else ())
+                    norms = [grad.detach().float().norm() for grad in grads if grad is not None]
+                    relation_grad_stats[name] = torch.stack(norms).norm().item() if norms else 0.0
+                    del grads, norms
+                print(f'\nKD relation grad@fusion (da nhan trong so): '
+                      f'J={relation_grad_stats["kd_rel_grad_joint"]:.3e} '
+                      f'G={relation_grad_stats["kd_rel_grad_global"]:.3e} '
+                      f'hard={relation_grad_stats["kd_rel_grad_hard"]:.3e}; '
+                      f'cap/mau={kd_relation_pairs.mean().item():.1f}')
+
             # update weights
             self.optimizer.zero_grad()
             loss.backward()
@@ -1425,6 +1490,9 @@ class Student_Trainer:
                 'hint_abs': (model_output['hint_pred'].detach().abs().mean().item()
                              if model_output.get('hint_pred') is not None else 0.0),
             }
+            if self.kd_joint_relation:
+                step_stats['kd_joint_relation'] = step_stats['kd_joint']
+                step_stats['kd_relation_pairs'] = kd_relation_pairs.mean().item()
             gates = [layer['spread_gate'].detach() for layer in model_output.get('feat_layers', [])
                      if 'spread_gate' in layer]
             if gates:
@@ -1463,6 +1531,9 @@ class Student_Trainer:
                         'train_loss/hard_total': hard_loss.item(),
                         'train_loss/total': loss.item(),
                         **{f'train_loss/{key}': step_stats[key]
+                           for key in ('kd_joint_relation', 'kd_relation_pairs') if key in step_stats},
+                        **{f'train_loss/{key}': value for key, value in relation_grad_stats.items()},
+                        **{f'train_loss/{key}': step_stats[key]
                            for key in ('gate_mean', 'gate_std', 'gate_min', 'gate_max') if key in step_stats},
                     }
                 )
@@ -1496,6 +1567,9 @@ class Student_Trainer:
               f'InfoNCE: {avg["kd_nce"]:.4f} | noise w: {avg["kd_noise_w"]:.3f}')
         print(f'  Residual (joint-only -> Teacher): {avg["kd_res"]:.4f} | KD fused (J): {avg["kd_joint"]:.4f} | '
               f'loi joint dau vao (MotionBERT): {avg["lift_err_mm"]:.1f} mm')
+        if self.kd_joint_relation:
+            print(f'  KD joint RELATION (thay MSE feature): {avg["kd_joint_relation"]:.6f} | '
+                  f'cap hop le/mau: {avg["kd_relation_pairs"]:.1f}; global KD giu nguyen')
         if self.use_kd and self.kd_mode == 'hint':
             print(f'  Goi y: MSE(z_hat, z_T) {avg["kd_hint"]:.4f} | |z_hat| {avg["hint_abs"]:.3f} | '
                   f'KD feat truc tiep (J+G) {avg["kd_hfeat"]:.4f}')

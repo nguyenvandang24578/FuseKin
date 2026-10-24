@@ -290,6 +290,10 @@ cfg.MODEL.student_3d_rootrel = True
 #   loss = kd_hard_w*hard + kd_lambda*KD + privileged; KHONG KD output, KHONG adaptive weight.
 cfg.MODEL.kd_mode = 'legacy'
 cfg.MODEL.kd_feat_dist = 'mse'       # 'mse': MSE(Linear(LN(s)), LN(t)) qua projector | 'cos': nhu cu
+# KD quan he: thay loss joint bang MSE ma tran cosine LN token sau fusion; global giu nguyen.
+cfg.MODEL.kd_joint_relation = False
+# Chi log norm gradient tren tham so fusion o batch dau moi epoch, khong doi gradient optimizer.
+cfg.MODEL.kd_joint_relation_log_grad = False
 cfg.MODEL.kd_lambda = 1.0
 cfg.MODEL.kd_hard_w = 1.0
 # E2: trong so KD tung khop = clamp(loi_input_khop / tau, wmin, wmax), loi input = |MotionBERT - GT| (met)
