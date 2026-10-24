@@ -19,6 +19,8 @@ Cach chay:
         [--student_ckpt <ckpt_student>]   # bo trong -> chi test Teacher
         [--teacher_alpha 0 0.5 1.0]       # chi cho Teacher GT cu
         [--max_batches 200] [--batch_size 16]
+        [--set 3dpw-pc]                   # mac dinh: cfg.DATASET.test_list[0]
+        [--out_dir <thu muc moi>]         # luu CSV tung mau + bang theo nhom loi pose dau vao
 Can CUDA.
 """
 import os, sys
@@ -33,6 +35,8 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import argparse
 import warnings
 warnings.filterwarnings("ignore")
+
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -50,6 +54,10 @@ parser.add_argument('--teacher_alpha', type=float, nargs='+', default=[0.0],
                     help='(Teacher GT cu) input = (1-a)*GT + a*MotionBERT_lift; nhieu gia tri -> moi gia tri 1 dieu kien')
 parser.add_argument('--use_thresh', type=float, default=3.0,
                     help='(mm) mean - that duoi nguong nay -> coi nhu KHONG dung thong tin anh rieng tung mau')
+parser.add_argument('--set', type=str, default='',
+                    help='tap test (3dpw, 3dpw-oc, 3dpw-pc, 3dpw-crowd, 3dpw-val); rong = cfg.DATASET.test_list[0]')
+parser.add_argument('--out_dir', type=str, default='',
+                    help='thu muc MOI: luu samples.csv (tung mau, tung dieu kien) va summary.txt; rong = chi in')
 args = parser.parse_args()
 
 from core.config import cfg, update_config
@@ -159,6 +167,19 @@ def build_and_load(mode, ckpt_path, need_lift=False):
     return model, info
 
 
+class IndexedDataset(torch.utils.data.Dataset):
+    """Tra them chi so mau de ghep tung mau; khong doi thu tu/RNG cua loader."""
+    def __init__(self, ds):
+        self.ds = ds
+
+    def __len__(self):
+        return len(self.ds)
+
+    def __getitem__(self, i):
+        inputs, targets, meta = self.ds[i]
+        return inputs, targets, meta, i
+
+
 def h36m_from_mesh(mesh, regressor):
     return torch.einsum('jk,bkc->bjc', regressor, mesh)
 
@@ -190,11 +211,50 @@ def run_three(net, joints_in, feats, store, reg, gt_mesh, **kw):
         'blind': torch.randn_like(feats),
         'mean': feats.mean(dim=0, keepdim=True).expand_as(feats).contiguous(),
     }
+    per = {}
     for name, f in variants.items():
         out = net.smpl_model(joints=joints_in, img_feats=f, is_train=False, return_features=True, **kw)
         j, v = errors_mm(out['smpl_mesh_cam'], gt_mesh, reg)
         store[name]['j'].append(j)
         store[name]['v'].append(v)
+        per[name] = (j, v)
+    return per
+
+
+def add_rows(rows, name, idx, e_in, per):
+    for b in range(len(idx)):
+        r = {'cond': name, 'index': int(idx[b]), 'input_mpjpe17': float(e_in[b])}
+        for f, (j, v) in per.items():
+            r[f'{f}_mpjpe17'] = float(j[b])
+            r[f'{f}_mpvpe'] = float(v[b])
+        rows.append(r)
+
+
+def report_by_input(rows, log):
+    """Chia mau theo loi pose dau vao (quintile, rieng tung dieu kien): mesh that / mean / chenh."""
+    conds = list(dict.fromkeys(r['cond'] for r in rows))
+    for c in conds:
+        rr = [r for r in rows if r['cond'] == c]
+        x = np.array([r['input_mpjpe17'] for r in rr])
+        rj = np.array([r['real_mpjpe17'] for r in rr])
+        mj = np.array([r['mean_mpjpe17'] for r in rr])
+        log(f"\n  {c} (n={len(rr)}): theo nhom loi pose dau vao (Q1 tot -> Q5 te)")
+        log(f"    {'nhom':5s} {'n':>6s} {'pose vao':>9s} {'mesh that':>10s} {'mesh-pose':>10s} {'mean-that':>10s} {'%anh hai':>9s}")
+        if len(x) < 5:
+            continue
+        qs = np.quantile(x, [0.2, 0.4, 0.6, 0.8])
+        bins = np.digitize(x, qs)
+        for b in range(5):
+            sel = bins == b
+            if not sel.any():
+                continue
+            log(f"    Q{b + 1:<4d} {int(sel.sum()):6d} {x[sel].mean():9.2f} {rj[sel].mean():10.2f} "
+                f"{(rj[sel] - x[sel]).mean():+10.2f} {(mj[sel] - rj[sel]).mean():+10.2f} {(mj[sel] < rj[sel]).mean():9.1%}")
+        good_in = x <= np.quantile(x, 0.5)
+        bad_out = rj >= x + 30
+        log(f"    pose vao tot (<= median {np.median(x):.1f}) nhung mesh te hon pose >= 30 mm: "
+            f"{(good_in & bad_out).mean():.1%} tong so mau")
+        log(f"    '%anh hai' = ty le mau ma anh TB batch cho mesh tot hon anh that (anh rieng dang gay hai)")
 
 
 def main():
@@ -217,19 +277,28 @@ def main():
         t_hint = t_info['hint'] == 'teacher'
 
     hr("Dang chuan bi tap test...")
-    test_name = cfg.DATASET.test_list[0]
-    dataset = get_test_dataset(test_name, None)
+    test_name = args.set or cfg.DATASET.test_list[0]
+    base_ds = get_test_dataset(test_name, None)
+    dataset = IndexedDataset(base_ds)
     gen = torch.Generator().manual_seed(args.seed)
+    out_dir = None
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+        if out_dir.exists() and (not out_dir.is_dir() or any(out_dir.iterdir())):
+            print(f"[LOI] Thu muc ket qua khong rong: {out_dir}; chon thu muc moi")
+            sys.exit(1)
+        out_dir.mkdir(parents=True, exist_ok=True)
+    rows = []          # tung mau x tung dieu kien
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, generator=gen,
                         num_workers=args.workers, pin_memory=False)
     print(f"Dataset: {test_name} | so sample: {len(dataset)} | se duyet toi da {args.max_batches} batch")
-    reg = torch.as_tensor(dataset.h36m_joint_regressor, dtype=torch.float32, device=DEVICE)
+    reg = torch.as_tensor(base_ds.h36m_joint_regressor, dtype=torch.float32, device=DEVICE)
 
     results = {}       # ten dieu kien -> new_cond()
     inp_err = {}       # ten dieu kien -> loi joint dau vao (mm)
     n_batches = 0
     with torch.no_grad():
-        for inputs, targets, meta in loader:
+        for inputs, targets, meta, idx in loader:
             if n_batches >= args.max_batches:
                 break
             n_batches += 1
@@ -250,10 +319,11 @@ def main():
                 z = teacher.smpl_model.hint_encoder(gt_h36m, lifted)
                 for name, zz in (('Teacher T-hint [CO goi y]', z), ('Teacher T-hint [KHONG goi y]', torch.zeros_like(z))):
                     results.setdefault(name, new_cond())
-                    inp_err.setdefault(name, []).append(
-                        (torch.norm(lifted - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu())
-                    run_three(teacher, lifted, feat_t, results[name], reg, gt_mesh, hint_z=zz,
-                              **teacher._pe2d_kwargs(joints2d, joints_mask))
+                    e_in = (torch.norm(lifted - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu()
+                    inp_err.setdefault(name, []).append(e_in)
+                    per = run_three(teacher, lifted, feat_t, results[name], reg, gt_mesh, hint_z=zz,
+                                    **teacher._pe2d_kwargs(joints2d, joints_mask))
+                    add_rows(rows, name, idx, e_in, per)
             else:
                 feat_t, _ = teacher.get_image_features(img)
                 lifted = None
@@ -264,9 +334,11 @@ def main():
                     name = f'Teacher a={a} [' + ('GT sach' if a == 0 else f'(1-{a})*GT + {a}*MotionBERT') + ']'
                     t_in = gt_h36m if a == 0 else (1.0 - a) * gt_h36m + a * lifted
                     results.setdefault(name, new_cond())
-                    inp_err.setdefault(name, []).append((torch.norm(t_in - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu())
-                    run_three(teacher, t_in, feat_t, results[name], reg, gt_mesh,
-                              **teacher._pe2d_kwargs(joints2d, joints_mask))
+                    e_in = (torch.norm(t_in - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu()
+                    inp_err.setdefault(name, []).append(e_in)
+                    per = run_three(teacher, t_in, feat_t, results[name], reg, gt_mesh,
+                                    **teacher._pe2d_kwargs(joints2d, joints_mask))
+                    add_rows(rows, name, idx, e_in, per)
 
             # ---------------- Student ----------------
             if student is not None:
@@ -287,10 +359,12 @@ def main():
                 pose_3d = pose_3d - pose_3d[:, 0:1]
                 name = 'Student' + (' S-hint' if getattr(student, 'student_hint', False) else '') + f' (joint {lifter_name})'
                 results.setdefault(name, new_cond())
-                inp_err.setdefault(name, []).append((torch.norm(pose_3d - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu())
+                e_in = (torch.norm(pose_3d - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu()
+                inp_err.setdefault(name, []).append(e_in)
                 # Student v2 (joint_pe2d): truyen CUNG 2D dua vao lifter cho PE vi tri trong fusion
-                run_three(student, pose_3d, feat_s, results[name], reg, gt_mesh,
-                          **student._pe2d_kwargs(joints2d, joints_mask))
+                per = run_three(student, pose_3d, feat_s, results[name], reg, gt_mesh,
+                                **student._pe2d_kwargs(joints2d, joints_mask))
+                add_rows(rows, name, idx, e_in, per)
 
             if n_batches % 5 == 0:
                 print(f"  ... da xu ly {n_batches}/{args.max_batches} batch")
@@ -314,6 +388,26 @@ def main():
         row['real_j'] = cat['real']['j'].mean()
         summary.append(row)
     print("  (khoang tin cay tinh theo mau doc lap -> lac quan voi 3DPW)")
+
+    lines = []
+
+    def log(msg):
+        print(msg)
+        lines.append(msg)
+
+    hr("THEO NHOM LOI POSE DAU VAO (MPJPE 17 khop H36M root-rel tu mesh, KHONG phai dataset.evaluate 14 khop)")
+    log(f"  tap: {test_name} | n mau duyet: {len(set(r['index'] for r in rows))}")
+    report_by_input(rows, log)
+    if out_dir is not None:
+        import csv
+        fields = list(rows[0].keys()) if rows else ['cond', 'index']
+        with (out_dir / 'samples.csv').open('w', encoding='utf-8', newline='') as fcsv:
+            w = csv.DictWriter(fcsv, fieldnames=fields)
+            w.writeheader()
+            for r in rows:
+                w.writerow(r)
+        (out_dir / 'summary.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+        print(f"\nDa luu: {out_dir}/samples.csv, summary.txt")
 
     hr("TOM TAT: muc dung thong tin anh rieng tung mau = (mean - that)")
     print(f"  {'dieu kien':46s} {'MPJPE that':>10s} {'dMPJPE':>8s} {'dMPVPE':>8s}  ket luan")
