@@ -148,7 +148,8 @@ class PW3D(torch.utils.data.Dataset):
             with open(halpe_path) as f:
                 halpe26 = json.load(f)
             print(f"Load Halpe-26 input: {halpe_path} ({len(halpe26)} nguoi)")
-        elif cfg.DATASET.pw3d_2d_source != 'openpose':
+        # Crowd dung Higher-HRNet: halpe26 van la key hop le cho cac split con lai.
+        elif cfg.DATASET.pw3d_2d_source not in ('openpose', 'halpe26'):
             raise ValueError(f"cfg.DATASET.pw3d_2d_source khong hop le: {cfg.DATASET.pw3d_2d_source}")
 
         # oc/pc gom sequence cua ca train/val/test -> chi giu sequence thuoc test neu bat co (tranh ro ri)

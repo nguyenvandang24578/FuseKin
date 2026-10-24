@@ -393,4 +393,49 @@ In MPJPE17, MPJPE16 bo pelvis, per-joint, so chon/hop le/GT rong va nguon GT. Tr
 
 Hai lenh trong README: config/train_student_kd_e1_v2_diff_jotr.yml -> 4 bo train + 3DPW test; config/train_student_kd_e1_v2_diff_spread_gate.yml -> 3DPW train + test. Dung lifter experiment/finetune_difflifter_r25_cam/best_epoch.bin; khong thay bang checkpoint Student. Tap con ngau nhien/augmentation/noise theo batch khac phep do toan tap va khac GT native cua lifter; khong quy chenh lech thanh loi tong quat hoa rieng.
 
-Trang thai: da code, doc lai source/diff; CHUA chay/import/kiem cu phap Python hay train/test tai local. Chua co ket qua chan doan moi do nguoi dung chay. Giu nguyen run/YAML dang train va thay doi san co cua nguoi dung trong train_student_kd_e1_v2_diff.yml.
+Trang thai: da code, doc lai source/diff; CHUA chay/import/kiem cu phap Python hay train/test tai local. Nguoi dung da gui log train/test tap con, xem muc 18. Giu nguyen run/YAML dang train va thay doi san co cua nguoi dung trong train_student_kd_e1_v2_diff.yml.
+## 18. Loi pose dau vao tren train Student full dataset - log nguoi dung gui (2026-10-24)
+
+Nguoi dung gui bang TOM TAT tu script da mo rong, thu muc experiment/check_lifter_input_full_s123. Theo mach trao doi la lenh Student input, S1/K1, max_samples512, batch32, workers0, seed123; doan log khong kem header YAML/checkpoint/epoch hay summary.json nen chua xac minh doc lap cac tham so nay. Day la ket qua nguoi dung chay, khong phai eval local cua tro ly.
+
+| Loader / dataset | Hop le / da chon | MPJPE17 | MPJPE16 bo pelvis |
+|---|---:|---:|---:|
+| train/Human36M | 512/512 | 68.580 | 72.867 |
+| train/MuCo | 512/512 | 113.010 | 120.074 |
+| train/MSCOCO | 512/512 | 92.476 | 98.255 |
+| train/CrowdPose | 280/280 | 165.385 | 175.722 |
+| eval/3dpw | 512/512 | 69.843 | 74.208 |
+
+Don vi mm, H36M-17 root-relative, KHONG phai mesh14. MPJPE16 ~ MPJPE17*17/16 phu hop pelvis sai so0; khong la bang chung doc lap pipeline hoan toan dung. 3DPW512 khong so truc tiep voi moc full35515 72.18 mm (checkpoint baseline ep6) de ket luan model da doi; khac tap con/noise/augmentation/cohort. Train co augmentation va target Student khac native target lifter o H36M/MuCo; khong coi train > test la bang chung underfit thuan tuy.
+
+Da doc source/YAML: finetune_difflifter_r25_cam.yaml da khai bao Human36M+MuCo+MSCOCO+CrowdPose, ratio0.25 moi bo, samples_per_epoch512000. Day la gia tri YAML local hien tai, khong xac nhan log/YAML that luc train checkpoint. main/finetune_difflifter.py ep DATASET.lift_only=True; H36M/MuCo hoc native/mocap GT. Student *_jotr.yml dung lift_only=False + fusekin_unified=True, target hoi quy tu mesh NeuralAnnot. MSCOCO/CrowdPose o hai nhanh deu dung pseudo-GT NeuralAnnot va view_rot/camera uoc luong theo cung nguyen tac, nen khong quy moi loi cao cua chung cho chenh lech loai GT.
+
+CrowdPose n280/280: neu max_samples512 nhu lenh da gui thi loader chi con280 mau; can kiem tra dataset_n trong summary va log Load Halpe-26 giu/bo khong NeuralAnnot/bo khong Halpe. Code local CrowdPose.load_data va tools/extract_halpe26_coco.py da khong loc fit_err; file Halpe hoac source tren server co the cu/chi trich mot phan/khac split, day chi la gia thuyet. Khong co cache trong loader CrowdPose local hien tai. Chua doc duoc du lieu/NPZ/annotation tren server, khong khang dinh nguyen nhan. Neu chi280 mau ma ratio25% thi bi lap lai nhieu; train lai khong tu tang do phu du lieu.
+
+Buoc tiep de xuat: dung script hien co voi YAML lifter r25_cam, --train_sets config --sets3dpw --max_samples512 --S1 --K1 de do loi tren native target ma lifter da hoc; khong bat --student_input. Day la phep do native rieng, khong la so ghep cap cung input/augmentation/noise voi bang Student. Truoc khi retrain can xac minh do phu CrowdPose va quy uoc target/camera/flip/rotation. Neu native target tot nhung target Student kem thi xet thi nghiem finetune dong bo target Student; neu native cung kem moi xet retrain/toi uu lifter. Chua sua source/YAML train hay khoi dong run moi, chua dung cac ket qua test nay de chon model cho danh gia cuoi.
+
+## 19. Ket qua nguoi dung bao: KD gate real/zero va KD full dataset (2026-10-24)
+
+Nguoi dung gui ba dong chon best theo ['3dpw']: KD_gate MPJPE77.47/MPVPE94.06; gate_zero 76.11/93.84; KD binh thuong full dataset 76.17/93.08 mm. Day la metric mesh14/MPVPE, khong phai MPJPE17 cua lifter. Chua co PA-MPJPE, epoch, seed train thuc, header TEST CUOI, duong dan checkpoint hay YAML sao luu server. Dong chon best theo trong source in metric epoch hien tai, nen ghi la MOC NGUOI DUNG BAO, chua xac minh la best.pth.tar cuoi run. Chua chay lai tai local.
+
+| Ban nguoi dung bao | Du lieu/Teacher theo YAML local da chot | MPJPE14 | MPVPE |
+|---|---|---:|---:|
+| KD gate std that | 3dpw-train / teacher_gt_v2 | 77.47 | 94.06 |
+| KD gate std dau vao=0 | 3dpw-train / teacher_gt_v2 | 76.11 | 93.84 |
+| KD khong gate full dataset | Human36M+MuCo+MSCOCO+CrowdPose / teacher_gt_v2_jotr | 76.17 | 93.08 |
+
+Don vi mm, thap hon tot hon. Da doi chieu lai YAML bang van ban: train_student_kd_e1_v2_diff_spread_gate.yml va _gate_zero.yml chi khac MODEL.difflift_spread_gate_zero. Cung kien truc gate, S1/K1, nhomS5/K20 van duoc tinh o ban zero, khoi tao Teacher, loss E1 va LR [5,10,15,22,27]. Theo ba so da bao, std that kem zero **+1.36 MPJPE/+0.22 MPVPE**. Ket qua run nay khong ung ho loi ich cua std trong gate hien tai, cung huong voi cac ablation inference spread cu. Chua suy y nghia thong ke hay ket luan moi cach khai thac diffusion deu vo ich tu mot cap run.
+
+Zero van co gate hoc tu joint/anh; khong duoc goi zero la Student khong gate hoac suy gate da co loi. So voi KD cong embedding lich su E18 76.763/93.574, zero giam0.653 MPJPE nhung tang0.266 MPVPE; day khong phai doi chung tach rieng tac dung gate. Can KD khong gate cung du lieu/Teacher/khoi tao/loss/LR/seed neu muon ket luan gate.
+
+KD full dataset kem zero0.06 MPJPE va tot hon0.76 MPVPE theo moc bao. Khac du lieu train, Teacher, lich LR ([15,22,27]) va cach lay mau (ratio25%, 32000/epoch), nen khong quy chenh lech cho gate/std/KD. Neu dung dung YAML *_jotr.yml thi khong train 3DPW, nhung van chon best tren 3DPW TEST; chua la giao thuc test doc lap/JOTR ket qua cuoi.
+
+Buoc tiep uu tien de xuat: giu KD full lam moc giao thuc4bo, tam dung mo rong co che std-gate nay. Co san config/train_student_init_v2_diff_jotr.yml; da doi chieu tat ca key/values voi KD full, CHI khac MODEL.kd_lambda=0 thay1. student_use_kd=True/feat giu Teacher init, hard_w1 va privileged giong KD full, van tao projector/Teacher forward nen tach duoc tin hieu KD khoi khoi tao/hard scaling khi cung seed. Day la doi chung can hon viec chi so voi scratch co0.5hard/khong init Teacher. Chua co ket qua init-only full trong log moi, chua khoi dong run hay sua YAML/code model. Xac minh best checkpoint/epoch khi tong hop va giu cac mau test nhu ket qua phat trien.
+
+## 20. Sua validation nguon2D cho 3DPW-Crowd (2026-10-24)
+
+Nguoi dung bao loader in Load Higher-HRNet input roi loi ValueError: cfg.DATASET.pw3d_2d_source khong hop le: halpe26. Da doc PW3D.load_data: self.use_halpe26 = (source=='halpe26') and not cfg.crowd la dung chu y, nhung elif source!='openpose' phia sau lai tu choi halpe26 khi Crowd bo qua nhanh Halpe. Day la loi dieu kien validation, khong phai checkpoint/model hay thieu file Halpe; file HHRNet da doc qua buoc print trong log.
+
+Sua cuc bo data_final/PW3D/dataset.py, PW3D.load_data: elif kiem tra source not in ('openpose','halpe26'). Crowd van dung HHRNet (va fallback OpenPose cu khi thieu annotation), split thuong van nap Halpe theo split/ann_id rieng, key khac van bao loi. Khong doi YAML/nguon detector cua cac run, khong them config hay doi model/train. Tai lieu truoc da ghi dung chinh sach Crowd/HHRNet nhung source con sot validation nay; nay moi sua source, chua coi la da eval thanh cong Crowd.
+
+Da doc lai diff va cac nhanh dieu kien, khong chay/import/kiem cu phap Python hay test/train tai local theo AGENTS. Nguoi dung dong bo file loader len server va chay lai lenh eval dang dung. Co the kiem tra rieng lifter Crowd bang main/eval_difflifter_3dpw.py voi cfg finetune_difflifter_r25_cam.yaml, best_epoch.bin, --sets3dpw-crowd --S1 --K1 --max_samples512 --batch_size32 --workers0 --seed123; day la H36M17, khong phai mesh14.

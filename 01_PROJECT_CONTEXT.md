@@ -169,7 +169,7 @@ Hai YAML `train_student_kd_e1_v2_diff_spread_gate.yml`, `_gate_zero.yml` giữ n
 
 ## 11. Trạng thái dọn code
 
-Người dùng chốt **chỉ bỏ nhánh cộng embedding spread, giữ gate + KD để train**. Đã xóa hai YAML spread cũ, gỡ nhánh trong ARTS/FusionPose2Mesh và inspector, giữ YAML gate real/zero. Thống kê spread của chính DiffLifter trong các công cụ chẩn đoán không bị xóa vì không phải đầu vào cộng token Student. Giữ kết quả/checkpoint đã train và lịch sử trong experiment.md; gate vẫn chờ kết quả người dùng chạy trên server. Chỉ kiểm tra văn bản/source/diff tại local, không import hay chạy Python.
+Người dùng chốt **chỉ bỏ nhánh cộng embedding spread, giữ gate + KD để train**. Đã xóa hai YAML spread cũ, gỡ nhánh trong ARTS/FusionPose2Mesh và inspector, giữ YAML gate real/zero. Thống kê spread của chính DiffLifter trong các công cụ chẩn đoán không bị xóa vì không phải đầu vào cộng token Student. Giữ kết quả/checkpoint đã train và lịch sử trong experiment.md; Người dùng đã báo gate std thật 77.47/94.06, gate_zero 76.11/93.84 và KD full 76.17/93.08 mm; xem mục 13 bên dưới và experiment.md mục 19, chưa xác minh epoch/best checkpoint. Chỉ kiểm tra văn bản/source/diff tại local, không import hay chạy Python.
 
 ## 12. Đo pose DiffLifter đầu vào trên tập con train/test
 
@@ -181,4 +181,13 @@ Dùng chung diag_difflifter.build_model/get_gt/make_cond. Chế độ cũ giữ 
 
 Metric raw: MPJPE17 có pelvis, MPJPE16 bỏ pelvis và từng khớp, root-relative mét -> mm, bỏ mẫu GT rỗng. Metric train phụ dùng mask GT fit_joint_trunc * is_valid_fit như trainer; không dùng mask detector để bỏ khớp 3D. Không phải metric mesh 14 khớp. Mỗi bộ ghi rõ GT, số chọn/số hợp lệ; không báo 0 nếu toàn GT rỗng.
 
---out_dir tùy chọn lưu log/JSON/CSV/YAML vào thư mục mới; CSV ghi index/ảnh/missing2D và lỗi từng mẫu, summary có per-joint/indices/config/noise và dataset lỗi. Không ghi đè kết quả cũ. Đã code/chờ người dùng chạy trên server, không chạy/import Python tại local; lệnh README, trạng thái experiment.md mục 17. Không đổi YAML train hay kiến trúc/save/load DiffLifter.
+--out_dir tùy chọn lưu log/JSON/CSV/YAML vào thư mục mới; CSV ghi index/ảnh/missing2D và lỗi từng mẫu, summary có per-joint/indices/config/noise và dataset lỗi. Không ghi đè kết quả cũ. Người dùng đã gửi log tập con train/test: H36M/MuCo/MSCOCO/CrowdPose/3DPW MPJPE17=68.580/113.010/92.476/165.385/69.843 mm; CrowdPose chỉ chọn được 280 mẫu. Cần đối chiếu native target lifter và độ phủ annotation/Halpe trước khi retrain; số liệu và giới hạn ở experiment.md mục 18. Không chạy/import Python tại local; lệnh README. Không đổi YAML train hay kiến trúc/save/load DiffLifter.
+## 13. Trạng thái kết quả gate/KD mới nhất
+
+Người dùng báo MPJPE14/MPVPE: gate std thật **77.47/94.06**, cùng gate std=0 **76.11/93.84**, KD không gate full dataset **76.17/93.08** mm. Hai YAML gate chỉ khác cờ zero; std thật kém +1.36/+0.22 mm trong cặp run này, chưa có bằng chứng giữ std. Zero vẫn là gate học từ joint/ảnh, không chứng minh gate tốt hơn không gate. Full dataset dùng Teacher/dữ liệu/lịch LR khác nên không phải ablation cho gate. Số liệu là mốc người dùng báo, chưa có epoch/header TEST CUỐI xác nhận best.pth.tar hay nhiều seed; đều chọn theo 3DPW test để phát triển. Chi tiết ở experiment.md mục 19.
+
+Có sẵn `config/train_student_init_v2_diff_jotr.yml`, đã so toàn bộ giá trị với KD full: chỉ khác kd_lambda=0. Giữ init Teacher/hard_w1/privileged/lịch LR để đo đóng góp loss KD; student_use_kd=True nhằm giữ đường feat và Teacher init, không có gradient loss KD khi lambda=0. Chưa có kết quả đối chứng này trong log mới, không coi cấu hình có sẵn là run đã chạy. Không sửa code/YAML train trong lượt phân tích kết quả.
+
+## 14. Sửa validation 3DPW-Crowd
+
+`PW3D.load_data` đã sửa lỗi từ chối `pw3d_2d_source='halpe26'` khi nạp Crowd: `self.use_halpe26=False` trên Crowd chỉ để chọn Higher-HRNet, không có nghĩa giá trị YAML không hợp lệ. Kiểm tra nguồn nay dùng tập hợp `('openpose','halpe26')`; các split thường tiếp tục Halpe theo YAML, Crowd tiếp tục HHRNet, key sai vẫn báo lỗi. Không đổi YAML/model/train. Đã rà source/diff, chưa chạy đánh giá Crowd thành công tại local; log lỗi người dùng và trạng thái ở experiment.md mục 20. Đồng bộ `data_final/PW3D/dataset.py` lên server rồi chạy lại lệnh eval.

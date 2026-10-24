@@ -25,6 +25,7 @@ Teacher/KD, MotionBERT và PMCE vẫn có trong source để đối chiếu. Ch�
 
 ## Trạng thái hiện tại
 
+- Gate/KD mới (mốc người dùng báo): gate std thật **77.47/94.06**, gate_zero **76.11/93.84**, KD full dataset **76.17/93.08 mm** (MPJPE14/MPVPE). Std thật chưa cho lợi ích trong cặp gate này; full dataset khác dữ liệu/Teacher nên không phải ablation gate. Chưa xác minh epoch/best checkpoint; chi tiết và đối chứng init-only full ở mục 19 của `experiment.md`.
 - Augmentation: người dùng báo không hiệu quả. Spread: best trên 3DPW được báo là MPJPE 77.59 / MPVPE 94.17 mm; người dùng đã gửi log chẩn đoán 35,515 mẫu: real/off/shuffle gần nhau, chưa thấy lợi ích rõ của spread lúc inference (mục 9 của `experiment.md`).
 - GCN + attention song song: đã đối chiếu best epoch 6 với attention baseline tại S=1/K=1; chỉ H36M giảm lỗi, 3DPW/OC/PC tăng. Giữ `r25_cam` làm mốc chính; bảng số ở mục 5 của `experiment.md`.
 - Prior nhiễu có điều kiện từ SimCC/GMM: tạm hoãn. Code probe SimCC được giữ để nghiên cứu sau.
