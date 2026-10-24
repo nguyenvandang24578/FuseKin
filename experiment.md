@@ -457,3 +457,9 @@ Da tao config/train_student_init_v2_diff_gate_zero_3dpw.yml tu config/train_stud
 Lenh: python main/train.py --cfg config/train_student_init_v2_diff_gate_zero_3dpw.yml --exp_name student_init_v2_diff_gate_zero_3dpw_s123 --seed 123 --gpu 0
 
 Ket qua moi du kien o experiment/student_init_v2_diff_gate_zero_3dpw_s123/checkpoint/best.pth.tar; chua tao checkpoint/chua train. So ghep cap tren cung tap, gate_zero, Teacher/lifter checkpoint va seed (can khop seed run KD thuc), bao MPJPE14/PA-MPJPE/MPVPE. Chi tach tac dong loss KD tren gate_zero/3DPW; khong suy ket luan cho KD khong gate/full dataset hay so truc tiep voi 76.17/93.08. Neu gan nhau can lap seed truoc ket luan. Ca hai chon best 3DPW test, chi phuc vu phat trien. Da doc source Student_Trainer de xac nhan cong thuc loss va doi chieu YAML bang van ban, khong chay Python/train/test theo AGENTS.
+
+## 22. Loi lifter tren train native + chan doan 2D Halpe (2026-10-24)
+
+Nguoi dung gui eval lifter r25_cam best_epoch.bin, S1/K1, toan bo tap train, target native (YAML lifter, lift_only). MPJPE17 mm co xoay / khong xoay (config/eval_difflifter_r25_cam_norot.yaml, chi doi no_rot_aug=True): H36M 60.06/59.04, MuCo 98.38/96.79, MSCOCO 83.50/82.16, CrowdPose 74.08/72.99 (35,659 nguoi, khong phai 280), 3dpw-val 63.19. Tat xoay chi giam ~1 mm -> loi train cao khong do augmentation xoay. Loi train ~ val: lifter khong overfit. MuCo bat thuong (co tay ~185 mm, khuyu ~131 mm), hong/torso thap o moi bo -> khong giong loi don vi/anh xa khop toan cuc. Gia thuyet (chua kiem chung): Halpe bat nham nguoi tren anh ghep MuCo.
+
+Da viet main/diag_halpe2d.py (chua chay): chi doc datalist Human36M/MuCo, so Halpe H36M-17 voi GT 2D pixel anh goc, chuan hoa theo max(w,h) tight bbox, dem mau nghi nham nguoi/doi L/R, ghep samples.csv cua eval lifter theo (dataset,index) de xem loi lifter theo nhom loi 2D. Khong doi YAML train/model.
