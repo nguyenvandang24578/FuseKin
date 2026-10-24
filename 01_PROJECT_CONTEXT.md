@@ -102,7 +102,7 @@ Các file keypoint chính:
 | MSCOCO/CrowdPose | `<name>/<name>_train_halpe26.npz` | `tools/extract_halpe26_coco.py`, chọn dataset `mscoco` hoặc `crowdpose` |
 | 3DPW | `PW3D/3DPW_{train,validation,test,oc,pc}_halpe26.json` | `tools/extract_halpe26_3dpw.py` |
 
-OC/PC phải dùng file Halpe và ann_id của chính split đó. `pw3d_ocpc_test_only=True` lọc sequence thuộc test khi cần phân tích tập sạch. 3DPW-Crowd dùng Higher-HRNet; code hiện loại nhánh Halpe cho Crowd, không còn lỗi cũ áp Halpe vào Crowd. CrowdPose hiện không lọc fit bằng ngưỡng `fit_err > 5` cũ.
+OC/PC phải dùng file Halpe và ann_id của chính split đó. `pw3d_ocpc_test_only=True` lọc sequence thuộc test khi cần phân tích tập sạch. 3DPW-Crowd tuân theo pw3d_2d_source: halpe26 dùng 3DPW_validation_halpe26.json và ann_id validation, lọc hai sequence Crowd như cũ; openpose giữ nhánh Higher-HRNet/fallback OpenPose lịch sử. Không dùng Halpe test cho Crowd. CrowdPose hiện không lọc fit bằng ngưỡng `fit_err > 5` cũ.
 
 Các ghi chú cũ về mesh target/mask/collate khi train **mesh đa dataset** chưa được kiểm chứng lại đầy đủ. Không suy từ việc lifter trộn 4 tập chạy được rằng pipeline mesh trộn 4 tập đã đúng; cần kiểm đơn vị, root, khớp regressor, `is_3D` và `is_valid_fit` trước khi mở rộng.
 
@@ -188,6 +188,8 @@ Người dùng báo MPJPE14/MPVPE: gate std thật **77.47/94.06**, cùng gate s
 
 Có sẵn `config/train_student_init_v2_diff_jotr.yml`, đã so toàn bộ giá trị với KD full: chỉ khác kd_lambda=0. Giữ init Teacher/hard_w1/privileged/lịch LR để đo đóng góp loss KD; student_use_kd=True nhằm giữ đường feat và Teacher init, không có gradient loss KD khi lambda=0. Chưa có kết quả đối chứng này trong log mới, không coi cấu hình có sẵn là run đã chạy. Không sửa code/YAML train trong lượt phân tích kết quả.
 
-## 14. Sửa validation 3DPW-Crowd
+## 14. Nguồn 2D của 3DPW-Crowd (sửa 2026-10-24)
 
-`PW3D.load_data` đã sửa lỗi từ chối `pw3d_2d_source='halpe26'` khi nạp Crowd: `self.use_halpe26=False` trên Crowd chỉ để chọn Higher-HRNet, không có nghĩa giá trị YAML không hợp lệ. Kiểm tra nguồn nay dùng tập hợp `('openpose','halpe26')`; các split thường tiếp tục Halpe theo YAML, Crowd tiếp tục HHRNet, key sai vẫn báo lỗi. Không đổi YAML/model/train. Đã rà source/diff, chưa chạy đánh giá Crowd thành công tại local; log lỗi người dùng và trạng thái ở experiment.md mục 20. Đồng bộ `data_final/PW3D/dataset.py` lên server rồi chạy lại lệnh eval.
+Sửa validation trước đó chỉ hết ValueError nhưng vẫn ép Crowd dùng HHRNet, chưa đúng pipeline Halpe theo yêu cầu người dùng. PW3D.load_data nay chọn self.use_halpe26 theo pw3d_2d_source cho mọi split: Crowd dùng 3DPW_validation_halpe26.json (cùng ann_id với 3DPW_latest_validation.json) và giữ lọc courtyard_hug_00/courtyard_dancing_00. Khi chọn Halpe không mở file HHRNet, không fallback OpenPose; thiếu file/ann_id Halpe báo lỗi rõ. OC/PC vẫn dùng file riêng; openpose giữ hành vi HHRNet cũ trên Crowd. __getitem__ đã ưu tiên halpe_h36m nên không cần đổi.
+
+Không đổi YAML/default key hay model/train. Kết quả Crowd từ nhánh HHRNet/OpenPose trước đây thuộc nguồn detector khác; cần đánh giá lại khi chuyển Halpe. Chỉ rà source/diff, chưa chạy Python/test; xem experiment.md mục 21.

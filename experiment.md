@@ -439,3 +439,11 @@ Nguoi dung bao loader in Load Higher-HRNet input roi loi ValueError: cfg.DATASET
 Sua cuc bo data_final/PW3D/dataset.py, PW3D.load_data: elif kiem tra source not in ('openpose','halpe26'). Crowd van dung HHRNet (va fallback OpenPose cu khi thieu annotation), split thuong van nap Halpe theo split/ann_id rieng, key khac van bao loi. Khong doi YAML/nguon detector cua cac run, khong them config hay doi model/train. Tai lieu truoc da ghi dung chinh sach Crowd/HHRNet nhung source con sot validation nay; nay moi sua source, chua coi la da eval thanh cong Crowd.
 
 Da doc lai diff va cac nhanh dieu kien, khong chay/import/kiem cu phap Python hay test/train tai local theo AGENTS. Nguoi dung dong bo file loader len server va chay lai lenh eval dang dung. Co the kiem tra rieng lifter Crowd bang main/eval_difflifter_3dpw.py voi cfg finetune_difflifter_r25_cam.yaml, best_epoch.bin, --sets3dpw-crowd --S1 --K1 --max_samples512 --batch_size32 --workers0 --seed123; day la H36M17, khong phai mesh14.
+
+## 21. Crowd dùng Halpe theo YAML (2026-10-24, sửa lại mục 20)
+
+Người dùng xác nhận muốn Crowd cùng pipeline Halpe và gửi log HHRNet thiếu nhiều ann_id, fallback OpenPose. Sửa mục 20 chỉ bỏ ValueError, vẫn ép Crowd sang detector cũ; nhận định giữ HHRNet là đúng mục tiêu trước đó chưa đúng yêu cầu này.
+
+Đã sửa PW3D.load_data trong data_final/PW3D/dataset.py: kiểm tra nguồn trước khi nạp detector, self.use_halpe26 chỉ phụ thuộc pw3d_2d_source, áp dụng cả Crowd. Crowd đọc 3DPW_validation_halpe26.json đúng ann_id của 3DPW_latest_validation.json, giữ lọc hai sequence Crowd, bỏ hoàn toàn nạp/tra HHRNet khi chọn Halpe. Không fallback OpenPose nếu thiếu Halpe. OC/PC và openpose giữ quy tắc cũ; không đổi YAML/checkpoint/model.
+
+Chưa có kết quả Crowd Halpe sau sửa. Log PC người dùng báo n=2218, MPJPE=95.31/PA=61.91/MPVPE=120.91 mm, nhãn toan bo/ro ri; chưa gắn cho run cụ thể vì chưa có YAML/checkpoint header. Các kết quả Crowd HHRNet/OpenPose cũ không được đổi tên thành Halpe. Chỉ đọc lại source/diff, không chạy/import/kiểm cú pháp Python hay test tại local. Đồng bộ loader và chạy lại lệnh eval cũ; nếu thiếu file Halpe validation thì dùng tools/extract_halpe26_3dpw.py --data_root data_final/PW3D --splits validation trên server, môi trường pose2d.

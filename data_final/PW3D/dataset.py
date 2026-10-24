@@ -119,7 +119,11 @@ class PW3D(torch.utils.data.Dataset):
         # db = COCO('/home/ljh375649/data_2/vibe_data/3dpw/3DPW_oc.json')
         # db = COCO('/home/ljh375649/data_2/vibe_data/3dpw/3DPW_pc.json')
         # db = COCO(osp.join(self.data_path, '3DPW_latest_' + self.data_split + '.json'))
-        # import pdb;pdb.set_trace()
+        # Nguon Halpe theo YAML ap dung ca Crowd; Crowd dung ann_id cua validation.
+        source_2d = cfg.DATASET.pw3d_2d_source
+        if source_2d not in ('openpose', 'halpe26'):
+            raise ValueError(f"cfg.DATASET.pw3d_2d_source khong hop le: {source_2d}")
+        self.use_halpe26 = (source_2d == 'halpe26')
         if self.data_split == 'test' and not cfg.use_gt_info:
             print("Get bounding box and root from " + self.human_bbox_root_dir)
             bbox_root_result = {}
@@ -128,16 +132,14 @@ class PW3D(torch.utils.data.Dataset):
             for i in range(len(annot)):
                 ann_id = str(annot[i]['ann_id'])
                 bbox_root_result[ann_id] = {'bbox': np.array(annot[i]['bbox']), 'root': np.array(annot[i]['root_cam'])}
-        elif cfg.crowd:
+        elif cfg.crowd and not self.use_halpe26:
             with open(osp.join(self.data_path, f'3DPW_{self.data_split}_crowd_hhrnet_result.json')) as f:
                 hhrnet_result = json.load(f)
             print("Load Higher-HRNet input")
-
-        else:
+        elif not self.use_halpe26:
             print("Load OpenPose input")
 
-        # Nguon 2D Halpe-26 (cfg.DATASET.pw3d_2d_source = 'halpe26'), khong ap dung cho 3dpw-crowd (Higher-HRNet)
-        self.use_halpe26 = (cfg.DATASET.pw3d_2d_source == 'halpe26') and not cfg.crowd
+        # Crowd doc Halpe validation; OC/PC doc file rieng theo ann_id cua split.
         halpe26 = None
         if self.use_halpe26:
             # oc/pc co id annotation rieng -> dung file Halpe rieng (3DPW_oc_halpe26.json / 3DPW_pc_halpe26.json)
@@ -148,9 +150,6 @@ class PW3D(torch.utils.data.Dataset):
             with open(halpe_path) as f:
                 halpe26 = json.load(f)
             print(f"Load Halpe-26 input: {halpe_path} ({len(halpe26)} nguoi)")
-        # Crowd dung Higher-HRNet: halpe26 van la key hop le cho cac split con lai.
-        elif cfg.DATASET.pw3d_2d_source not in ('openpose', 'halpe26'):
-            raise ValueError(f"cfg.DATASET.pw3d_2d_source khong hop le: {cfg.DATASET.pw3d_2d_source}")
 
         # oc/pc gom sequence cua ca train/val/test -> chi giu sequence thuoc test neu bat co (tranh ro ri)
         test_seqs = None
@@ -196,7 +195,7 @@ class PW3D(torch.utils.data.Dataset):
             pose_score_thr = self.conf_thr
 
             hhrnetpose = None
-            if cfg.crowd and self.data_split=='validation':
+            if cfg.crowd and self.data_split=='validation' and not self.use_halpe26:
                 try:
                     hhrnetpose = np.array(hhrnet_result[str(aid)]['coco_joints'])
                     hhrnetpose = self.add_pelvis(hhrnetpose, self.coco_joints_name)
