@@ -11,6 +11,8 @@ Cac phep do (MPJPE17 H36M root-rel tu mesh / PA-MPJPE / MPVPE / goc xoay toan th
       thay token khop sau bo ma hoa / token khop sau fusion / token anh sau fusion / ca hai bang cua Teacher
     -> % khoang cach Student-Teacher duoc lap = noi kien thuc Teacher thuc su nam.
  E. Attention khop->anh tung block: entropy va do lech tam attention so voi GT 2D khop (chi tap 3DPW).
+ F. Ty le dong gop cua ANH trong fusion tung block: he so coef1 (giu token khop) / coef2 (cong phan anh) va
+    ty le do lon thuc te ||coef2 * joint_att|| / ||coef1 * joint_tok|| (joint_att = phan doc tu anh qua cross-attn).
 
 Vi du:
   python main/analyze_teacher.py --cfg config/train_student_kd_e1_v2.yml \
@@ -268,6 +270,38 @@ def attn_stats(layers, gt2d_n, valid):
     return res
 
 
+class FusionProbe:
+    """Hook vao tung block fusion: do ||coef2*joint_att|| / ||coef1*joint_tok|| theo token (chi khi tag != None)."""
+    def __init__(self, net):
+        self.blocks = net.smpl_model.fusion.cfcer.blocks
+        self.tag, self.tmp, self.buf = None, {}, {}
+        for bi, blk in enumerate(self.blocks):
+            blk.ln_joint1.register_forward_pre_hook(self._pre(bi))
+            blk.out_joint.register_forward_hook(self._post(bi))
+
+    def _pre(self, bi):
+        def f(mod, inp):
+            if self.tag is not None:
+                self.tmp[bi] = inp[0].detach()
+        return f
+
+    def _post(self, bi):
+        def f(mod, inp, out):
+            if self.tag is None or bi not in self.tmp:
+                return
+            blk = self.blocks[bi]
+            a = (blk.coef2.bias.abs() * out.detach()).norm(dim=-1)            # (B, J) phan anh
+            j = (blk.coef1.bias.abs() * self.tmp[bi]).norm(dim=-1)            # (B, J) phan khop giu lai
+            self.buf.setdefault((self.tag, bi), []).append((a / j.clamp_min(1e-8)).mean(-1).cpu())
+        return f
+
+    def coefs(self):
+        return [{k: float(getattr(blk, k).bias) for k in ('coef1', 'coef2', 'coef5', 'coef6')} for blk in self.blocks]
+
+    def ratios(self):
+        return {f'{t} block{b}': float(torch.cat(v).mean()) for (t, b), v in self.buf.items()}
+
+
 class patched:
     """Tam thoi thay forward cua 1 module bang ham tra ve gia tri co dinh."""
     def __init__(self, module, fn):
@@ -300,6 +334,8 @@ def main():
     hr('Nap checkpoint')
     teacher, _ = build_and_load('teacher', teacher_ckpt)
     student = build_and_load('student', args.student_ckpt)[0] if args.student_ckpt else None
+    probe_t = FusionProbe(teacher)
+    probe_s = FusionProbe(student) if student is not None else None
 
     test_name = args.set or cfg.DATASET.test_list[0]
     use_gt2d = test_name.startswith('3dpw')
@@ -341,7 +377,9 @@ def main():
 
             # ---------------- Teacher ----------------
             feat_t, _ = teacher.get_image_features(img)
+            probe_t.tag = 'Teacher(pose GT)'
             t_gt = run(teacher, gt17, feat_t)
+            probe_t.tag = None
             st.add('A. Teacher | pose GT | anh that', in_err=in_err(gt17, gt17), **mesh_metrics(t_gt, gt_mesh, reg, gt17))
             st.add('A. Teacher | pose GT | anh TB', in_err=in_err(gt17, gt17),
                    **mesh_metrics(run(teacher, gt17, feat_t, True), gt_mesh, reg, gt17))
@@ -375,7 +413,9 @@ def main():
                     lifted = student.lift_2d_to_3d(j2, joints_mask=jm)
                 lifted = (lifted - lifted[:, 0:1]).float()
                 e_l = in_err(lifted, gt17)
+                probe_s.tag = 'Student(pose lifter)'
                 s_l = run(student, lifted, feat_s)
+                probe_s.tag = None
                 st.add('C. Student | pose lifter | anh that', in_err=e_l, **mesh_metrics(s_l, gt_mesh, reg, gt17))
                 st.add('C. Student | pose lifter | anh TB', in_err=e_l,
                        **mesh_metrics(run(student, lifted, feat_s, True), gt_mesh, reg, gt17))
@@ -444,6 +484,22 @@ def main():
     for name, v in S.items():
         if name.startswith('E.'):
             log(f"   {name[3:]:40s} entropy {v['entropy']:.3f} | tam lech {v['tam_lech_crop']:.3f}")
+    log('\nF. Dong gop cua ANH trong fusion (coef1 = giu token khop, coef2 = cong phan anh; coef5/6 = residual/FFN):')
+    S['F_coef'] = {}
+    for tag, pr in (('Teacher', probe_t), ('Student', probe_s)):
+        if pr is None:
+            continue
+        S['F_coef'][tag] = pr.coefs()
+        for bi, c in enumerate(pr.coefs()):
+            log(f"   {tag} block{bi}: coef1 {c['coef1']:+.4f} | coef2 {c['coef2']:+.4f} | coef5 {c['coef5']:+.4f} | coef6 {c['coef6']:+.4f}")
+    S['F_ratio'] = {}
+    for pr in (probe_t, probe_s):
+        if pr is None:
+            continue
+        for k, v in pr.ratios().items():
+            S['F_ratio'][k] = v
+            log(f"   ||anh|| / ||khop|| {k:32s} = {v:.4f}")
+    log('   (ty le << 1: phan anh cong vao token khop rat nho so voi phan pose giu lai)')
     (out_dir / 'summary.json').write_text(json.dumps(S, indent=2, ensure_ascii=False), encoding='utf-8')
     log(f'\nDa luu: {out_dir}')
 

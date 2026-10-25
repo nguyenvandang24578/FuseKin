@@ -585,7 +585,7 @@ Muc tieu: tim kien thuc nao cua Teacher GT co the truyen truoc khi thiet ke lai 
 ## 29. KD chon loc (y tuong nguoi dung) - da code, cho chay (2026-10-25)
 MODEL.kd_sel (mac dinh False) + kd_sel_gap_q (0.7), kd_sel_teacher_joint_mm (50), kd_sel_teacher_sample_mm (0 = bo). Trong Student_Trainer (kd_mode feat, khong ho tro kd_joint_relation): mask no_grad = khop hop le & loi khop Teacher (mesh Teacher -> H36M-17 so GT) <= nguong & (tuy chon) MPJPE mau Teacher <= nguong & khoang cach KD khop <= phan vi q trong batch; global KD dung mask mau (Teacher dung + gap global <= phan vi q). Nhan vao jw_valid / sw (van chia theo n_valid nen do lon loss ~ ty le duoc chon). Log kd_sel_joint, kd_sel_sample, teacher_err_mm. YAML config/train_student_kd_e1_v2_sel.yml = train_student_kd_e1_v2.yml + 4 key tren. Chua chay.
 
-## 30. Kiem chung quy uoc loss mesh/root va projection (2026-10-25, da code/cho chay)
+## 30. Kiem chung quy uoc loss mesh/root va projection (2026-10-25, da co synthetic va64mau train/cho checkpoint)
 
 Nguoi dung duyet viet phep kiem chung truoc khi coi hai khac biet quy uoc la loi. Them `main/check_loss_conventions.py`, khong sua model/loss train/YAML/run hien co. Script doc `cfg` hien co va cac tuy chon CLI rieng; khong them hanh vi/toggle vao pipeline train. Danh gia co chu dich hay cai thien sau retrain CHUA CO, khong goi ket qua doc source la loi da kiem chung.
 
@@ -613,7 +613,45 @@ python main/check_loss_conventions.py --cfg config/train_student_kd_e1_v2_diff_s
 
 Output thu muc moi, tu choi ghi de: `summary.json`, `samples.csv`, `joints.csv`, `gradients.csv`, `regressors.csv`, `config.yaml`, `log.txt`. Luu indices/seed/epoch va SHA256 config/checkpoint/regressor/source, lifter constructor neu co. `synthetic_checks` chi danh dau phan du vuot dung sai so hoc khi self-control/replay khop; khong auto ket luan bug hay loi ich thay loss. Cac loss L1 nay KHONG la MPJPE14/MPVPE, khong so truc tiep voi moc76.11/93.84. Projection sample that co camera ao va projection checkpoint voi targetGT that duoc gan stage rieng. Neu mean loss moi thap hon o cung checkpoint thi chi la muc tieu khac; muon xac nhan loi ich can cap train doi chung tung loss rieng, dung run moi va giao thuc chon checkpoint ro rang.
 
-Trang thai: moi viet va doc lai source/diff/mask/don vi/luong CLI, CHUA chay script/import/kiem cu phap Python hay train/test theo AGENTS.md. Chua co so lieu server de ket luan phan du lon hay nho, chua biet y dinh tac gia. Chua doi quy uoc lifter/mesh hay sua loss dang train.
+Trang thai luc viet: moi viet va doc lai source/diff/mask/don vi/luong CLI, CHUA chay script/import/kiem cu phap Python hay train/test local theo AGENTS.md. Chua doi quy uoc lifter/mesh hay sua loss dang train. Ket qua server nguoi dung cung cap cap nhat ben duoi.
+
+### Synthetic nguoi dung bao (2026-10-25)
+
+Nhan summary status=completed, --synthetic_only, seed123, n16, camera3-6m, YAML gate_zero/3dpw-train; khong checkpoint/dataset that. SHA256 script 108520576532e80c36be7b9a5a88fa7322e8128eaa4dcd7a0b487d370cde83cc trung file local khi doi chieu. Day la phep do server do nguoi dung gui, khong phai chay lai local.
+
+| Phep do | Mean | Doi chung |
+|---|---:|---|
+| Lech pelvis SMPL/H36M tren cung mesh | 29.7163 mm | Chuan hoa tong hang van 29.5205 mm |
+| L1 mesh hoan hao, hai root hien tai | 14.8811 mm/toa do | FP64 14.88109; loss_graph cung root H36M 0.001298 mm |
+| Lech dinh nghia17khop tren cung mesh | 65.4000 mm | Khong la loi lifter/model |
+| Lech projection hai regressor | 68.6395 px, Euclid/khop | FP64 68.63948; chuan hoa tong hang 68.63948 |
+| Lech chi do epsilon1e-4 | 0.01404 px | Nho hon nhieu so voi lech regressor |
+| L1 projection loss_graph hien tai | 10.90027 heatmap/toa do | Cung regressor H36M =0 |
+
+Replay get_coord mesh/projection lech0, self-control cung root/cung regressor lech0, hai co phan du FP64 vuot dung sai deu True. Xac nhan phan du do quy uoc tren phep kiem chung synthetic; khong giai thich bang FP32/epsilon hay chi tong hang regressor. Khong suy ra y dinh tac gia, khong quy 14.88mm L1 nay thanh MPJPE14/MPVPE hay ky vong gain14.88mm khi sua. Projection68.64px dung focal cua model/camera ao3-6m va tat ca17khop, chua mask crop nhu trainer; KHONG la sai so crop thuc tren 3DPW. Chua nhan joints.csv de xac dinh khop nao chi phoi, chua nhan gradients.csv de dien giai gradient.
+
+Buoc tiep sau synthetic luc do: chay lenh2 tren64mau train that, doc stored_target_joint_parity/root va joints.csv; sau do lenh3 voi dung YAML/checkpoint da train de do loss/gradient cuc bo. Ket qua64mau cap nhat ben duoi; chua duyet/sua loss hay khoi dong run moi trong lan doc log nay.
+
+### 64 mau 3DPW-train nguoi dung bao (2026-10-25)
+
+Summary moi status=completed, synthetic_only=False, checkpoint=null, out_dir=experiment/check_loss_tra, seed123, random64indices da luu, valid_fit64/64. YAML/source/regressor SHA256 nhu lan synthetic. Day la ket qua server nguoi dung gui, khong chay local.
+
+| Phep do | Mean | Max |
+|---|---:|---:|
+| Norm pelvis SMPL tren mesh target da luu | 34.0180 mm | 55.2396 mm |
+| Norm pelvis H36M tren cung mesh target | 0.3172 mm | 0.7095 mm |
+| Mesh->H36M rootrel so voi orig_joint_cam | 0.2458 mm | 0.5499 mm |
+| L1 cung hinh hoc sau tru pelvis SMPL so mesh target luu | 17.4371 mm/toa do | 30.9729 mm/toa do |
+| Lech dinh nghia17khop, camera ao3m | 64.8381 mm | 69.6479 mm (mean17khop/mau) |
+| Lech projection hai regressor, camera ao3m | 94.7126 px/khop | 111.3195 px (mean17khop/mau) |
+
+Bang xac nhan truc tiep tren target that: mesh luu gan rootH36M=0, pelvisSMPL con lech~34mm; model lai tru pelvisSMPL. Phan du L1~17.44mm/toa do xuat hien khi hinh hoc da trung GT, la bat nhat quy uoc giua target va prediction trong mesh loss. Khong la loi chi co o synthetic. Mesh->jointGT gan khop (0.246mm), khong co bang chung lech don vi lon trong64mau nay. Sai lech nho van can phan biet voi che do tong hang regressor/lam tron, khong tu coi moi lech nho la0.
+
+Nhanh camera ao: pelvis gap34.0361mm, chuan hoa tong hang34.0430mm; L1 perfect17.4474mm (FP6417.44743). Projection94.7126px khong doi sau FP64/chuan hoa tong hang; epsilon chi0.02136px. Xac nhan khac dinh nghia khop tren mesh that, NHUNG projection van o camera AO focalmodel3m/tatca17khop, khong phai sai so projection loss tren crop3DPW that. Khong so94.71 voi68.64 synthetic de ket luan train te hon, vi camera/pose khac. Chua co joints.csv de quy khop chi phoi.
+
+Khong can lap lai synthetic/64mau de xac nhan root mismatch. Neu can dinh luong tac dong tai model da hoc thi chay che do checkpoint tren cung cohort; JSON hien tai chua co checkpoint stage/gradient cua model that. Loi ich retrain va nguyen nhan cac moc MPJPE14/MPVPE cu van chua duoc xac minh, khong tru17.44/34mm khoi metric. Chi cap nhat tai lieu, khong sua source/loss/YAML hay chay code local.
 
 ## 30. Phan tich truoc KD chon loc / co trong so - main/analyze_kd_selection.py (2026-10-25, chua chay)
 Nguoi dung yeu cau phan tich truoc khi code trong so. Script eval-only: tung khop tung mau tren tap train cua Student (loader train YAML, co aug, --max_samples moi bo) va tap test: e_T (Teacher), e_S (Student KD), e_lift, d = 1-cos(LN token khop Student sau fusion, LN Teacher); mau: d_glob, MPJPE_T/S. Bao cao phan phoi, Spearman (d~e_S, d~e_lift, d~e_T, e_T~e_S), bang 4 o (Teacher tot<=50mm x d<=trung vi), thap phan vi theo d va e_T, goi y tau_T (p75 e_T) / tau_d (trung vi d), samples.csv. --init_ckpt (tuy chon) do loi ich KD theo nhom. Checkpoint nguoi dung co: Teacher teacher_gt_v2_jotr, Student student_kd_e1_v2_diff_jotr_l2last (ca hai khong 3DPW); chua co init-only cung lifter L2 nen chua do duoc loi ich KD. Code kd_sel (muc 29) giu tat, chua dung.
+Ket qua nguoi dung gui (2000 mau/bo, Teacher teacher_gt_v2_jotr, Student kd_e1_v2_diff_jotr_l2last; MPJPE17 tu mesh): Teacher tot tren COCO/CrowdPose (p90 24/21 mm), H36M (p90 43), kem tren MuCo (TB 41, 28.8% khop >50 mm, Nose/Head ~70) ; test 3DPW/PC/Crowd TB 20.5/25.1/25.3, >50 mm 4-6%. Student ~ lifter: e_S vs e_lift H36M 35.3 vs 55.7 (sua duoc), MuCo 95.5/99.7, COCO 83.1/83.2, CrowdPose 65.0/66.8, 3DPW 67.4/68.0, PC 81.8/74.1, Crowd 84.6/79.4 -> ngoai H36M Student gan nhu chep pose lifter. d tuong quan manh voi e_S (0.50-0.73) va e_lift (0.48-0.72); thap phan vi d: e_S ~ e_lift o moi bin. O "Teacher tot & d lon" 44-50% khop, e_S 90-128 vs e_T 15-30 -> noi co kien thuc can truyen; o "Teacher kem & d nho" chi 0-1.7% (MuCo 7.4%). Ket luan: loc bo khop d lon se bo dung phan KD can; loc theo chat luong Teacher chi co tac dung chu yeu tren MuCo. Nut that: Student khong sua pose bang anh (tru H36M) du da co GT supervision.
+Ket qua analyze_teacher (3DPW, 2400 mau, teacher_gt_v2_jotr + student l2last, MPJPE17 tu mesh): Teacher GT 20.47 (PA 13.78, rot 1.4 do); anh TB chi +0.9..+2.2 mm o MOI muc lam hong -> Teacher gan nhu khong dung anh de sua pose. Gauss 15/30/60/121 mm vao -> 23.0/28.8/44.3/79.8 (khu bot nhieu nho prior bo giai ma, khong nho anh); lat do sau 1 chi 33 -> 47 (te hon); phan xa toan than 279 -> 266. Teacher(pose lifter) 68.40 ~ Student(pose lifter) 68.64 -> Student khong hon Teacher dung pose lifter. Student(pose GT) 39.65 vs Teacher 20.47 -> bo giai ma Student kem ~19 mm khi pose tot. Patching: token khop sau bo ma hoa cua Teacher -4.1% (OOD), token khop sau fusion +43.1% (47.89), token anh sau fusion 0.1%. Attention Teacher/Student gan nhu trung (entropy ~0.94-0.98, tam lech ~0.15-0.20) -> KD attention vo nghia.
