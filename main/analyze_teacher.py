@@ -52,7 +52,7 @@ update_config(args.cfg)
 import __init_path  # noqa: F401
 from models.ARTS import ARTS
 from models.teacher_student import RGBJointFusion
-from core.base import load_model_weights, _PickleShim
+from utils.ckpt_tools import build_and_load as _build_and_load
 from utils.jotr_dataset import get_test_dataset
 
 torch.manual_seed(args.seed)
@@ -69,87 +69,8 @@ def hr(title=''):
         print('=' * 78)
 
 
-def inspect_ckpt(mode, ckpt_path):
-    """Doc checkpoint -> (kind, info). kind: 'teacher' | 'student' | 'khong ro'.
-    info: has_probe, hint ('teacher' | 'student' | None), hint_dim."""
-    if not os.path.isfile(ckpt_path):
-        print(f"[LOI] Khong thay checkpoint {mode}: {ckpt_path}")
-        sys.exit(1)
-    ckpt = torch.load(ckpt_path, map_location='cpu', pickle_module=_PickleShim, weights_only=False)
-    state = ckpt
-    if isinstance(ckpt, dict):
-        for k in ('model_state_dict', 'state_dict', 'model'):
-            if k in ckpt:
-                state = ckpt[k]
-                break
-    keys = list(state.keys())
-    has_hint_enc = any('hint_encoder.' in k for k in keys)
-    has_hint_pred = any('hint_pred.' in k for k in keys)
-    hint_dim = 0
-    for k in keys:
-        if k.endswith('hint_proj.weight'):
-            hint_dim = int(state[k].shape[1])
-    if has_hint_enc:
-        kind = 'teacher'          # T-hint: kien truc Student + HintEncoder
-    elif any('fusion.projector_student.' in k for k in keys):
-        kind = 'student'
-    elif any('fusion.joint_proj.' in k for k in keys):
-        kind = 'teacher'
-    else:
-        kind = 'khong ro'
-    # Kien truc v2 (PLAN_STUDENT_V2.md): nhan dien tu ten key -> dung lai dung kien truc, khong phu thuoc yml
-    pe2d_key = next((k for k in keys if k.endswith('fusion.pe2d.proj.weight')), None)
-    arch = {
-        'joint_pe2d': pe2d_key is not None,
-        'pe2d_num_freq': int(state[pe2d_key].shape[1]) // 4 if pe2d_key else 6,
-        'fusion_joint_self_attn': any('.joint_sa.' in k for k in keys),
-        'pose_head_mode': 'per_joint' if any('per_joint_head.' in k for k in keys) else 'vposer',
-        'pose_query_bone': any('bone_proj.' in k for k in keys),
-        'shape_attn_mode': 'tokens' if any('fuse_shape_tok.' in k for k in keys) else 'global',
-    }
-    info = {'has_probe': any('probe_' in k for k in keys),
-            'hint': 'teacher' if has_hint_enc else ('student' if has_hint_pred else None),
-            'hint_dim': hint_dim, 'arch': arch}
-    tag = f" (T-hint k={hint_dim})" if has_hint_enc else (f" (S-hint k={hint_dim})" if has_hint_pred else "")
-    v2 = {k: v for k, v in arch.items() if v not in (False, 'vposer', 'global') and k != 'pe2d_num_freq'}
-    if v2:
-        tag += f" (v2: {v2})"
-    print(f"  [{mode}] {ckpt_path} -> loai: {kind}{tag}" + (" (co head tham do anh)" if info['has_probe'] else ""))
-    if kind != 'khong ro' and kind != mode:
-        print(f"\n[LOI] Checkpoint {kind.upper()} dat vao vi tri {mode.upper()}: {ckpt_path}")
-        sys.exit(1)
-    return info
-
-
-def build_and_load(mode, ckpt_path, need_lift=False):
-    info = inspect_ckpt(mode, ckpt_path)
-    keys = ('name', 'teacher_lift_alpha_max', 'img_probe', 'teacher_hint', 'student_hint', 'hint_dim') \
-        + tuple(info['arch'].keys())
-    saved = {k: cfg.MODEL[k] for k in keys if k in cfg.MODEL}
-    cfg.MODEL.name = mode
-    for k, v in info['arch'].items():   # kien truc v2 lay tu checkpoint (Teacher cu va Student v2 khac nhau)
-        cfg.MODEL[k] = v
-    if mode == 'teacher':
-        cfg.MODEL.teacher_hint = info['hint'] == 'teacher'
-        cfg.MODEL.teacher_lift_alpha_max = 1.0 if (need_lift and not cfg.MODEL.teacher_hint) else 0.0
-        cfg.MODEL.img_probe = info['has_probe']
-    else:
-        cfg.MODEL.student_hint = info['hint'] == 'student'
-    if info['hint_dim'] > 0:
-        cfg.MODEL.hint_dim = info['hint_dim']
-    model = ARTS(num_joint=17, embed_dim=cfg.MODEL.hpe_dim)
-    for k in keys:   # tra cfg ve nhu cu (key khong co tu dau thi xoa)
-        if k in saved:
-            cfg.MODEL[k] = saved[k]
-        elif k in cfg.MODEL:
-            del cfg.MODEL[k]
-    model = model.to(DEVICE)
-    model = load_model_weights(model, ckpt_path)
-    model.eval()
-    for p in model.parameters():
-        p.requires_grad = False
-    return model, info
-
+def build_and_load(mode, ckpt_path):
+    return _build_and_load(mode, ckpt_path, DEVICE)
 
 
 def h36m_from_mesh(mesh, regressor):
@@ -403,14 +324,8 @@ def main():
             # ---------------- Student ----------------
             if student is not None:
                 feat_s, _ = student.get_image_features(img)
-                if getattr(student, 'use_diff', False):
-                    cam_bbox = inputs.get('cam_bbox', torch.zeros(img.shape[0], 3)).to(DEVICE).float()
-                    lifted = student.lift_diffusion(j2, jm, cam_bbox)
-                elif getattr(student, 'use_pmce', False):
-                    jr = inputs.get('joints_raw', j2).to(DEVICE).float()
-                    lifted = student.lift_pmce(jr, jm, student.get_image_features(img)[1])
-                else:
-                    lifted = student.lift_2d_to_3d(j2, joints_mask=jm)
+                cam_bbox = inputs['cam_bbox'].to(DEVICE).float()
+                lifted = student.lift_diffusion(j2, jm, cam_bbox)
                 lifted = (lifted - lifted[:, 0:1]).float()
                 e_l = in_err(lifted, gt17)
                 probe_s.tag = 'Student(pose lifter)'

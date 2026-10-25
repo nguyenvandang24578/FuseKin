@@ -2,16 +2,16 @@
 test_ckpt.py — Test MOT checkpoint, y het buoc test sau moi epoch luc train
 ==========================================================================
 
-Dung dung Teacher_Tester / Student_Tester trong core/base.py (tuy cfg.MODEL.name) -> evaluate_3dpw_subset
+Dung dung Tester trong core/base.py -> evaluate_3dpw_subset
 -> PW3D.evaluate (MPJPE 14 khop, PA-MPJPE, MPVPE) tren tap test cfg.DATASET.test_list.
 In ra dong '3dpw: MPJPE=..., PA-MPJPE=..., MPVPE=...' giong log train.
 
 Cach chay (tu thu muc goc repo, can CUDA):
     python main/test_ckpt.py --cfg ./config/train_student_v2.yml \
         --ckpt experiment/student_v2/checkpoint/best.pth.tar --test_list 3dpw [--gpu 0]
-  (yml train chi danh gia 3dpw-val moi epoch -> test cuoi dung --test_list 3dpw; T-hint in ca co / khong goi y)
+  (yml train chi danh gia 3dpw-val moi epoch -> test cuoi dung --test_list 3dpw)
 
-- --cfg: config DA DUNG de train checkpoint do (dung kien truc, MotionBERT, chuan hoa anh...).
+- --cfg: config DA DUNG de train checkpoint do (dung kien truc, DiffLifter, chuan hoa anh...).
   Teacher -> config teacher; Student -> config student.
 """
 import os, sys
@@ -78,7 +78,5 @@ if ckpt_epoch is not None:
     print(f"Epoch luu trong checkpoint: {ckpt_epoch}")
 
 tester = TESTERS[cfg.MODEL.name](args, load_dir=args.ckpt)
-if hasattr(tester, 'eval_nohint'):
-    tester.eval_nohint = True      # T-hint: test tay luon in ca CO va KHONG goi y
 with torch.no_grad():
     tester.test(epoch=ckpt_epoch or 0)

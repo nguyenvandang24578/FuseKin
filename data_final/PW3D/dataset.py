@@ -369,13 +369,7 @@ class PW3D(torch.utils.data.Dataset):
         # cv2.waitKey(1)
         """
 
-        # Luu lai 2D truoc khi doi vao khung crop - dung de so sanh voi PMCE (normalize theo anh goc, xem main/compare_pmce_lift.py)
-        raw_joint_coord_img = joint_coord_img.copy()  # (17,3) pixel ANH GOC (x, y, conf/depth)
-        # 2D cho lifter PMCE: pixel ANH GOC chuan hoa kieu PMCE (X/w*2 - [1, h/w]), KHONG tru root.
-        _ih, _iw = data['img_shape']
-        joints_raw_pmce = raw_joint_coord_img[:, :2].copy().astype(np.float32)
-        joints_raw_pmce[:, 0] = joints_raw_pmce[:, 0] / _iw * 2.0 - 1.0
-        joints_raw_pmce[:, 1] = joints_raw_pmce[:, 1] / _iw * 2.0 - float(_ih) / _iw
+        raw_joint_coord_img = joint_coord_img.copy()  # (17,3) pixel ANH GOC (x, y, conf/depth), chi de ve hinh
 
         # x,y affine transform, root-relative depth
         joint_coord_img_xy1 = np.concatenate((joint_coord_img[:, :2], np.ones_like(joint_coord_img[:, 0:1])), 1)
@@ -458,15 +452,8 @@ class PW3D(torch.utils.data.Dataset):
 
                 # SMPL pose parameter validity
                 smpl_param_valid = np.ones((self.smpl.orig_joint_num, 3), dtype=np.float32)
-                from core.config import cfg as _cfg
-                if getattr(_cfg.DATASET, 'FORCE_FULL_FIT_MASK_3DPW', False):
-                    # Flag overrides mask to all ones (do nothing to the ones-array)
-                    if not hasattr(self, '_printed_mask_warning'):
-                        print("\n[WARNING] 3DPW dataset: FORCE_FULL_FIT_MASK_3DPW=True! Overriding mask to all ones.\n")
-                        self._printed_mask_warning = True
-                else:
-                    for name in ('L_Ankle', 'R_Ankle', 'L_Toe', 'R_Toe', 'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand'):
-                        smpl_param_valid[self.joints_name.index(name)] = 0
+                for name in ('L_Ankle', 'R_Ankle', 'L_Toe', 'R_Toe', 'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand'):
+                    smpl_param_valid[self.joints_name.index(name)] = 0
                 smpl_param_valid = smpl_param_valid.reshape(-1)
 
                 is_valid_fit = True
@@ -484,7 +471,7 @@ class PW3D(torch.utils.data.Dataset):
 
             # Keep the 2D input pose 3-column (x, y, conf) to match the test
             # branch so the model receives the same input format in both phases.
-            inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc, 'joints_raw': joints_raw_pmce}
+            inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc}
             # vi tri bbox so voi camera (CLIFF) -> lifter biet goc nhin cua camera toi nguoi
             inputs['cam_bbox'] = cam_bbox_feat(bbox, cam_param, data['img_shape'], do_flip, rot)
             targets = {'orig_joint_img': orig_joint_img, 'orig_joint_cam': orig_joint_cam, 'fit_joint_cam': fit_joint_cam, 'pose_param': smpl_pose, 'shape_param': smpl_shape, 'smpl_mesh_cam': smpl_mesh_cam}
@@ -500,7 +487,7 @@ class PW3D(torch.utils.data.Dataset):
             }
             return inputs, targets, meta_info
         else:
-            inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc, 'joints_raw': joints_raw_pmce}
+            inputs = {'img': img, 'joints': joint_coord_img, 'joints_mask': joint_trunc}
             # vi tri bbox so voi camera (CLIFF) -> lifter biet goc nhin cua camera toi nguoi
             inputs['cam_bbox'] = cam_bbox_feat(bbox, cam_param, data['img_shape'], do_flip, rot)
             targets = {'smpl_mesh_cam': smpl_mesh_cam}

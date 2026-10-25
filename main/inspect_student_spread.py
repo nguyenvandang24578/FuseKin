@@ -167,6 +167,7 @@ class VisualPool:
 def load_model(args, device):
     from core.base import _PickleShim, validate_spread_gate_checkpoint
     from models.ARTS import ARTS
+    from models.teacher_student import LEGACY_KEY_PARTS
 
     ckpt = torch.load(args.ckpt, map_location='cpu', pickle_module=_PickleShim, weights_only=False)
     if not isinstance(ckpt, dict) or 'model_state_dict' not in ckpt:
@@ -183,8 +184,11 @@ def load_model(args, device):
         state = {('smpl_model.' + k[len(old_prefix):] if k.startswith(old_prefix) else k): v
                  for k, v in state.items()}
         if 'smpl_model.fusion.joint_proj.weight' not in state:
-            raise ValueError('Can checkpoint Teacher GT thuan, khong phai Student hoac T-hint')
+            raise ValueError('Can checkpoint Teacher GT, khong phai Student')
     model = ARTS(num_joint=17, embed_dim=cfg.MODEL.hpe_dim).to(device)
+    # Bo key module kien truc cu da xoa khoi code (VPoser, head pose/shape cu) roi nap strict.
+    state = {k: v for k, v in state.items()
+             if not (k.startswith('smpl_model.') and any(part in k for part in LEGACY_KEY_PARTS))}
     # Chi ho tro checkpoint khop chinh xac YAML, khong loc key sai shape/thieu backbone.
     validate_spread_gate_checkpoint(model, ckpt)
     model.load_state_dict(state, strict=True)
@@ -524,10 +528,8 @@ def inspect_teacher(args):
     from tqdm import tqdm
     global plt
 
-    if cfg.MODEL.name != 'teacher' or cfg.MODEL.get('teacher_hint', False):
-        raise ValueError('Can YAML Teacher GT thuan (name=teacher, teacher_hint=False), khong dung YAML KD Student')
-    if cfg.MODEL.get('teacher_lift_alpha_max', 0.0) != 0:
-        raise ValueError('Teacher dang cau hinh tron lifter; hay dung dung YAML Teacher GT thuan da train')
+    if cfg.MODEL.name != 'teacher':
+        raise ValueError('Can YAML Teacher GT (name=teacher), khong dung YAML KD Student')
     if not torch.cuda.is_available():
         raise RuntimeError('Chay tren server GPU co CUDA')
     if not Path(args.ckpt).is_file():
@@ -573,7 +575,7 @@ def inspect_teacher(args):
     log(f'mode=teacher | cfg={args.cfg}\nckpt={args.ckpt} | epoch={epoch} | set={args.set} | batch_size={batch_size}')
     log(f'Train={list(cfg.DATASET.train_list)} | chon best={cfg.TEST.get("select_dataset", "")}')
     log('Input: GT mesh -> H36M-17 -> tru pelvis -> met; khong lifter, khong corruption luc eval.')
-    log(f'PE2D: {"detector Halpe va mask nhu YAML train" if model.joint_pe2d else "tat theo YAML"}; khong thay bang GT 2D.')
+    log(f'PE2D: detector Halpe va mask nhu YAML train; khong thay bang GT 2D.')
     log('GT input la oracle de chan doan, khong phai ket qua trien khai. Teacher dung checkpoint rieng cua no.')
     log(f'sample_ids={args.sample_ids if args.sample_ids is not None else "toan tap"} | spread_csv={args.spread_csv or "khong co"}')
     with torch.no_grad():
@@ -651,7 +653,7 @@ def inspect_teacher(args):
                'max_gt_input_error_mm': float(max(r['teacher_input_error_mm'] for r in rows)),
                'reference_matched_n': sum(r['reference_matched'] for r in rows),
                'train_list': list(cfg.DATASET.train_list), 'select_dataset': cfg.TEST.get('select_dataset', ''),
-               'pe2d_source': 'detector' if model.joint_pe2d else 'disabled'}
+               'pe2d_source': 'detector'}
     (out_dir / 'summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding='utf-8')
     log(f'\nTeacher GT | n={len(rows)}/{len(ds)} | {"TAP CON" if summary["subset"] else "TOAN TAP"}')
     log('Mesh MPJPE 14 khop / PA-MPJPE / MPVPE, mm: ' + ' | '.join(f'{m}={v:.3f}' for m, v in summary['metrics'].items()))
@@ -866,25 +868,15 @@ def inspect_compare(args, defaults):
     configs = {name: read_compare_config(config_path, defaults) for name, (config_path, _) in paths.items()}
     for name in ('scratch', 'kd'):
         model_cfg = configs[name].MODEL
-        if (model_cfg.name != 'student' or model_cfg.pose_lifter != 'diffusion'
-                or model_cfg.difflift_steps != 1 or model_cfg.difflift_k != 1
-                or model_cfg.difflift_select or model_cfg.student_hint
-                or not model_cfg.student_3d_rootrel or model_cfg.REFINER != 'hypergcn'):
-            raise ValueError(f'{name}: can Student DiffLifter S1/K1, root-relative, hypergcn, khong selector/hint')
+        if model_cfg.name != 'student' or model_cfg.difflift_steps != 1 or model_cfg.difflift_k != 1:
+            raise ValueError(f'{name}: can Student DiffLifter S1/K1')
         if model_cfg.difflift_spread_gate and model_cfg.difflift_spread_k < 2:
             raise ValueError(f'{name}: gate can K>=2 de tinh std')
-        if configs[name].DATASET.seqlen != 1 or configs[name].DATASET.use_gt_input:
-            raise ValueError(f'{name}: can image-based seqlen=1, detector input')
-    if any(configs[name].DATASET.input_joint_set != 'human36' or configs[name].DATASET.target_joint_set != 'human36'
-           for name in configs):
-        raise ValueError('Can joint set H36M-17 cho ca ba YAML')
     if configs['scratch'].MODEL.student_use_kd or not configs['kd'].MODEL.student_use_kd:
         raise ValueError('baseline_cfg phai la scratch khong KD; cfg phai la Student KD')
     teacher_cfg = configs['teacher'].MODEL
-    if teacher_cfg.name != 'teacher' or teacher_cfg.teacher_hint or teacher_cfg.teacher_lift_alpha_max != 0:
-        raise ValueError('teacher_cfg phai la Teacher GT thuan, khong hint/tron lifter')
-    if teacher_cfg.REFINER != 'hypergcn':
-        raise ValueError('Chi ho tro Teacher GT hypergcn')
+    if teacher_cfg.name != 'teacher':
+        raise ValueError('teacher_cfg phai la Teacher GT')
     # Cung mot loader cho hai Student; tu choi neu YAML doi quy uoc dau vao.
     ignored = {'train_list', 'test_list', 'workers'}
     for key, value in configs['scratch'].DATASET.items():
@@ -893,7 +885,7 @@ def inspect_compare(args, defaults):
     for key in ('input_img_shape', 'output_hm_shape', 'focal', 'princpt', 'bbox_3d_size', 'camera_3d_size'):
         if key in defaults and any(configs[name][key] != configs['scratch'][key] for name in ('kd', 'teacher')):
             raise ValueError(f'YAML khac {key}; can cung crop/camera/evaluator')
-    for key in ('pw3d_2d_source', 'halpe26_conf_thr', 'input_joint_set', 'target_joint_set'):
+    for key in ('pw3d_2d_source', 'halpe26_conf_thr'):
         if configs['teacher'].DATASET[key] != configs['scratch'].DATASET[key]:
             raise ValueError(f'Teacher khac DATASET.{key}; can cung detector/PE2D')
     compare_std = all(configs[name].MODEL.difflift_spread_gate for name in ('scratch', 'kd'))
@@ -1109,25 +1101,22 @@ def inspect_relation_compare(args, defaults):
                 raise FileNotFoundError(path)
     configs = {name: read_compare_config(pair[0], defaults) for name, pair in paths.items()}
     teacher_cfg = configs['teacher'].MODEL
-    if teacher_cfg.name != 'teacher' or teacher_cfg.teacher_hint or teacher_cfg.teacher_lift_alpha_max != 0:
-        raise ValueError('--cfg phai la Teacher GT thuan, khong hint/tron lifter')
+    if teacher_cfg.name != 'teacher':
+        raise ValueError('--cfg phai la Teacher GT')
     student_names = [name for name in paths if name != 'teacher']
     for name, snapshot in configs.items():
-        if snapshot.DATASET.seqlen != 1 or snapshot.DATASET.input_joint_set != 'human36' or snapshot.DATASET.target_joint_set != 'human36':
-            raise ValueError(f'{name}: can seqlen1 va joint H36M17')
         for key in ('input_img_shape', 'output_hm_shape', 'focal', 'princpt', 'bbox_3d_size', 'camera_3d_size'):
             if key in defaults and snapshot[key] != configs['kd_current'][key]:
                 raise ValueError(f'{name}: khac {key}; can cung crop/camera')
-        for key in ('pw3d_2d_source', 'halpe26_conf_thr', 'use_gt_input'):
+        for key in ('pw3d_2d_source', 'halpe26_conf_thr'):
             if snapshot.DATASET[key] != configs['kd_current'].DATASET[key]:
                 raise ValueError(f'{name}: khac DATASET.{key}; can cung detector/PE2D')
         if name == 'teacher':
             continue
         mc = snapshot.MODEL
-        if (mc.name != 'student' or mc.pose_lifter != 'diffusion' or mc.difflift_steps != 1 or mc.difflift_k != 1
-                or mc.difflift_select or mc.student_hint or not mc.student_3d_rootrel
-                or not mc.student_use_kd or mc.kd_mode != 'feat' or mc.kd_lambda <= 0):
-            raise ValueError(f'{name}: can Student KD feat DiffLifter S1K1 root-relative, khong selector/hint')
+        if (mc.name != 'student' or mc.difflift_steps != 1 or mc.difflift_k != 1
+                or not mc.student_use_kd or mc.kd_lambda <= 0):
+            raise ValueError(f'{name}: can Student KD feat DiffLifter S1K1')
         if bool(mc.kd_joint_relation) != (name == 'kd_relation'):
             raise ValueError(f'{name}: co kd_joint_relation khong khop vai tro checkpoint/YAML')
     # So khac cau hinh train de tranh quy moi chenh lech cho mot loss.
@@ -1406,10 +1395,8 @@ def inspect_teacher_relation(args):
     global plt
     import matplotlib.pyplot as plt
 
-    if cfg.MODEL.name != 'teacher' or cfg.MODEL.get('teacher_hint', False):
-        raise ValueError('teacher_relation can YAML Teacher GT thuan, name=teacher va teacher_hint=False')
-    if cfg.DATASET.seqlen != 1 or cfg.MODEL.get('teacher_lift_alpha_max', 0.0) != 0:
-        raise ValueError('Can Teacher GT seqlen1, khong tron lifter')
+    if cfg.MODEL.name != 'teacher':
+        raise ValueError('teacher_relation can YAML Teacher GT, name=teacher')
     if not torch.cuda.is_available():
         raise RuntimeError('Chay tren server GPU co CUDA')
     if not Path(args.ckpt).is_file():
@@ -1629,15 +1616,10 @@ def main():
     if args.mode == 'teacher':
         inspect_teacher(args)
         return
-    if (cfg.MODEL.name != 'student' or cfg.MODEL.pose_lifter != 'diffusion'
-            or not cfg.MODEL.difflift_spread_gate):
+    if cfg.MODEL.name != 'student' or not cfg.MODEL.difflift_spread_gate:
         raise ValueError('Can YAML Student DiffLifter da bat difflift_spread_gate')
-    if cfg.MODEL.get('difflift_select', False) or cfg.MODEL.get('student_hint', False):
-        raise ValueError('Mode gate khong ho tro selector/hint')
     if cfg.MODEL.difflift_steps != 1 or cfg.MODEL.difflift_k != 1 or cfg.MODEL.difflift_spread_k < 2:
         raise ValueError('Can pose chinh S=1/K=1 va spread K>=2, giu dung thiet ke run')
-    if not cfg.MODEL.get('student_3d_rootrel', True):
-        raise ValueError('Chan doan nay can pose 3D root-relative')
     if not torch.cuda.is_available():
         raise RuntimeError('Chay script tren server GPU co CUDA')
     if not Path(args.ckpt).is_file():

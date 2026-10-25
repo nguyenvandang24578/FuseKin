@@ -670,6 +670,13 @@ Do bang main/check_root_proj_convention.py (3DPW test, 2000 mau, mesh GT):
   H36M 292 mm vs SMPL 137 mm, hong SMPL thap hon 11-14 cm -> khac dinh nghia khop.
 - Eval (dataset.evaluate) KHONG bi anh huong (tu tru cung goc 2 phia). Chi anh huong luc train (ca Teacher_Trainer va
   Student_Trainer dua mesh_loss + body_joint_proj vao AWL; cfg.LOSS.w_mesh khong tat duoc).
-Sua (mac dinh TAT): cfg.LOSS.mesh_root_h36m (pred mesh tru pelvis H36M truoc loss), cfg.LOSS.proj_h36m (chieu H36M-17 tu
-mesh tuyet doi smpl_mesh_cam_render_det, pose detach nhu cu). Code: lib/core/base.py (_mesh_for_loss, _proj_for_loss,
+Sua THANG trong code (khong dung co config): loss mesh tru pelvis H36M tu mesh tuyet doi; loss chieu 2D dung H36M-17 tu mesh tuyet doi
+smpl_mesh_cam_render_det (pose detach nhu cu). Kiem tra check_mesh_root_fix.py: lech 38.2 -> ~0 mm/dinh.
+Checkpoint train TRUOC 2026-10-25 13:30 dung loss cu (eval khong doi). Code: lib/core/base.py (_mesh_for_loss, _proj_for_loss,
 _h36m_proj_heatmap), lib/models/teacher_student.py (them output smpl_mesh_cam_render_det). Ban sao: *.bak_rootfix.
+
+## 33. Dọn source + kiểm tra sửa loss gốc mesh (2026-10-25)
+- Kiểm tra `main/check_mesh_root_fix.py` (3DPW 2000 mẫu, mesh GT làm pred hoàn hảo): trước sửa L1 19.12 mm/tọa độ, 38.23 mm/đỉnh (p95 54.6); sau sửa (trừ pelvis H36M trên mesh đã trừ gốc) 0.15 / 0.41 mm. Dư 0.4 mm do tổng hàng pelvis H36M = 0.9996 -> code cuối lấy pelvis H36M từ mesh tuyệt đối (khớp tuyệt đối, chờ người dùng chạy lại xác nhận ~0).
+- Oracle `oracle_best_hypothesis.py` đo bằng `dataset.evaluate` (người dùng chạy, Student l2last ep27 + Teacher teacher_gt_v2_jotr, K=20): L0 khớp bảng test (3DPW 75.06/47.80/91.49; OC test 76.23/46.45/91.21). Teacher giải mã: 3DPW L0 74.99 -> L2 61.44 -> L3 52.24 -> L5 47.30 -> L6 44.86; REF pose GT 21.92/14.11/34.06. Student giải mã: L5 57.19, REF 42.79. OC test: Teacher L5 48.51, REF 25.94. Kết luận: phương án tốt có sẵn trong K giả thuyết; Teacher tận dụng pose tốt, Student thì không.
+- Dọn source theo yêu cầu (chi tiết `01_PROJECT_CONTEXT.md` mục 20). Chưa chạy; cần smoke test trên server trước khi train Teacher lại.
+

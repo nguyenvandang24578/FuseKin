@@ -1,12 +1,11 @@
 """
 Teacher / Student end-to-end:
 
-    img_feats + joints -> Fusion (cross-attn 2 chieu) -> HyperGCN -> heads -> VPoser -> SMPL -> mesh
+    img_feats + joints (+ PE 2D) -> Fusion (cross-attn 2 chieu) -> HyperGCN -> head goc xoay tung khop -> SMPL -> mesh
 
 - Teacher: joints = GT 3D (sach)      -> joint_encoder='gt'
 - Student: joints = 3D joint nhieu    -> joint_encoder='noisy'
-- Khong dung RegressorSpin. Query pose / shape khoi tao tu mean_pose / mean_shape.
-- Nhanh diffusion (SMPL_HyperDiff) van con, chi chay khi refiner='diffusion'.
+- Kien truc v2 co dinh: PE 2D, self-attn khop, goc xoay tung khop, query neo xuong, shape doc token.
 - Model KHONG tinh loss. Moi thu can cho loss / KD duoc tra ve trong dict output.
 """
 import math
@@ -19,10 +18,12 @@ import torch.nn.functional as F
 from core.config import cfg
 from models.HGraph import create_layers
 from models.Core_model import CrossAttentionBlock
-from models.common import Vposer
 from utils.transforms import rot6d_to_axis_angle
 
 SMPL_MEAN_PARAMS = 'data_final/base_data/smpl_mean_params.npz'
+# Module cua kien truc cu (VPoser, head pose/shape cu, goi y) da bo: checkpoint cu con cac key nay -> bo qua khi nap.
+LEGACY_KEY_PARTS = ('vposer.', 'root_pose_head.', 'body_pose_head.', 'fuse_shape.', 'hint_proj.', 'hint_encoder.',
+                    'hint_pred.', 'diffusion.')
 
 
 # ============================================================
@@ -97,23 +98,6 @@ class PosEnc2D(nn.Module):
         ang = xy.unsqueeze(-1) * self.freqs.to(xy.dtype)              # (..., 2, L)
         feat = torch.cat([ang.sin(), ang.cos()], dim=-1)              # (..., 2, 2L)
         return self.proj(feat.flatten(-2))
-
-
-class HintEncoder(nn.Module):
-    """Goi y dac quyen cua Teacher T-hint: [GT, GT - lift] (B,J,3)x2 -> z (B,k) trong [-1, 1].
-    Chi Teacher dung (can GT). Dung luong bi gioi han boi k nho + nhieu tren z (dat o ARTS)."""
-    def __init__(self, num_joint=17, hint_dim=16, hidden=256, res_scale=10.0):
-        super().__init__()
-        self.res_scale = res_scale   # GT - lift ~ vai cm -> nhan 10 cho cung co voi GT (met)
-        self.net = nn.Sequential(
-            nn.Linear(num_joint * 6, hidden), nn.GELU(),
-            nn.Linear(hidden, hidden), nn.GELU(),
-            nn.Linear(hidden, hint_dim),
-        )
-
-    def forward(self, gt_joints, lifted_joints):
-        x = torch.cat([gt_joints, (gt_joints - lifted_joints) * self.res_scale], dim=-1)   # (B, J, 6)
-        return torch.tanh(self.net(x.flatten(1)))
 
 
 class LearnableCoefficient(nn.Module):
@@ -337,7 +321,7 @@ class RGBJointFusion(nn.Module):
         gy, gx = torch.meshgrid(ys, xs, indexing='ij')
         return torch.stack([gx, gy], dim=-1).reshape(1, h * w, 2)
 
-    def forward(self, joints, img_feats, return_features=False, hint_tok=None,
+    def forward(self, joints, img_feats, return_features=False,
                 joints_2d=None, joints_2d_mask=None, joint_spread=None):
         """joints_2d (B, J, 2) trong [-1, 1] va joints_2d_mask (B, J, 1) | (B, J): chi dung khi use_pe2d."""
         img_feats = self.img_proj(img_feats)               # (B, C, H, W)
@@ -362,11 +346,7 @@ class RGBJointFusion(nn.Module):
             if pe_joint is not None:
                 x = x + pe_joint
             joints_tok = self.norm_joint_proj(x)
-        joints_tok_in = joints_tok                          # token joint TRUOC goi y (feat_joint_in cho KD)
-        if hint_tok is not None:
-            # Goi y cong vao token joint TRUOC cross-attn: anh huong cach moi khop 'tim' trong anh,
-            # khong cho decoder dung thang goi y ma bo qua anh.
-            joints_tok = joints_tok + hint_tok
+        joints_tok_in = joints_tok                          # token joint sau encoder (feat_joint_in cho KD)
 
         img_tok = img_feats.flatten(2).transpose(1, 2)     # (B, H*W, C)
 
@@ -393,7 +373,7 @@ class RGBJointFusion(nn.Module):
         return {
             'img_out': img_out,          # (B, H*W, C)
             'joint_out': joint_out,      # (B, J, C)
-            'joint_tok': joints_tok_in,  # (B, J, C) token joint sau encoder, truoc goi y va cross-attn
+            'joint_tok': joints_tok_in,  # (B, J, C) token joint sau encoder, truoc cross-attn
             'img_tok': img_tok,          # (B, H*W, C) token anh DAU VAO fusion (sau pos_emb + LN), chua nhin thay joint
             'concat_feat': concat_feat,  # (B, 2C)
             'layers': layers,
@@ -425,36 +405,14 @@ class MLP(nn.Module):
 # Model chung cho Teacher va Student
 # ============================================================
 class FusionPose2Mesh(nn.Module):
-    def __init__(self, num_joint=17, embed_dim=512, joint_encoder='gt', refiner='hypergcn',
+    def __init__(self, num_joint=17, embed_dim=512, joint_encoder='gt',
                  vert_anchors=8, horz_anchors=8, depth=3,
-                 smpl_head_hidden_dim=256, smpl_head_depth=3, use_pose_pe=True, use_img_probe=False,
-                 hint_dim=0, hint_mode='none',
-                 joint_pe2d=False, pe2d_num_freq=6, fusion_joint_self_attn=False,
-                 pose_head_mode='vposer', pose_query_bone=False, shape_attn_mode='global',
+                 smpl_head_hidden_dim=256, smpl_head_depth=3, use_img_probe=False, pe2d_num_freq=6,
                  spread_gate=False, spread_gate_zero=False, spread_gate_hidden=64):
         super().__init__()
-        assert hint_mode in ('none', 'teacher', 'student'), f"hint_mode khong hop le: {hint_mode}"
-        assert refiner in ('hypergcn', 'diffusion'), f"refiner khong hop le: {refiner}"
-        assert pose_head_mode in ('vposer', 'per_joint'), f"pose_head_mode khong hop le: {pose_head_mode}"
-        assert shape_attn_mode in ('global', 'tokens'), f"shape_attn_mode khong hop le: {shape_attn_mode}"
-        if pose_query_bone:
-            assert pose_head_mode == 'per_joint', "pose_query_bone chi dung voi pose_head_mode: 'per_joint'"
-            assert num_joint == 17, "pose_query_bone can 17 khop H36M (bang SMPL_BONE_PAIRS_H36M)"
-        self.refiner = refiner
-        self.joint_pe2d = joint_pe2d
-        self.pose_head_mode = pose_head_mode
-        self.pose_query_bone = pose_query_bone
-        self.shape_attn_mode = shape_attn_mode
+        assert num_joint == 17, "Query neo xuong can 17 khop H36M (bang SMPL_BONE_PAIRS_H36M)"
         self.num_joint = num_joint
         self.embed_dim = embed_dim
-        self.use_pose_pe = use_pose_pe
-        self._frozen = False
-
-        # ---- VPoser (dong bang) ----
-        self.vposer = Vposer()
-        for p in self.vposer.parameters():
-            p.requires_grad = False
-        self.vposer.eval()
 
         # ---- SMPL ----
         from utils.smpl import SMPL as SMPLModel
@@ -475,14 +433,14 @@ class FusionPose2Mesh(nn.Module):
             num_joint=num_joint, embed_dim=embed_dim,
             vert_anchors=vert_anchors, horz_anchors=horz_anchors,
             depth=depth, joint_encoder=joint_encoder,
-            joint_self_attn=fusion_joint_self_attn, use_pe2d=joint_pe2d, pe2d_num_freq=pe2d_num_freq,
+            joint_self_attn=True, use_pe2d=True, pe2d_num_freq=pe2d_num_freq,
             spread_gate=spread_gate, spread_gate_zero=spread_gate_zero, spread_gate_hidden=spread_gate_hidden,
         )
         global_dim = embed_dim * 2
 
         # ---- Pose path (HyperGCN) ----
         self.pose_embed = nn.Linear(6, embed_dim)
-        self.pose_pe = nn.Embedding(24, embed_dim) if use_pose_pe else None
+        self.pose_pe = nn.Embedding(24, embed_dim)
         self.node_pe = nn.Embedding(num_joint, embed_dim)
         self.norm = nn.LayerNorm(embed_dim)
         self.spatial_hypers = create_layers(
@@ -496,49 +454,38 @@ class FusionPose2Mesh(nn.Module):
             num_heads=8, mlp_ratio=4., qkv_bias=True,
             drop=0., attn_drop=0., drop_path=0.2, has_mlp=True,
         )
-        self.root_pose_head = MLP(embed_dim, smpl_head_hidden_dim, 6, 2)
-        self.body_pose_head = MLP(embed_dim, smpl_head_hidden_dim, 32, smpl_head_depth)
 
-        # ---- Head goc xoay theo tung khop (PLAN_STUDENT_V2, a1) ----
+        # ---- Head goc xoay theo tung khop (a1) ----
         # Moi token trong 24 token pose -> delta 6D cua CHINH khop do, cong vao mean pose (goc local nhu SMPL).
-        # Thay cho: trung binh 24 token -> body_pose_head -> VPoser. Lop cuoi khoi tao 0 -> luc dau = mean pose.
-        if pose_head_mode == 'per_joint':
-            self.per_joint_head = MLP(embed_dim, smpl_head_hidden_dim, 6, 2)
-            nn.init.zeros_(self.per_joint_head.layers[-1].weight)
-            nn.init.zeros_(self.per_joint_head.layers[-1].bias)
+        # Lop cuoi khoi tao 0 -> luc dau = mean pose.
+        self.per_joint_head = MLP(embed_dim, smpl_head_hidden_dim, 6, 2)
+        nn.init.zeros_(self.per_joint_head.layers[-1].weight)
+        nn.init.zeros_(self.per_joint_head.layers[-1].bias)
         # ---- Neo query vao xuong (a2): query_j += Linear(concat(ctx[cha_j], ctx[con_j])), khoi tao 0 ----
-        if pose_query_bone:
-            self.register_buffer('bone_pairs', torch.tensor(SMPL_BONE_PAIRS_H36M, dtype=torch.long),
-                                 persistent=False)                                   # (24, 2)
-            self.bone_proj = nn.Linear(2 * embed_dim, embed_dim)
-            nn.init.zeros_(self.bone_proj.weight)
-            nn.init.zeros_(self.bone_proj.bias)
+        self.register_buffer('bone_pairs', torch.tensor(SMPL_BONE_PAIRS_H36M, dtype=torch.long),
+                             persistent=False)                                   # (24, 2)
+        self.bone_proj = nn.Linear(2 * embed_dim, embed_dim)
+        nn.init.zeros_(self.bone_proj.weight)
+        nn.init.zeros_(self.bone_proj.bias)
 
-        # ---- Shape path (giu nguyen cach cu, init tu mean_shape) ----
+        # ---- Shape path (init tu mean_shape) ----
         self.shape_embed = nn.Linear(10, embed_dim)
         self.shape_token = nn.Embedding(1, embed_dim)
-        self.fuse_shape = CrossAttentionBlock(
-            q_dim=embed_dim, k_dim=global_dim, v_dim=global_dim, kv_num=1,
+        self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
+        # Shape doc token: shape token cross-attn [ctx (17 khop), token anh] -> doc duoc do dai xuong, be ngang co the.
+        self.fuse_shape_tok = CrossAttentionBlock(
+            q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim,
+            kv_num=num_joint + vert_anchors * horz_anchors,
             num_heads=8, mlp_ratio=4., qkv_bias=True,
             drop=0., attn_drop=0., drop_path=0.2, has_mlp=True,
         )
-        self.shape_head = MLP(embed_dim, smpl_head_hidden_dim, 10, smpl_head_depth)
-        # Shape doc token (PLAN_STUDENT_V2): shape token cross-attn [ctx (17 khop), token anh] thay cho 1 key global_ft
-        # (1 key -> softmax = 1 -> tuong duong MLP, va do dai xuong bi tron mat khi lay trung binh).
-        if shape_attn_mode == 'tokens':
-            self.fuse_shape_tok = CrossAttentionBlock(
-                q_dim=embed_dim, k_dim=embed_dim, v_dim=embed_dim,
-                kv_num=num_joint + vert_anchors * horz_anchors,
-                num_heads=8, mlp_ratio=4., qkv_bias=True,
-                drop=0., attn_drop=0., drop_path=0.2, has_mlp=True,
-            )
 
         # ---- Camera ----
         self.cam_head = MLP(global_dim, smpl_head_hidden_dim, 3, 2)
 
         # ---- Head tham do anh (tuy chon): doan joint 3D CHI tu token anh dau vao fusion ----
         # Muc dich: (1) ep img_proj / pos_emb_img / norm_img_in mang thong tin tu the,
-        #           (2) do truc tiep xem dac trung anh co du tot khong (so voi MotionBERT).
+        #           (2) do truc tiep xem dac trung anh co du tot khong.
         self.use_img_probe = use_img_probe
         if use_img_probe:
             self.probe_query = nn.Embedding(num_joint, embed_dim)
@@ -546,72 +493,23 @@ class FusionPose2Mesh(nn.Module):
             self.probe_norm = nn.LayerNorm(embed_dim)
             self.probe_head = MLP(embed_dim, smpl_head_hidden_dim, 3, 2)
 
-        # ---- Goi y nen (Privileged Hint, xem PLAN_TEACHER_HINT.md) ----
-        # hint_proj: z (k) -> 1 vector nhac cho MOI khop (J x C), cong vao token joint truoc cross-attn.
-        # Khong bias + khoi tao 0: z = 0 <=> khong goi y (dong gop dung bang 0), luc dau khong xao tron model.
-        self.hint_dim = hint_dim if hint_mode != 'none' else 0
-        self.hint_proj = self.hint_encoder = self.hint_pred = None
-        if self.hint_dim > 0:
-            print("Đang chạy hint trong teacher_student.py")
-            self.hint_proj = nn.Linear(self.hint_dim, num_joint * embed_dim, bias=False)
-            nn.init.zeros_(self.hint_proj.weight)
-            if hint_mode == 'teacher':
-                # Nen [GT, GT - lift] -> z. ARTS goi encoder (them nhieu / tat goi y) roi truyen hint_z vao forward.
-                self.hint_encoder = HintEncoder(num_joint=num_joint, hint_dim=self.hint_dim)
-            else:
-                # Student tu doan z_hat tu feature toan cuc cua luot fusion KHONG goi y.
-                # Lop cuoi khoi tao 0 -> z_hat = 0 luc dau = Teacher o che do khong goi y.
-                self.hint_pred = nn.Sequential(
-                    nn.Linear(global_dim, smpl_head_hidden_dim), nn.GELU(),
-                    nn.Linear(smpl_head_hidden_dim, self.hint_dim),
-                )
-                nn.init.zeros_(self.hint_pred[-1].weight)
-                nn.init.zeros_(self.hint_pred[-1].bias)
-
-        # ---- Diffusion (tuy chon) ----
-        if refiner == 'diffusion':
-            from models.smpl_hyperdiff import SMPL_HyperDiff
-            self.diffusion = SMPL_HyperDiff()
-            # Dong bang nhanh HyperGCN de tranh loi DDP "unused parameter"
-            legacy = [self.pose_embed, self.pose_context_attn, self.norm, self.node_pe,
-                      self.spatial_hypers, self.root_pose_head, self.body_pose_head]
-            if self.pose_pe is not None:
-                legacy.append(self.pose_pe)
-            for mod in legacy:
-                for p in mod.parameters():
-                    p.requires_grad = False
-
     # --------------------------------------------------------
-    def forward(self, joints, img_feats, is_train=True,
-                gt_pose_6d=None, kp2d=None, kp_conf=None, pose_valid_mask=None,
-                return_features=False, hint_z=None, joints_2d=None, joints_2d_mask=None,
-                joint_spread=None):
+    def forward(self, joints, img_feats, is_train=True, return_features=False,
+                joints_2d=None, joints_2d_mask=None, joint_spread=None):
         """
         Args:
             joints   : (B, J, 3) root-relative, don vi met (GT cho teacher, nhieu cho student)
             img_feats: (B, 2048, H, W) feature map backbone
-            gt_pose_6d, kp2d, kp_conf, pose_valid_mask: chi dung khi refiner='diffusion'
             return_features: tra them feature trung gian cho KD
-            joints_2d, joints_2d_mask: (B, J, 2) trong [-1, 1] + mask, chi dung khi joint_pe2d
+            joints_2d, joints_2d_mask: (B, J, 2) trong [-1, 1] + mask cho PE vi tri 2D
             joint_spread: (B,J,3) met, std rieng cho gate, khong cong vao token.
         """
         B = img_feats.shape[0]
         device = img_feats.device
-        fus_kw = dict(joints_2d=joints_2d, joints_2d_mask=joints_2d_mask, joint_spread=joint_spread)
-
-        # 0. Goi y nen. Teacher: hint_z do ARTS tinh tu GT. Student (hint_pred): fusion 2 luot -
-        #    luot 1 khong goi y -> feature toan cuc -> z_hat; luot 2 dung z_hat. Luc test cung 2 luot.
-        hint_pred_z = None
-        if self.hint_pred is not None and hint_z is None:
-            fus0 = self.fusion(joints, img_feats, return_features=False, **fus_kw)
-            hint_pred_z = torch.tanh(self.hint_pred(fus0['concat_feat']))          # (B, k)
-            hint_z = hint_pred_z
-        hint_tok = None
-        if hint_z is not None and self.hint_proj is not None:
-            hint_tok = self.hint_proj(hint_z).view(B, self.num_joint, self.embed_dim)
 
         # 1. Fusion
-        fus = self.fusion(joints, img_feats, return_features=return_features, hint_tok=hint_tok, **fus_kw)
+        fus = self.fusion(joints, img_feats, return_features=return_features,
+                          joints_2d=joints_2d, joints_2d_mask=joints_2d_mask, joint_spread=joint_spread)
         joint_out = fus['joint_out']
         global_ft = fus['concat_feat']
 
@@ -623,53 +521,25 @@ class FusionPose2Mesh(nn.Module):
             probe = self.probe_head(self.probe_norm(q + att))              # (B, J, 3)
             img_probe_joints = probe - probe[:, 0:1, :]                    # root-relative nhu GT
 
-        # 2. Pose
-        diff_loss = torch.zeros(1, device=device).squeeze()
-        root_pose_6d = pose_latent = pose_feat = hyper_ctx = pred_x0 = None
+        # 2. Pose. ctx tinh TRUOC query (a2 can ctx de neo query vao xuong)
+        idx = torch.arange(self.num_joint, device=device)
+        ctx = self.norm(joint_out) + self.node_pe(idx)
+        ctx = self.spatial_hypers(ctx.unsqueeze(1)).squeeze(1)       # (B, J, dim)
 
-        if self.refiner == 'diffusion':
-            if kp2d is None:
-                raise ValueError("refiner='diffusion' can kp2d (va kp_conf).")
-            if is_train and gt_pose_6d is not None:
-                pred_x0, diff_loss = self.diffusion(
-                    gt_pose_6d, kp2d, kp_conf, is_train=True, valid_mask=pose_valid_mask,
-                )
-                diff_loss = diff_loss.mean()
-            else:
-                pred_x0 = self.diffusion(None, kp2d, kp_conf, is_train=False)
-            full_pose = rot6d_to_axis_angle(pred_x0.reshape(-1, 6)).reshape(B, -1)
-        else:
-            # ctx tinh TRUOC query (a2 can ctx de neo query vao xuong)
-            idx = torch.arange(self.num_joint, device=device)
-            ctx = self.norm(joint_out) + self.node_pe(idx)
-            ctx = self.spatial_hypers(ctx.unsqueeze(1)).squeeze(1)       # (B, J, dim)
-            hyper_ctx = ctx
+        # query: mean_pose (24, 6) -> (B, 24, dim)
+        pose_token = self.pose_embed(self.init_pose.expand(B, -1, -1)) + self.pose_pe.weight.unsqueeze(0)
+        # a2: query_j += Linear(concat(ctx[cha_j], ctx[con_j])) -> giu thu tu cha -> con (huong xuong)
+        bone = torch.cat([ctx[:, self.bone_pairs[:, 0]], ctx[:, self.bone_pairs[:, 1]]], dim=-1)  # (B, 24, 2C)
+        pose_token = pose_token + self.bone_proj(bone)
+        pose_feat = self.pose_context_attn(pose_token, ctx, ctx)     # (B, 24, dim)
 
-            # query: mean_pose (24, 6) -> (B, 24, dim)
-            pose_token = self.pose_embed(self.init_pose.expand(B, -1, -1))
-            if self.pose_pe is not None:
-                pose_token = pose_token + self.pose_pe.weight.unsqueeze(0)
-            if self.pose_query_bone:
-                # a2: query_j += Linear(concat(ctx[cha_j], ctx[con_j])) -> giu thu tu cha -> con (huong xuong)
-                bone = torch.cat([ctx[:, self.bone_pairs[:, 0]], ctx[:, self.bone_pairs[:, 1]]], dim=-1)  # (B, 24, 2C)
-                pose_token = pose_token + self.bone_proj(bone)
-
-            pose_feat = self.pose_context_attn(pose_token, ctx,ctx)     # (B, 24, dim)
-
-            if self.pose_head_mode == 'per_joint':
-                # a1: moi token -> delta 6D cua khop do, cong mean pose (local), khong VPoser
-                rot6d = self.init_pose + self.per_joint_head(pose_feat)                     # (B, 24, 6)
-                root_pose_6d = rot6d[:, 0]
-                full_pose = rot6d_to_axis_angle(rot6d.reshape(-1, 6)).reshape(B, 24, 3)
-                # 2 khop ban tay (22, 23) = 0 nhu ban VPoser
-                full_pose = torch.cat([full_pose[:, :22], torch.zeros_like(full_pose[:, 22:])], dim=1)
-                full_pose = full_pose.reshape(B, 72)
-            else:
-                root_pose_6d = self.root_pose_head(pose_feat[:, 0, :])
-                root_pose = rot6d_to_axis_angle(root_pose_6d)
-                pose_latent = self.body_pose_head(pose_feat.mean(dim=1))
-                body_pose = self.vposer(pose_latent)
-                full_pose = torch.cat([root_pose, body_pose], dim=1)
+        # a1: moi token -> delta 6D cua khop do, cong mean pose (local)
+        rot6d = self.init_pose + self.per_joint_head(pose_feat)                     # (B, 24, 6)
+        root_pose_6d = rot6d[:, 0]
+        full_pose = rot6d_to_axis_angle(rot6d.reshape(-1, 6)).reshape(B, 24, 3)
+        # 2 khop ban tay (22, 23) = 0
+        full_pose = torch.cat([full_pose[:, :22], torch.zeros_like(full_pose[:, 22:])], dim=1)
+        full_pose = full_pose.reshape(B, 72)
 
         # 3. Camera
         cam_trans = self.get_camera_trans(self.cam_head(global_ft))
@@ -677,49 +547,34 @@ class FusionPose2Mesh(nn.Module):
         # 4. Shape (init tu mean_shape)
         shape_emb = self.shape_embed(self.init_shape.expand(B, -1)).unsqueeze(1)   # (B, 1, dim)
         shape_token = self.shape_token.weight.unsqueeze(0).expand(B, 1, -1) + shape_emb
-        if self.shape_attn_mode == 'tokens':
-            # Doc token khop (sau HyperGCN neu co) + token anh -> doc duoc do dai xuong, be ngang co the
-            joint_kv = hyper_ctx if hyper_ctx is not None else joint_out
-            kv = torch.cat([joint_kv, fus['img_out']], dim=1)                       # (B, J + H*W, dim)
-            shape_out = self.fuse_shape_tok(shape_token, kv, kv)
-        else:
-            global_seq = global_ft.unsqueeze(1)
-            shape_out = self.fuse_shape(shape_token, global_seq, global_seq)
+        kv = torch.cat([ctx, fus['img_out']], dim=1)                                # (B, J + H*W, dim)
+        shape_out = self.fuse_shape_tok(shape_token, kv, kv)
         shape_param = self.shape_head(shape_out).reshape(B, -1)
 
         # 5. SMPL
         joint_proj, joint_cam, mesh_cam, mesh_cam_render = self.get_coord(
             full_pose, shape_param, cam_trans
         )
-        if is_train and getattr(cfg.LOSS, 'DETACH_POSE_FOR_PROJ', True):
-            joint_proj_det, _, mesh_cam_proj, mesh_render_det = self.get_coord(full_pose.detach(), shape_param, cam_trans)
+        if is_train:
+            # Loss chieu 2D: detach pose (giu shape, camera) -> chi shape / camera hoc tu 2D
+            _, _, _, mesh_render_det = self.get_coord(full_pose.detach(), shape_param, cam_trans)
         else:
-            joint_proj_det, mesh_cam_proj, mesh_render_det = joint_proj, mesh_cam, mesh_cam_render
+            mesh_render_det = mesh_cam_render
 
         result = {
             # --- dung cho loss voi GT ---
-            'joint_proj': joint_proj,                  # (B, K, 2) 2D, don vi output_hm_shape
-            'joint_proj_det': joint_proj_det,          # nhu tren nhung pose bi detach neu DETACH_POSE_FOR_PROJ (dung cho loss chieu 2D)
-            'joint_cam': joint_cam,                    # (B, K, 3) root-relative
-            'smpl_mesh_cam': mesh_cam,                 # (B, 6890, 3) root-relative
-            'smpl_mesh_cam_proj': mesh_cam_proj,
-            'smpl_mesh_cam_render': mesh_cam_render,   # (B, 6890, 3) tuyet doi
-            'smpl_mesh_cam_render_det': mesh_render_det,  # nhu tren, pose detach neu DETACH_POSE_FOR_PROJ (loss chieu proj_h36m)
+            'joint_proj': joint_proj,                  # (B, K, 2) 2D SMPL-30, don vi output_hm_shape
+            'joint_cam': joint_cam,                    # (B, K, 3) root-relative (pelvis SMPL)
+            'smpl_mesh_cam': mesh_cam,                 # (B, 6890, 3) tru pelvis SMPL (eval tu tru goc lai)
+            'smpl_mesh_cam_render': mesh_cam_render,   # (B, 6890, 3) tuyet doi (loss mesh tru pelvis H36M tu day)
+            'smpl_mesh_cam_render_det': mesh_render_det,  # nhu tren, pose detach luc train (loss chieu 2D H36M-17)
             'smpl_pose': full_pose,
             'smpl_shape': shape_param,
             'cam_param': cam_trans,
-            'root_pose_6d': root_pose_6d,              # (B, 6)  hoac None (diffusion)
-            'pose_latent': pose_latent,                # (B, 32) hoac None (diffusion)
+            'root_pose_6d': root_pose_6d,              # (B, 6)
         }
-        if self.refiner == 'diffusion':
-            result['diff_loss'] = diff_loss
-            result['pred_pose_6d_refined'] = pred_x0
         if self.use_img_probe:
             result['img_probe_joints'] = img_probe_joints          # (B, J, 3) chi tu anh
-        if hint_z is not None:
-            result['hint_z'] = hint_z                              # (B, k) goi y THUC SU dung o luot fusion chinh
-        if hint_pred_z is not None:
-            result['hint_pred'] = hint_pred_z                      # (B, k) goi y Student tu doan
 
         # --- dung cho KD ---
         if return_features:
@@ -727,11 +582,11 @@ class FusionPose2Mesh(nn.Module):
                 'feat_joint': joint_out,               # (B, J, dim)
                 'feat_img': fus['img_out'],            # (B, H*W, dim)
                 'feat_joint_in': fus['joint_tok'],     # (B, J, dim)
-                'feat_img_in': fus['img_tok'],         # (B, H*W, dim) token anh DAU VAO fusion (cho KD v2: chay lai fusion voi joint detach)
+                'feat_img_in': fus['img_tok'],         # (B, H*W, dim) token anh DAU VAO fusion
                 'feat_global': global_ft,              # (B, 2*dim)
                 'feat_layers': fus['layers'],          # list dict: img, joint, attn_joint_to_img, attn_img_to_joint
-                'feat_hyper': hyper_ctx,               # (B, J, dim) hoac None
-                'feat_pose': pose_feat,                # (B, 24, dim) hoac None
+                'feat_hyper': ctx,                     # (B, J, dim)
+                'feat_pose': pose_feat,                # (B, 24, dim)
             })
         return result
 
@@ -771,22 +626,6 @@ class FusionPose2Mesh(nn.Module):
         mesh_cam = mesh_cam - root_cam
         return joint_proj, joint_cam, mesh_cam, mesh_cam_render
 
-    def train(self, mode=True):
-        if self._frozen:
-            mode = False          # model da freeze thi luon o eval
-        super().train(mode)
-        self.vposer.eval()
-        return self
-
-
-def freeze_model(model):
-    """Dong bang toan bo (dung cho teacher khi KD): khong grad, luon eval du goi .train()."""
-    for p in model.parameters():
-        p.requires_grad = False
-    model._frozen = True
-    model.eval()
-    return model
-
 
 # ============================================================
 # Teacher / Student
@@ -803,11 +642,3 @@ class Student(FusionPose2Mesh):
     def __init__(self, num_joint=17, embed_dim=512, depth=3, **kwargs):
         super().__init__(num_joint=num_joint, embed_dim=embed_dim,
                          joint_encoder='noisy', depth=depth, **kwargs)
-
-
-def get_model(num_joint, embed_dim, mode='teacher', depth=3, **kwargs):
-    if mode == 'teacher':
-        return Teacher(num_joint, embed_dim, depth, **kwargs)
-    if mode == 'student':
-        return Student(num_joint, embed_dim, depth, **kwargs)
-    raise ValueError(f"mode khong hop le: {mode}")

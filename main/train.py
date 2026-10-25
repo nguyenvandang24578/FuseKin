@@ -54,11 +54,8 @@ torch.backends.cudnn.benchmark = False
 torch.backends.cudnn.deterministic = True
 
 files_to_backup = [
-    './lib/models/Multimodel.py',
     './lib/models/ARTS.py',
-    './lib/models/teacher.py',
-    './lib/models/hypergcn.py',
-    './lib/models/common.py',
+    './lib/models/teacher_student.py',
     './lib/core/base.py',
     './lib/core/config.py',
 ]
@@ -66,7 +63,7 @@ for file_path in files_to_backup:
     if os.path.exists(file_path):
         shutil.copyfile(src=file_path, dst=os.path.join(cfg.checkpoint_dir, os.path.basename(file_path)))
 
-from core.base import Trainer, Tester, Teacher_Trainer, Teacher_Tester, Student_Trainer, Student_Tester, validate_spread_gate_checkpoint
+from core.base import Teacher_Trainer, Student_Trainer, Tester, validate_spread_gate_checkpoint
 
 # Resume: lay last.pth.tar trong thu muc checkpoint cua chinh run nay (experiment/<exp_name>/checkpoint)
 resume_path = ''
@@ -76,15 +73,13 @@ if args.resume_training:
         sys.exit(f'[resume] Khong tim thay {resume_path}. Kiem tra lai --exp_name (phai trung ten thu muc run cu).')
     print(f'===> Resume tu: {resume_path}')
 
-if cfg.MODEL.name == 'ARTS':
-    trainer = Trainer(args, load_dir='./experiment/exp_04-26_09_16/checkpoint/best.pth.tar')
-    tester = Tester(args)  # if not args.debug else None
-elif cfg.MODEL.name == 'teacher':
+if cfg.MODEL.name == 'teacher':
     trainer = Teacher_Trainer(args, load_dir=resume_path)
-    tester = Teacher_Tester(args)
 elif cfg.MODEL.name == 'student':
     trainer = Student_Trainer(args, load_dir=resume_path)
-    tester = Student_Tester(args)
+else:
+    sys.exit(f"MODEL.name khong hop le: {cfg.MODEL.name} (chi 'teacher' | 'student')")
+tester = Tester(args)
 
 print("===> Start training...")
 
@@ -116,7 +111,7 @@ for epoch in range(cfg.TRAIN.begin_epoch, cfg.TRAIN.end_epoch + 1):
         ckpt['spread_gate_config'] = {'zero_std': _save_gate.zero_spread, 'hidden': _save_gate.net[0].out_features}
     if hasattr(trainer, 'awl'):
         ckpt['awl_state_dict'] = trainer.awl.state_dict()
-    if getattr(trainer, 'feat_projector', None) is not None:   # None khi khong dung KD feat (scratch / legacy)
+    if getattr(trainer, 'feat_projector', None) is not None:   # None khi khong dung KD (student_use_kd: False)
         ckpt['projector_state_dict'] = trainer.feat_projector.state_dict()
     save_checkpoint(ckpt, epoch, is_best)
 
@@ -124,7 +119,7 @@ print('Training Finished! All logs were saved in ', cfg.checkpoint_dir)
 
 # ---- Test 1 LAN sau khi train: nap best.pth.tar (chon theo val) roi danh gia tren cfg.TEST.final_test_list ----
 final_list = list(cfg.TEST.get('final_test_list', []) or [])
-if final_list and cfg.MODEL.name in ('teacher', 'student'):
+if final_list:
     best_path = os.path.join(cfg.checkpoint_dir, 'best.pth.tar')
     best_ck = torch.load(best_path, map_location='cpu', weights_only=False)
     net = trainer.model.module if hasattr(trainer.model, 'module') else trainer.model
@@ -136,8 +131,6 @@ if final_list and cfg.MODEL.name in ('teacher', 'student'):
     cfg.DATASET.test_list = final_list
     if cfg.TEST.get('select_dataset', '') not in final_list:
         cfg.TEST.select_dataset = ''          # tranh assert trong _select_errors (select dat cho val)
-    final_tester = Teacher_Tester(args) if cfg.MODEL.name == 'teacher' else Student_Tester(args)
-    if hasattr(final_tester, 'eval_nohint'):
-        final_tester.eval_nohint = True       # T-hint: test cuoi in ca CO va KHONG goi y
+    final_tester = Tester(args)
     with torch.no_grad():
         final_tester.test(epoch=0, current_model=trainer.model)

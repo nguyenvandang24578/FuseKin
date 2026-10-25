@@ -1,0 +1,74 @@
+# =====================================================================
+# finetune_difflifter_r25_cam_gtmask_d512_e40: dua tren r25_cam (giao thuc JOTR, KHONG 3DPW), DOI GOP 4 diem
+# (nguoi dung chot 2026-10-24: gop thanh 1 run, khong tach ablation):
+#   1. DATASET.halpe_gt_mask_thr = 0.1 : tren 4 bo train, khop Halpe lech GT 2D > 0.1 canh crop -> mask = 0
+#      (H36M/MuCo du 17 khop; COCO/CrowdPose chi kiem khop co GT tuong ung)
+#   2. embed_dim 256 -> 512 (depth/heads giu 8)
+#   3. epochs 15 -> 40, lr_decay 0.975 -> 0.99 (0.99^40 ~ 0.67 ~ 0.975^15, giu ti le lr cuoi/dau)
+#   4. chon best theo PA-MPJPE 3dpw-val (select_metric) thay vi MPJPE (MPJPE val tang lai som do lech
+#      huong toan than/camera trong khi PA van giam, xem log r25_cam 21/10)
+# Log moi: loss tung bo tren thanh tien do + MPJPE S=1 tren 2000 mau co dinh moi bo train cuoi moi epoch.
+# Thu muc MOI -> khong ghi de checkpoint r25_cam.
+# Chay:
+#   python main/finetune_difflifter.py --cfg config/finetune_difflifter_r25_cam_gtmask_d512_e40.yaml --gpu 0
+# Danh gia:
+#   python main/eval_difflifter_3dpw.py --cfg config/finetune_difflifter_r25_cam_gtmask_d512_e40.yaml \
+#     --ckpt experiment/finetune_difflifter_r25_cam_gtmask_d512_e40/best_epoch.bin \
+#     --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --S 1 --K 1
+# =====================================================================
+
+DATASET:
+  lift_only: True
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']
+  test_list: ['3dpw', 'Human36M', '3dpw-oc', '3dpw-pc', '3dpw-crowd']
+  pw3d_2d_source: 'halpe26'
+  h36m_2d_source: 'halpe26'
+  muco_2d_source: 'halpe26'
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: True
+  workers: 8
+  no_rot_aug: False
+  halpe_gt_mask_thr: 0.1
+
+DIFFLIFT:
+  embed_dim: 512
+  depth: 8
+  num_heads: 8
+  drop_rate: 0.1
+  drop_path_rate: 0.1
+
+  timesteps: 1000
+  sampling_timesteps: 1
+  num_proposals: 1
+  scale: 3.0
+
+  # Training
+  val_set: '3dpw-val'
+  select_metric: 'pa_mpjpe'
+  save_dir: 'experiment/finetune_difflifter_r25_cam_gtmask_d512_e40'
+  epochs: 40
+  lr: 0.0003
+  lr_decay: 0.99
+  weight_decay: 0.01
+  batch_size: 512
+  save_freq: 5
+  iters_per_epoch: 0
+  print_freq: 50
+  balance_datasets: False
+  dataset_ratio: [0.25, 0.25, 0.25, 0.25]   # Human36M, MuCo, MSCOCO, CrowdPose
+  samples_per_epoch: 512000
+  resume: ''
+  ema_decay: 0.999
+  train_eval_samples: 2000
+
+  # Danh gia them trong luc train (chi log)
+  epoch_eval_sets: ['3dpw']
+  full_eval_sets: ['Human36M', '3dpw-oc', '3dpw-pc', '3dpw-crowd']
+  full_eval_freq: 5
+
+  # Augmentation 2D giu nhu r25_cam
+  joint_drop_prob: 0.05
+  limb_drop_prob: 0.05
+  jitter_std: 0.02
+  occ_aug_prob: 0.15
+  occ_shift_std: 0.15

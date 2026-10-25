@@ -1,0 +1,83 @@
+# DOI CHUNG loss KD tren RIENG 3dpw-train, giu gate_zero va khoi tao Teacher.
+# Sao chep train_student_kd_e1_v2_diff_spread_gate_zero.yml; CHI DOI MODEL.kd_lambda tu 1 thanh 0.
+# student_use_kd=True de giu Teacher init, hard_w=1, privileged va duong forward nhu run KD.
+# Gate van hoc tu joint/anh, std dau vao=0; van sinh S5/K20 de giu tinh toan/RNG.
+# Giu 30 epoch, LR [5,10,15,22,27], Teacher teacher_gt_v2, lifter r25_cam S1/K1.
+# So voi gate_zero 76.11/93.84 nguoi dung bao khi cung YAML/checkpoint/seed 123.
+# Chon best tren 3DPW test: chi dung ket luan phat trien trong cau hinh nay.
+# Chay: python main/train.py --cfg config/train_student_init_v2_diff_gate_zero_3dpw.yml --exp_name student_init_v2_diff_gate_zero_3dpw_s123 --seed 123 --gpu 0
+DATASET:
+  train_list: ['3dpw-train']
+  test_list: ['3dpw']
+  input_joint_set: 'human36'
+  target_joint_set: 'human36'
+  workers: 8
+  use_gt_input: False
+  seqlen: 1
+  stride: 1
+  pw3d_2d_source: 'halpe26'
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: True
+
+MODEL:
+  name: 'student'
+  resnet_type: 50
+  freeze_backbone: True
+  hpe_dim: 512
+  hpe_dep: 5
+  pose_lifter: 'diffusion'
+  difflift_checkpoint: './experiment/finetune_difflifter_r25_cam/best_epoch.bin'
+  difflift_steps: 1
+  difflift_k: 1
+  difflift_spread: True
+  difflift_spread_steps: 5
+  difflift_spread_k: 20
+  # Thay cong token bang gate rieng tung khop o moi block fusion.
+  difflift_spread_gate: True
+  difflift_spread_gate_zero: True
+  difflift_spread_gate_hidden: 64
+  backbone_pretrained: 'spin'
+  TEACHER: './experiment/teacher_gt_v2/checkpoint/best.pth.tar'
+  student_use_kd: True
+  init_student_from_teacher: True
+
+  # Kien truc v2 giong E1 va Teacher GT v2.
+  joint_pe2d: True
+  pe2d_num_freq: 6
+  fusion_joint_self_attn: True
+  pose_head_mode: 'per_joint'
+  pose_query_bone: True
+  shape_attn_mode: 'tokens'
+
+  # KD feature E1 hien co; chua them trong so uu tien ca kho.
+  kd_mode: 'feat'
+  kd_feat_dist: 'mse'
+  kd_hard_w: 1.0
+  kd_lambda: 0.0
+  kd_w_proj: 0.0
+  kd_w_joint: 1.0
+  kd_w_global: 1.0
+  kd_noise_weight: False
+  kd_nce_w: 0.0
+  s2d_noise_prob: 0.0
+
+TRAIN:
+  print_freq: 20
+  batch_size: 32
+  shuffle: True
+  begin_epoch: 1
+  end_epoch: 30
+  scheduler: 'step'
+  lr: 0.0001
+  lr_step: [5, 10, 15,22, 27]
+  lr_factor: 0.5
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 32
+  shuffle: False
+  select_dataset: '3dpw'
+  final_test_list: ['3dpw']

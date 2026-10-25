@@ -80,7 +80,7 @@ def main():
             print(f'[{label}] LOI: {type(e).__name__}: {e}')
 
     print('\n' + '=' * 78)
-    print(f'{args.ckpt} | epoch {ck.get("epoch")} | lifter = {cfg.MODEL.get("pose_lifter", "motionbert")}')
+    print(f'{args.ckpt} | epoch {ck.get("epoch")} | {cfg.MODEL.name}')
     print(f'{"tap":<28} | {"n":>6} | {"MPJPE":>7} | {"PA-MPJPE":>8} | {"MPVPE":>7}   (mm, 14 khop)')
     print('-' * 78)
     for label, n, m in results:

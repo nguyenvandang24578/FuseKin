@@ -1,9 +1,10 @@
 """
-check_mesh_root_fix.py -- Kiem tra sua loi goc mesh trong loss (cfg.LOSS.mesh_root_h36m), dung mesh GT lam "pred hoan hao".
+check_mesh_root_fix.py -- Kiem tra sua loi goc mesh trong loss (code cu: pred tru pelvis SMPL; code moi: _mesh_for_loss), dung mesh GT lam "pred hoan hao".
   target (GT trong loss)  = mesh GT - pelvis H36M          (nhu fusekin_sample.py / PW3D train)
-  1) TRUOC sua: pred = mesh GT - pelvis SMPL (nhu get_coord) -> _mesh_for_loss voi mesh_root_h36m=False -> so voi target
-  2) SAU  sua: cung pred do  -> _mesh_for_loss voi mesh_root_h36m=True  (= mesh GT - pelvis H36M) -> so voi target
-Dung DUNG ham _mesh_for_loss trong lib/core/base.py. Ky vong: (1) ~19 mm L1/toa do, ~38 mm/dinh; (2) ~0.
+  1) TRUOC sua: pred = mesh GT - pelvis SMPL (nhu get_coord, dua thang vao loss) -> so voi target
+  2) SAU  sua: cung pred do  -> _mesh_for_loss (code hien tai, = mesh GT - pelvis H36M) -> so voi target
+Dung DUNG ham _mesh_for_loss trong lib/core/base.py (truyen mesh tuyet doi nhu smpl_mesh_cam_render cua model).
+Ky vong: (1) ~19 mm L1/toa do, ~38 mm/dinh; (2) ~0 (chi sai so float).
 Chay: python main/check_mesh_root_fix.py --cfg config/train_student_kd_e1_v2_diff_jotr_l2last.yml --set 3dpw --max_samples 2000
 """
 import os, sys
@@ -40,12 +41,10 @@ with torch.no_grad():
         target = mesh - torch.matmul(Rh[None, 0:1], mesh)                             # GT - pelvis H36M
         pred = mesh - torch.matmul(Rs[None, 0:1], mesh)                               # GT - pelvis SMPL (nhu model)
         for flag in (False, True):
-            cfg.LOSS.mesh_root_h36m = flag
-            p = _mesh_for_loss(Rh, pred)
+            p = _mesh_for_loss(Rh, pred, mesh) if flag else pred                     # True: code hien tai (mesh tuyet doi)
             d = p - target
             res[flag]['l1'].append(d.abs().mean((1, 2)))                              # nhu coordLoss (L1 TB)
             res[flag]['v'].append(torch.norm(d, dim=-1).mean(-1))                     # TB khoang cach dinh
-cfg.LOSS.mesh_root_h36m = False
 print(f'[{args.set}] n={sum(x.shape[0] for x in res[False]["l1"])} | target = mesh GT - pelvis H36M | pred = mesh GT (hoan hao)')
 for flag, lab in ((False, '1) TRUOC sua: pred - pelvis SMPL'), (True, '2) SAU sua : pred - pelvis H36M')):
     l1 = torch.cat(res[flag]['l1']) * 1000; v = torch.cat(res[flag]['v']) * 1000

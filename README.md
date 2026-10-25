@@ -21,7 +21,7 @@ Mỗi nội dung có một nơi chính để cập nhật. README của các rep
 3. ResNet-50 pretrained SPIN cung cấp đặc trưng ảnh; backbone và lifter được đóng băng khi train Student.
 4. Student v2 kết hợp token ảnh và token khớp, dự đoán pose/shape/camera rồi dựng mesh SMPL.
 
-Teacher/KD, MotionBERT và PMCE vẫn có trong source để đối chiếu. Chúng không phải hướng thí nghiệm chính của đợt hiện tại.
+Teacher GT (ảnh + GT 3D) dùng làm KD / bộ giải mã. MotionBERT, PMCE, T-hint, kiến trúc VPoser cũ và code ARTS gốc đã gỡ khỏi source ngày 2026-10-25 (bản cũ nằm trong `_to_delete/`, lịch sử ở git).
 
 ## Trạng thái hiện tại
 
@@ -38,7 +38,6 @@ Teacher/KD, MotionBERT và PMCE vẫn có trong source để đối chiếu. Ch�
 | `lib/models/diff_lifter.py` | Diffusion 2D→3D và denoiser |
 | `lib/models/ARTS.py` | Wrapper backbone/lifter/Teacher/Student |
 | `lib/models/teacher_student.py` | Fusion và các head SMPL |
-| `lib/models/hyp_selector.py` | Chọn/gộp giả thuyết theo từng khớp bằng ảnh |
 | `lib/core/config.py`, `lib/core/base.py` | Config, trainer và evaluator |
 | `lib/utils/jotr_dataset.py`, `lib/utils/lift_pseudo3d.py` | Adapter H36M-17 và pseudo-GT cho lifter |
 | `data_final/` | Dataset loader và dữ liệu theo đường dẫn cấu hình |
@@ -48,34 +47,29 @@ Teacher/KD, MotionBERT và PMCE vẫn có trong source để đối chiếu. Ch�
 
 Chạy từ thư mục gốc repo, trong môi trường đã chuẩn bị dữ liệu, SMPL và checkpoint. Không đổi tên `data_final` thành `data` theo README ARTS cũ. Kiểm tra đường dẫn thực trong YAML/loader; dữ liệu lifter MSCOCO/CrowdPose cần cả Halpe và NeuralAnnot.
 
-Train **lifter GCN + attention mới**, khởi tạo từ đầu:
+Train lifter (giao thức JOTR, không 3DPW):
 
 ```bash
-python main/finetune_difflifter.py --cfg config/finetune_difflifter_r25_cam_gcn_attn.yaml --gpu 0
+python main/finetune_difflifter.py --cfg config/finetune_difflifter_r25_cam_gtmask_d512_e40.yaml --gpu 0
 ```
 
-Đánh giá lifter tốt nhất:
+Train Teacher GT (giao thức JOTR) rồi Student KD:
 
 ```bash
-python main/finetune_difflifter.py --cfg config/finetune_difflifter_r25_cam_gcn_attn.yaml --gpu 0 --eval_only --ckpt experiment/finetune_difflifter_r25_cam_gcn_attn/best_epoch.bin
+python main/train.py --cfg config/train_teacher_k16_v2_jotr.yml --exp_name teacher_gt_v2_jotr_rootfix --gpu 0
+python main/train.py --cfg config/train_student_kd_e1_v2_diff_jotr_l2last.yml --exp_name student_kd_l2last_rootfix --gpu 0
 ```
 
-Phân tích lỗi và trực quan hóa lifter:
+Đánh giá mesh một checkpoint (3DPW, OC/PC chỉ seq test và toàn bộ):
 
 ```bash
-python main/inspect_difflifter.py --cfg config/finetune_difflifter_r25_cam_gcn_attn.yaml --gpu 0 --ckpt experiment/finetune_difflifter_r25_cam_gcn_attn/best_epoch.bin
+python main/test_student_3dpw_sets.py --cfg config/train_teacher_k16_v2_jotr.yml --ckpt experiment/teacher_gt_v2_jotr_rootfix/checkpoint/best.pth.tar --gpu 0
 ```
 
-Ví dụ lệnh đã dùng cho bản Student augmentation (người dùng hiện báo không hiệu quả):
+Trần oracle chọn giả thuyết DiffLifter (giải mã bằng Student / Teacher, đo bằng `dataset.evaluate`):
 
 ```bash
-python main/train.py --cfg config/train_student_v2_diff_aug.yml --exp_name student_v2_diff_aug --gpu 0
-```
-
-Đánh giá mesh của run có tên như lệnh trên:
-
-```bash
-python main/test_ckpt.py --cfg config/train_student_v2_diff_aug.yml --ckpt experiment/student_v2_diff_aug/checkpoint/best.pth.tar --test_list 3dpw --gpu 0
+python main/oracle_best_hypothesis.py --cfg config/train_student_kd_e1_v2_diff_jotr_l2last.yml --student_ckpt <student best.pth.tar> --teacher_ckpt <teacher best.pth.tar> --K 20 --out_dir experiment/_eval/oracle_x
 ```
 
 `--exp_name` phải là tên mới khi tạo run mới; dùng đúng tên và `--resume_training` khi tiếp tục run đã có. Đường dẫn checkpoint thực phụ thuộc tên run. Không dùng số MPJPE 17 khớp của lifter để so trực tiếp với số 14 khớp của mesh.

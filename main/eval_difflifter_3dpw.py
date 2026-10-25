@@ -84,16 +84,12 @@ def target_label(name, is_train):
 
 
 def validate_student_input(train_names, ckpt):
-    if cfg.MODEL.name != 'student' or cfg.MODEL.pose_lifter != 'diffusion':
-        raise ValueError('--student_input can YAML Student voi MODEL.pose_lifter=diffusion')
-    if cfg.DATASET.lift_only or cfg.DATASET.seqlen != 1:
-        raise ValueError('Do dau vao Student can lift_only=False va seqlen=1 nhu luc train mesh')
-    if cfg.DATASET.input_joint_set != 'human36' or cfg.DATASET.target_joint_set != 'human36':
-        raise ValueError('Can quy uoc H36M-17 cho Student')
+    if cfg.MODEL.name != 'student':
+        raise ValueError('--student_input can YAML Student (DiffLifter)')
+    if cfg.DATASET.lift_only:
+        raise ValueError('Do dau vao Student can lift_only=False nhu luc train mesh')
     if any(name in TRAIN_DATASETS for name in train_names) and not cfg.DATASET.fusekin_unified:
         raise ValueError('Do 4 bo train Student can fusekin_unified=True; dung YAML *_jotr.yml')
-    if cfg.MODEL.difflift_select or cfg.MODEL.difflift_aug_prob > 0 or cfg.MODEL.s2d_noise_prob > 0:
-        raise ValueError('Che do nay do pose chinh, chua ho tro selector/pose augmentation/s2d noise')
     saved_conf = ckpt['difflift_cfg'].get('soft_conf')
     if saved_conf is not None and bool(saved_conf) != bool(cfg.DATASET.lift_soft_conf):
         raise ValueError('lift_soft_conf trong YAML Student khac checkpoint DiffLifter')

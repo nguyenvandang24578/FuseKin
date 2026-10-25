@@ -234,7 +234,21 @@ lib/utils/attention_diagnostics.py: extract_joint_image_attention lay softmax Qj
 
 Output compare_attention_<split>_<timestamp> canh checkpoint Student: attention_overview.png, vis_attention/, CSV mau/khop/nhom, attention.npz, summary/YAML/log. Khong auto gan nhan hieu qua hay train theo threshold TV/JS. Khac mean maps chua chung minh Teacher tot hon; mean-head giong nhau khong dong nghia moi head giong nhau. Chua doi loss/model/checkpoint/YAML train, chua chay/import/kiem cu phap Python local theo AGENTS. Lenh README, trang thai experiment.md muc30.
 
-## 16. Key moi 2026-10-25 (mac dinh tat)
-- LOSS.mesh_root_h36m: loss mesh tru pelvis H36M cho pred (GT da tru pelvis H36M). Truoc: lech ~38 mm.
-- LOSS.proj_h36m: loss chieu 2D dung H36M-17 tu mesh (giong GT 2D) thay vi SMPL-30 theo ten (lech TB 68 mm).
+## 16. Sua loss 2026-10-25 (sua thang, khong dung co config)
+- Loss mesh: pred tru pelvis H36M (tu mesh tuyet doi), cung goc GT. Truoc: tru pelvis SMPL, lech ~38 mm.
+- Loss chieu 2D: H36M-17 tu mesh (giong GT 2D) thay vi SMPL-30 theo ten (lech TB 68 mm).
+- Checkpoint train truoc ngay nay dung loss cu.
 - Model tra them 'smpl_mesh_cam_render_det' (mesh tuyet doi, pose detach neu DETACH_POSE_FOR_PROJ).
+
+## 20. Dọn source 2026-10-25 (đã code, chưa chạy trên server)
+
+Người dùng yêu cầu bỏ cờ thừa và code chết; file bỏ được chuyển vào `_to_delete/` (bản gốc các file sửa ở `_to_delete/_orig/`), không xóa thật.
+- **YAML giữ lại (10):** DiffLifter `r25_cam`, `r25_cam_gtmask_d512_e40`, `eval_difflifter_r25_cam_norot`; Teacher `train_teacher_k16_v2(_jotr)`; Student `kd_e1_v2_diff_jotr_l2last`; dòng 3DPW: `init_v2_diff_gate_zero_3dpw`, `kd_relation_v2_diff_gate_zero_3dpw`, `kd_e1_v2_diff_spread_gate(_zero)`. Các key đã xóa cũng được bỏ khỏi các YAML này.
+- **Kiến trúc chốt cứng (bỏ cờ):** PE 2D, self-attn khớp, head góc xoay từng khớp, query neo xương, shape đọc token. Bỏ VPoser/root_pose_head/body_pose_head/fuse_shape cũ; checkpoint cũ còn các key này -> `load_model_weights` bỏ qua (`LEGACY_KEY_PARTS`).
+- **Student chỉ còn DiffLifter.** Bỏ MotionBERT, PMCE, HypSelector (`difflift_select`), `difflift_aug`, `difflift_spread` (gate tự sinh std khi `difflift_spread_gate`).
+- **Teacher:** bỏ T-hint, trộn lifter (`teacher_lift_*`), che khớp kiểu noise (chỉ còn zero). Giữ `img_probe`, `teacher_joint_corrupt_prob/warmup`.
+- **Student_Trainer:** chỉ KD feature (proj/joint/global, `kd_feat_dist`, `kd_joint_relation`) + privileged; bỏ KD legacy/adaptive, hint, `kd_sel`, `kd_noise_*`, InfoNCE, residual KD, nhiễu 2D `s2d_*`, `student_3d_rootrel`. `student_use_kd=False`: loss = `kd_hard_w*hard + privileged` (trước là 0.5*hard).
+- **Gỡ code ARTS gốc:** Multimodel, Trainer/Tester/LiftTrainer cũ, SMPL_HyperDiff, spin, CFE, MPII/MPII3D, data_final/lifter, các section MOTIONBERT/PMCE/DIFF/LOSS/AUG/HALPE_SIMCC. Loss mesh và loss chiếu 2D luôn dùng H36M-17 từ mesh (mục 16).
+- `Teacher_Tester = Student_Tester = Tester`. Script đánh giá dùng chung `lib/utils/ckpt_tools.build_and_load`.
+- Thay đổi khởi tạo (bỏ module) làm đổi chuỗi RNG -> run mới không trùng bit với run cũ cùng seed; resume run cũ sẽ không nạp được optimizer (dùng optimizer mới).
+
