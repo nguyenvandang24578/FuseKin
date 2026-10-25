@@ -707,3 +707,8 @@ du Student giai ma thi gan bang).
 ## 36. Selector (2026-10-25, da code, chua chay)
 Muc tieu (lifter l2last, Teacher giai ma, 3DPW MPJPE14): L0 ~75 -> Oracle cung tap phuong an (L5) ~47-51. Bao % khoang cach
 lay lai = (L0 - Selector) / (L0 - Oracle). Chi tiet thiet ke 01_PROJECT_CONTEXT muc 21. Ket qua: chua co.
+Ket qua v1 (nguoi dung chay 3 epoch, 6.9 phut/epoch): train nhom L0/Selector/Oracle 77/92/45 mm, top1 5.5 -> 8%;
+3dpw-val pose MPJPE17 L0 65.90 / Selector 73.98 -> 71.42 / Oracle 42.19 (lay lai -34% -> -23%). Selector chon TE HON
+pose mac dinh: giu L0 la phuong an manh (gia thuyet S5 don le sai nhieu hon), mang khong biet phuong an nao la L0, CE mem
+khong phat chon sai. Dung v1. v2 (config/train_selector_l2last_v2.yml): prior giu L0 (embedding + bias logit khoi tao 5),
+loss sai so ky vong (cm, w 1) + CE mem w 0.1, log ti le giu L0. Chua chay.

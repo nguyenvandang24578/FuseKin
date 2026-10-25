@@ -286,6 +286,10 @@ cfg.SELECTOR.enc_layers = 2
 cfg.SELECTOR.dec_layers = 2
 cfg.SELECTOR.dropout = 0.1
 cfg.SELECTOR.tau = 0.02               # met: muc tieu mem softmax(-loi_nhom / tau)
+cfg.SELECTOR.ce_w = 1.0               # trong so CE mem
+cfg.SELECTOR.exp_err_w = 0.0          # trong so sai so ky vong sum(softmax * loi) (cm); 0 = tat (ban v1)
+# Prior pose mac dinh: danh dau phuong an 0 (S1/K1, khong lat) + bias logit khoi tao = gia tri nay. 0 = tat (ban v1).
+cfg.SELECTOR.base_prior_init = 0.0
 cfg.SELECTOR.lr = 1e-4
 cfg.SELECTOR.weight_decay = 1e-4
 cfg.SELECTOR.epochs = 20

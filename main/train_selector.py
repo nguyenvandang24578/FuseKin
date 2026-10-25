@@ -39,7 +39,7 @@ update_config(args.cfg)
 
 import __init_path  # noqa: F401
 from core.base import get_dataloader
-from models.selector import SelectorNet, build_options, group_errors, assemble, soft_ce, GROUP_NAMES
+from models.selector import SelectorNet, build_options, group_errors, soft_ce, expected_err, GROUP_NAMES
 from utils.jotr_dataset import get_test_dataset
 from utils.selector_tools import build_frozen_parts, make_candidates, gt_and_valid, evaluate, format_eval
 
@@ -61,7 +61,7 @@ def main():
     log(f'cfg={args.cfg} | SELECTOR={json.dumps(dict(S), default=str)}')
     backbone, lifter = build_frozen_parts(DEVICE)
     model = SelectorNet(dim=S.dim, heads=S.heads, enc_layers=S.enc_layers, dec_layers=S.dec_layers,
-                        use_flip=S.use_flip, dropout=S.dropout).to(DEVICE)
+                        use_flip=S.use_flip, dropout=S.dropout, base_prior_init=S.base_prior_init).to(DEVICE)
     log(f'Selector: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M tham so')
     opt = torch.optim.AdamW(model.parameters(), lr=S.lr, weight_decay=S.weight_decay)
     sched = torch.optim.lr_scheduler.MultiStepLR(opt, milestones=list(S.lr_step), gamma=S.lr_factor)
@@ -92,7 +92,7 @@ def main():
     for epoch in range(begin, S.epochs + 1):
         model.train()
         run = {'loss': 0.0, 'n': 0}
-        g_hit, g_n, g_sel, g_base, g_ora = (np.zeros(5) for _ in range(5))
+        g_hit, g_n, g_sel, g_base, g_ora, g_keep = (np.zeros(5) for _ in range(6))
         pbar = tqdm(train_loader, desc=f'Epoch {epoch}')
         for i, (inputs, targets, meta) in enumerate(pbar):
             img = inputs['img'].to(DEVICE).float()
@@ -106,12 +106,14 @@ def main():
                 groups = build_options(cands, S.use_flip)
                 errs = group_errors(groups, gt, valid)
             logits = model(feat, j2, jm, groups)
-            loss = sum(soft_ce(lg, e, v, S.tau) for lg, (e, v) in zip(logits, errs)) / len(logits)
+            loss_ce = sum(soft_ce(lg, e, v, S.tau) for lg, (e, v) in zip(logits, errs)) / len(logits)
+            loss_ee = sum(expected_err(lg, e, v) for lg, (e, v) in zip(logits, errs)) / len(logits)
+            loss = S.ce_w * loss_ce + S.exp_err_w * loss_ee
             opt.zero_grad()
             loss.backward()
             opt.step()
 
-            run['loss'] += float(loss) * img.shape[0]
+            run['loss'] += loss.item() * img.shape[0]
             run['n'] += img.shape[0]
             with torch.no_grad():
                 for g, (lg, (e, v)) in enumerate(zip(logits, errs)):
@@ -123,16 +125,18 @@ def main():
                     g_sel[g] += float((e[ar, cs] * vf).sum()) * 1000
                     g_base[g] += float((e[:, 0] * vf).sum()) * 1000
                     g_ora[g] += float((e[ar, co] * vf).sum()) * 1000
+                    g_keep[g] += float(((cs == 0).float() * vf).sum())
             if i % cfg.TRAIN.print_freq == 0:
                 tot = g_n.sum().clip(1)
                 pbar.set_postfix_str(f'loss {run["loss"] / run["n"]:.3f} | nhom L0/sel/oracle '
                                      f'{g_base.sum() / tot:.1f}/{g_sel.sum() / tot:.1f}/{g_ora.sum() / tot:.1f} mm '
-                                     f'| top1 {100 * g_hit.sum() / tot:.1f}%')
+                                     f'| top1 {100 * g_hit.sum() / tot:.1f}% | giu L0 {100 * g_keep.sum() / tot:.0f}%')
         sched.step()
         log(f'Epoch {epoch} | lr {opt.param_groups[0]["lr"]:.2e} | loss {run["loss"] / max(run["n"], 1):.4f}')
-        log('  train tung nhom (mm, L0 / Selector / Oracle, top1): ' + ' | '.join(
+        log('  train tung nhom (mm, L0 / Selector / Oracle, top1, giu L0): ' + ' | '.join(
             f'{GROUP_NAMES[g]} {g_base[g] / max(g_n[g], 1):.0f}/{g_sel[g] / max(g_n[g], 1):.0f}/'
-            f'{g_ora[g] / max(g_n[g], 1):.0f} ({100 * g_hit[g] / max(g_n[g], 1):.0f}%)' for g in range(5)))
+            f'{g_ora[g] / max(g_n[g], 1):.0f} ({100 * g_hit[g] / max(g_n[g], 1):.0f}%, '
+            f'{100 * g_keep[g] / max(g_n[g], 1):.0f}%)' for g in range(5)))
 
         ck = {'epoch': epoch, 'selector_state': model.state_dict(), 'optim_state': opt.state_dict(),
               'sched_state': sched.state_dict(), 'selector_cfg': dict(S), 'best': best,

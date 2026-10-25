@@ -8,7 +8,11 @@ Nhom: 4 chi (goc, giua, ngon) + than-dau [Torso, Neck, Nose, Head_top]; Pelvis l
 Mang: token anh (SPIN 2048x8x8) + token khop (2D Halpe + dac trung anh lay mau tai khop) -> encoder;
 token phuong an (toa do 3D cua nhom + lech so voi trung binh cac ung vien + nhom + trang thai lat) ->
 decoder (self-attn giua phuong an + cross-attn toi ngu canh) -> diem. Chon argmax tung nhom, ghep pose.
-Loss: cross-entropy mem voi muc tieu softmax(-loi_nhom / tau) (loi so voi GT 3D, met).
+Loss: cross-entropy mem voi muc tieu softmax(-loi_nhom / tau) (loi so voi GT 3D, met)
+      + (tuy chon) sai so ky vong sum(softmax(logit) * loi) (cm) -> phat truc tiep viec chon phuong an te.
+Prior pose mac dinh (tuy chon, base_prior_init > 0): phuong an 0 cua moi nhom (pose S1/K1, khong lat) duoc danh dau
+bang embedding rieng + cong bias hoc duoc khoi tao = base_prior_init vao logit -> luc dau Selector luon giu pose mac
+dinh (= L0), chi doi khi hoc duoc bang chung tu anh.
 """
 import torch
 import torch.nn as nn
@@ -74,9 +78,14 @@ def assemble(groups, choice, like):
 
 class SelectorNet(nn.Module):
     def __init__(self, dim=256, heads=8, enc_layers=2, dec_layers=2, img_dim=2048, num_joint=17, use_flip=True,
-                 dropout=0.1):
+                 dropout=0.1, base_prior_init=0.0):
         super().__init__()
         self.use_flip = use_flip
+        # Prior pose mac dinh: embedding danh dau phuong an 0 + bias logit (chi tao khi base_prior_init > 0)
+        self.base_prior = base_prior_init > 0
+        if self.base_prior:
+            self.base_emb = nn.Parameter(torch.zeros(1, 1, dim))
+            self.base_bias = nn.Parameter(torch.full((5,), float(base_prior_init)))   # 1 bias / nhom
         self.img_proj = nn.Conv2d(img_dim, dim, 1)
         self.img_pos = nn.Parameter(torch.zeros(1, 64, dim))
         self.joint_in = nn.Linear(3, dim)                         # (x, y, conf)
@@ -117,6 +126,8 @@ class SelectorNet(nn.Module):
             if g < 4 and self.use_flip:
                 state = torch.arange(O, device=coords.device) % 4
                 t = t + self.flip_emb(state)[None]
+            if self.base_prior:
+                t = torch.cat([t[:, :1] + self.base_emb, t[:, 1:]], 1)    # phuong an 0 = pose mac dinh
             toks.append(t)
         return toks
 
@@ -126,8 +137,17 @@ class SelectorNet(nn.Module):
         toks = self.option_tokens(groups)
         sizes = [t.shape[1] for t in toks]
         out = self.decoder(torch.cat(toks, 1), ctx)
-        logits = self.head(out)[..., 0]
-        return list(torch.split(logits, sizes, dim=1))
+        logits = list(torch.split(self.head(out)[..., 0], sizes, dim=1))
+        if self.base_prior:
+            logits = [torch.cat([lg[:, :1] + self.base_bias[g], lg[:, 1:]], 1) for g, lg in enumerate(logits)]
+        return logits
+
+
+def expected_err(logits, err, valid):
+    """Sai so ky vong sum(softmax(logit) * loi) (cm), trung binh tren mau hop le."""
+    e = (torch.softmax(logits, dim=-1) * err).sum(-1) * 100.0
+    v = valid.float()
+    return (e * v).sum() / v.sum().clamp_min(1.0)
 
 
 def soft_ce(logits, err, valid, tau):

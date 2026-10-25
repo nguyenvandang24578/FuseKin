@@ -4,7 +4,7 @@
 # Chi Selector duoc train; backbone SPIN + DiffLifter dong bang; khong can Teacher luc train.
 # Chay:     python main/train_selector.py --cfg config/train_selector_l2last.yml --exp_name selector_l2last --gpu 0
 # Danh gia: python main/eval_selector.py --cfg config/train_selector_l2last.yml --ckpt experiment/selector_l2last/checkpoint/last.pth.tar \
-#           --teacher_ckpt experiment/teacher_gt_v2_jotr_rootfix/checkpoint/best.pth.tar --gpu 0
+#           --gpu 0   (Teacher lay tu MODEL.TEACHER, ghi de bang --teacher_ckpt)
 DATASET:
   train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']   # giao thuc JOTR: KHONG 3DPW
   test_list: ['3dpw']
@@ -22,6 +22,7 @@ MODEL:
   hpe_dim: 512             # can de dung Teacher luc danh gia
   backbone_pretrained: 'spin'
   difflift_checkpoint: './experiment/finetune_difflifter_r25_cam_gtmask_d512_e40/latest_epoch.bin'   # kien truc lifter
+  TEACHER: './experiment/teacher_gt_v2_jotr_rootfix/checkpoint/best.pth.tar'   # chi dung luc danh gia (eval_selector.py)
 
 SELECTOR:
   lifter_from_ckpt: './experiment/student_kd_e1_v2_diff_jotr_l2last/checkpoint/best.pth.tar'   # trong so lifter dung that

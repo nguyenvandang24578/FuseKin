@@ -6,7 +6,6 @@ OC / PC: --ocpc_mode test (chi seq test, mac dinh) | all | both. Khong dung GT d
 Chay:
   python main/eval_selector.py --cfg config/train_selector_l2last.yml \
       --ckpt experiment/selector_l2last/checkpoint/last.pth.tar \
-      --teacher_ckpt experiment/teacher_gt_v2_jotr_rootfix/checkpoint/best.pth.tar \
       --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --gpu 0
 """
 import os, sys
@@ -19,7 +18,8 @@ import json
 parser = argparse.ArgumentParser(description='Danh gia Selector')
 parser.add_argument('--cfg', type=str, required=True)
 parser.add_argument('--ckpt', type=str, required=True, help='checkpoint Selector (last.pth.tar | best.pth.tar)')
-parser.add_argument('--teacher_ckpt', type=str, default='', help='Teacher GT de giai ma mesh (bo trong = chi pose)')
+parser.add_argument('--teacher_ckpt', type=str, default='',
+                    help="Teacher GT de giai ma mesh (bo trong = MODEL.TEACHER trong YAML; 'none' = chi pose)")
 parser.add_argument('--sets', type=str, default='3dpw,3dpw-oc,3dpw-pc,3dpw-crowd')
 parser.add_argument('--ocpc_mode', type=str, default='test', choices=['test', 'all', 'both'])
 parser.add_argument('--max_batches', type=int, default=0, help='0 = toan bo')
@@ -51,10 +51,18 @@ def main():
             cfg.SELECTOR[k] = sc[k]
     backbone, lifter = build_frozen_parts(DEVICE)
     model = SelectorNet(dim=sc['dim'], heads=sc['heads'], enc_layers=sc['enc_layers'], dec_layers=sc['dec_layers'],
-                        use_flip=sc['use_flip'], dropout=sc['dropout']).to(DEVICE)
+                        use_flip=sc['use_flip'], dropout=sc['dropout'],
+                        base_prior_init=sc.get('base_prior_init', 0.0)).to(DEVICE)
     model.load_state_dict(ck['selector_state'])
     print(f'===> Selector {args.ckpt} (epoch {ck.get("epoch")})')
-    teacher = build_and_load('teacher', args.teacher_ckpt, DEVICE)[0] if args.teacher_ckpt else None
+    t_path = args.teacher_ckpt or cfg.MODEL.get('TEACHER', '')
+    if t_path == 'none':
+        t_path = ''
+    elif t_path and not os.path.isfile(t_path):
+        print(f'[CANH BAO] Khong thay Teacher {t_path} -> chi danh gia pose')
+        t_path = ''
+    teacher = build_and_load('teacher', t_path, DEVICE)[0] if t_path else None
+    print(f'===> Teacher giai ma: {t_path or "khong"}')
 
     runs = []
     for name in [s.strip() for s in args.sets.split(',') if s.strip()]:

@@ -58,7 +58,7 @@ def evaluate(selector, backbone, lifter, loader, ds, device, teacher=None, max_b
     rows = ('L0 mac dinh', 'Selector', 'Oracle')
     pose_err = {r: [] for r in rows}
     mesh = {r: {'mpjpe': [], 'pa_mpjpe': [], 'mpvpe': []} for r in rows}
-    hit, nvalid = np.zeros(5), np.zeros(5)
+    hit, nvalid, keep = np.zeros(5), np.zeros(5), np.zeros(5)
     gsel, gbase, gora = np.zeros(5), np.zeros(5), np.zeros(5)
     seen = 0
     for bi, (inputs, targets, meta) in enumerate(loader):
@@ -85,6 +85,7 @@ def evaluate(selector, backbone, lifter, loader, ds, device, teacher=None, max_b
         for g, ((e, _), cs, co) in enumerate(zip(errs, choice_sel, choice_ora)):
             ar = torch.arange(e.shape[0], device=device)
             hit[g] += float((cs == co).sum())
+            keep[g] += float((cs == 0).sum())
             nvalid[g] += e.shape[0]
             gsel[g] += float(e[ar, cs].sum()) * 1000
             gbase[g] += float(e[:, 0].sum()) * 1000
@@ -104,7 +105,8 @@ def evaluate(selector, backbone, lifter, loader, ds, device, teacher=None, max_b
                     mesh[r][k_].extend(res[k_])
         seen += img.shape[0]
     out = {'n': seen, 'pose_mpjpe17': {r: float(torch.cat(pose_err[r]).mean()) for r in rows},
-           'group': {GROUP_NAMES[g]: {'acc_top1': hit[g] / max(nvalid[g], 1), 'L0_mm': gbase[g] / max(nvalid[g], 1),
+           'group': {GROUP_NAMES[g]: {'acc_top1': hit[g] / max(nvalid[g], 1), 'keep_L0': keep[g] / max(nvalid[g], 1),
+                                      'L0_mm': gbase[g] / max(nvalid[g], 1),
                                       'sel_mm': gsel[g] / max(nvalid[g], 1), 'oracle_mm': gora[g] / max(nvalid[g], 1)}
                      for g in range(5)}}
     p = out['pose_mpjpe17']
@@ -124,7 +126,7 @@ def format_eval(name, r):
         lines.append(f'[{name}] mesh qua Teacher MPJPE/PA/MPVPE (14 khop): ' + ' | '.join(
             f'{k} {v["mpjpe"]:.2f}/{v["pa_mpjpe"]:.2f}/{v["mpvpe"]:.2f}' for k, v in r['teacher_mesh'].items())
             + f' | lay lai {100 * r["recovered_mesh"]:.1f}%')
-    lines.append(f'[{name}] tung nhom (mm, L0 / Selector / Oracle, top1): ' + ' | '.join(
-        f'{g} {v["L0_mm"]:.0f}/{v["sel_mm"]:.0f}/{v["oracle_mm"]:.0f} ({100 * v["acc_top1"]:.0f}%)'
+    lines.append(f'[{name}] tung nhom (mm, L0 / Selector / Oracle, top1, giu L0): ' + ' | '.join(
+        f'{g} {v["L0_mm"]:.0f}/{v["sel_mm"]:.0f}/{v["oracle_mm"]:.0f} ({100 * v["acc_top1"]:.0f}%, {100 * v["keep_L0"]:.0f}%)'
         for g, v in r['group'].items()))
     return '\n'.join(lines)
