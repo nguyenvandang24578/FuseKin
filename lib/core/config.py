@@ -302,6 +302,15 @@ cfg.MODEL.kd_noise_weight = False
 cfg.MODEL.kd_noise_tau = 0.0
 cfg.MODEL.kd_noise_wmin = 0.2
 cfg.MODEL.kd_noise_wmax = 3.0
+# KD CHON LOC (mac dinh TAT, chi kd_mode='feat', khong ho tro kd_joint_relation): chi distill khop / mau ma
+#   (1) Teacher DU DUNG: loi khop Teacher (mesh -> H36M-17) so GT <= kd_sel_teacher_joint_mm (<= 0: bo dieu kien),
+#       va (tuy chon) MPJPE mau cua Teacher <= kd_sel_teacher_sample_mm (<= 0: bo);
+#   (2) Student DU GAN Teacher: khoang cach KD <= phan vi kd_sel_gap_q trong batch (1.0: bo dieu kien).
+# Joint KD dung mask khop; global KD dung mask mau (Teacher dung + gap global nho). Mask tinh no_grad.
+cfg.MODEL.kd_sel = False
+cfg.MODEL.kd_sel_gap_q = 0.7
+cfg.MODEL.kd_sel_teacher_joint_mm = 50.0
+cfg.MODEL.kd_sel_teacher_sample_mm = 0.0
 # E3: InfoNCE Student->Teacher trong batch (token khop sau fusion + feature toan cuc). 0 = tat.
 cfg.MODEL.kd_nce_w = 0.0
 cfg.MODEL.kd_nce_temp = 0.1

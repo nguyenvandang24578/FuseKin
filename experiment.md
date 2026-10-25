@@ -581,3 +581,39 @@ Y tuong: thay vi chinh KD, dung Teacher (biet pose nao khop anh) lam critic cham
 
 ## 28. Script mo xe Teacher - main/analyze_teacher.py (2026-10-25, chua chay)
 Muc tieu: tim kien thuc nao cua Teacher GT co the truyen truoc khi thiet ke lai KD. Eval-only, dung lai build_and_load cua content_ablation_test. A: san Teacher voi pose GT (MPJPE17/PA/MPVPE, goc xoay toan than Procrustes, loi tung khop). B: Teacher voi pose GT bi lam hong co kiem soat (Gauss 10/20/40/80 mm, lat do sau 1 chi, phan xa do sau toan than), anh that vs anh TB -> anh co giup sua pose sai khong. C: Student voi pose lifter / pose GT; Teacher voi pose lifter. D: activation patching Teacher -> Student (token khop sau bo ma hoa; token khop / token anh / ca hai sau fusion) -> % khoang cach lap duoc. E: attention khop->anh tung block, entropy va do lech tam so voi GT 2D (3DPW, pw3d_test_gt2d).
+
+## 29. KD chon loc (y tuong nguoi dung) - da code, cho chay (2026-10-25)
+MODEL.kd_sel (mac dinh False) + kd_sel_gap_q (0.7), kd_sel_teacher_joint_mm (50), kd_sel_teacher_sample_mm (0 = bo). Trong Student_Trainer (kd_mode feat, khong ho tro kd_joint_relation): mask no_grad = khop hop le & loi khop Teacher (mesh Teacher -> H36M-17 so GT) <= nguong & (tuy chon) MPJPE mau Teacher <= nguong & khoang cach KD khop <= phan vi q trong batch; global KD dung mask mau (Teacher dung + gap global <= phan vi q). Nhan vao jw_valid / sw (van chia theo n_valid nen do lon loss ~ ty le duoc chon). Log kd_sel_joint, kd_sel_sample, teacher_err_mm. YAML config/train_student_kd_e1_v2_sel.yml = train_student_kd_e1_v2.yml + 4 key tren. Chua chay.
+
+## 30. Kiem chung quy uoc loss mesh/root va projection (2026-10-25, da code/cho chay)
+
+Nguoi dung duyet viet phep kiem chung truoc khi coi hai khac biet quy uoc la loi. Them `main/check_loss_conventions.py`, khong sua model/loss train/YAML/run hien co. Script doc `cfg` hien co va cac tuy chon CLI rieng; khong them hanh vi/toggle vao pipeline train. Danh gia co chu dich hay cai thien sau retrain CHUA CO, khong goi ket qua doc source la loi da kiem chung.
+
+- Synthetic: cung mot mesh SMPL neutral lam prediction va GT, co T-pose va pose/shape ngau nhien, camera kiem soat 3-6m. Goi chinh `FusionPose2Mesh.get_coord` qua context chi gom SMPL/regressor, khong dung backbone/lifter. So mesh tru pelvis SMPL voi cung mesh tru pelvis H36M; so projection SMPL-30 chon theo ten voi projection H36M-17, cung camera va epsilon. Co self-control cung root/cung regressor, doi chieu get_coord, FP64 tren cung mesh FP32, sai lech do epsilon 1e-4 rieng va doi chung chuan hoa tong hang regressor CHI de phan tich. Dung sai mac dinh 0.01mm/0.01px la sai so so hoc, khong la nguong y nghia thuc te hay thong ke.
+- Mau train: toi da64 mau ngau nhien khong hoan lai MOI bo DATASET.train_list (hoac --sets), workers0/seed123, giu augmentation theo YAML va lift_only=False. Ghi pelvis SMPL/H36M cua mesh target da luu, phan du khi cung mesh do duoc tru pelvis SMPL nhu prediction; doi chieu mesh->jointGT. Do dinh nghia khop tren mesh that voi camera AO 3m: khong gia vo do la camera/GT2D dataset. Nhanh nay chi dung bo train co target mesh + H36M17 (3dpw-train hoac cac bo fusekin_unified). Geometry chi gom fit hop le; thong ke target/checkpoint ghi valid_fit_n, loss checkpoint van giu mask0 nhu trainer.
+- Tuy chon --ckpt: nap Teacher GT thuan hoac Student khong hint bang strict=True, kiem metadata gate; dung wrapper forward eval that (Student gate van sinh std), GT2D va mesh target that tren cung batch. Replay get_coord theo pose/shape/camera checkpoint va dung neu khong khop wrapper trong dung sai; tinh loss hien tai va loss doi chung dong nhat root/regressor. Do gradient cuc bo theo SMPL axis-angle pose, beta va camera translation o batch dau moi bo, ghi norm va cosine cung loss truoc/sau thay quy uoc. Giu DETACH_POSE_FOR_PROJ: projection khong co gradient pose khi co bat. Doi chieu mean loss hien tai voi chinh CoordLoss/JOTRCoordLoss cua trainer; khong AWL/KD/hard_w, khong backward vao network/optimizer/update/save checkpoint. Gradient gan loss0 cua L1 nhay voi lam tron; phai doc cung FP64/dung sai. Khong ho tro refiner diffusion/Teacher mixing/hint, khong loc key de gia nap checkpoint cu.
+
+Lenh 1, chi kiem hinh hoc, khong can checkpoint hay anh dataset (van can SMPL/regressors va moi truong repo):
+
+```bash
+python main/check_loss_conventions.py --cfg config/train_student_kd_e1_v2_diff_spread_gate_zero.yml --synthetic_only --gpu 0 --out_dir experiment/check_loss_synthetic_s123
+```
+
+Lenh 2, them64 mau train that, khong can checkpoint:
+
+```bash
+python main/check_loss_conventions.py --cfg config/train_student_kd_e1_v2_diff_spread_gate_zero.yml --samples 64 --batch_size 8 --seed 123 --gpu 0 --out_dir experiment/check_loss_train_s123
+```
+
+Lenh 3, them loss/gradient tu checkpoint gate_zero (doi dung ten run/checkpoint thuc neu khac):
+
+```bash
+python main/check_loss_conventions.py --cfg config/train_student_kd_e1_v2_diff_spread_gate_zero.yml --ckpt experiment/student_kd_e1_v2_diff_spread_gate_zero/checkpoint/best.pth.tar --samples 64 --batch_size 8 --seed 123 --gpu 0 --out_dir experiment/check_loss_ckpt_gate_zero_s123
+```
+
+Output thu muc moi, tu choi ghi de: `summary.json`, `samples.csv`, `joints.csv`, `gradients.csv`, `regressors.csv`, `config.yaml`, `log.txt`. Luu indices/seed/epoch va SHA256 config/checkpoint/regressor/source, lifter constructor neu co. `synthetic_checks` chi danh dau phan du vuot dung sai so hoc khi self-control/replay khop; khong auto ket luan bug hay loi ich thay loss. Cac loss L1 nay KHONG la MPJPE14/MPVPE, khong so truc tiep voi moc76.11/93.84. Projection sample that co camera ao va projection checkpoint voi targetGT that duoc gan stage rieng. Neu mean loss moi thap hon o cung checkpoint thi chi la muc tieu khac; muon xac nhan loi ich can cap train doi chung tung loss rieng, dung run moi va giao thuc chon checkpoint ro rang.
+
+Trang thai: moi viet va doc lai source/diff/mask/don vi/luong CLI, CHUA chay script/import/kiem cu phap Python hay train/test theo AGENTS.md. Chua co so lieu server de ket luan phan du lon hay nho, chua biet y dinh tac gia. Chua doi quy uoc lifter/mesh hay sua loss dang train.
+
+## 30. Phan tich truoc KD chon loc / co trong so - main/analyze_kd_selection.py (2026-10-25, chua chay)
+Nguoi dung yeu cau phan tich truoc khi code trong so. Script eval-only: tung khop tung mau tren tap train cua Student (loader train YAML, co aug, --max_samples moi bo) va tap test: e_T (Teacher), e_S (Student KD), e_lift, d = 1-cos(LN token khop Student sau fusion, LN Teacher); mau: d_glob, MPJPE_T/S. Bao cao phan phoi, Spearman (d~e_S, d~e_lift, d~e_T, e_T~e_S), bang 4 o (Teacher tot<=50mm x d<=trung vi), thap phan vi theo d va e_T, goi y tau_T (p75 e_T) / tau_d (trung vi d), samples.csv. --init_ckpt (tuy chon) do loi ich KD theo nhom. Checkpoint nguoi dung co: Teacher teacher_gt_v2_jotr, Student student_kd_e1_v2_diff_jotr_l2last (ca hai khong 3DPW); chua co init-only cung lifter L2 nen chua do duoc loi ich KD. Code kd_sel (muc 29) giu tat, chua dung.

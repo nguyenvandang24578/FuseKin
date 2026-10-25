@@ -989,6 +989,19 @@ class Student_Trainer:
         self.kd_noise_tau = float(cfg.MODEL.get('kd_noise_tau', 0.05))      # met: loi input 50 mm -> trong so 1
         self.kd_noise_wmin = float(cfg.MODEL.get('kd_noise_wmin', 0.2))
         self.kd_noise_wmax = float(cfg.MODEL.get('kd_noise_wmax', 3.0))
+        self.kd_sel = bool(cfg.MODEL.get('kd_sel', False))
+        self.kd_sel_gap_q = float(cfg.MODEL.get('kd_sel_gap_q', 0.7))
+        self.kd_sel_t_joint_mm = float(cfg.MODEL.get('kd_sel_teacher_joint_mm', 50.0))
+        self.kd_sel_t_sample_mm = float(cfg.MODEL.get('kd_sel_teacher_sample_mm', 0.0))
+        if self.kd_sel:
+            if not (self.use_kd and self.kd_mode == 'feat'):
+                raise ValueError("kd_sel chi dung voi student_use_kd=True va kd_mode='feat'")
+            if cfg.MODEL.get('kd_joint_relation', False):
+                raise ValueError('kd_sel chua ho tro kd_joint_relation')
+            if not (0.0 < self.kd_sel_gap_q <= 1.0):
+                raise ValueError('kd_sel_gap_q phai trong (0, 1]')
+            print(f'===> KD chon loc: gap <= phan vi {self.kd_sel_gap_q} | Teacher khop <= {self.kd_sel_t_joint_mm} mm '
+                  f'| Teacher mau <= {self.kd_sel_t_sample_mm} mm (<= 0 = bo)')
         self.kd_nce_w = float(cfg.MODEL.get('kd_nce_w', 0.0))
         self.kd_nce_temp = float(cfg.MODEL.get('kd_nce_temp', 0.1))
         # Distill phan du (v1): bo ma hoa joint (TRUOC fusion) phai tu xap xi feat_joint SAU fusion cua Teacher;
@@ -1266,6 +1279,8 @@ class Student_Trainer:
             kd_hfeat_ps = zeros_b
             kd_relation_pairs = zeros_b
             noise_w_mean = 1.0
+            kd_sel_joint_frac = kd_sel_sample_frac = 1.0
+            teacher_err_mm = 0.0
             # loi joint dau vao Student (MotionBERT) so voi GT, mm - de kiem tra muc nhieu
             with torch.no_grad():
                 _lerr = torch.norm(model_output['lifted_joints_3d'] - gt_pose_input, dim=-1)
@@ -1299,6 +1314,34 @@ class Student_Trainer:
                                                                model_output['feat_joint_in'].detach())
                     kd_src = {'feat_joint': jnt_o,
                               'feat_global': torch.cat([img_o.mean(dim=1), jnt_o.mean(dim=1)], dim=1)}
+                # KD chon loc: chi khop/mau Teacher du dung VA Student du gan Teacher (mask no_grad)
+                if self.kd_sel:
+                    with torch.no_grad():
+                        t_j = torch.matmul(self.J_regressor[None, :, :], t_out['smpl_mesh_cam'])
+                        t_j = t_j - t_j[:, 0:1, :]
+                        t_err = torch.norm(t_j - gt_pose_input, dim=-1) * 1000.0                 # (B,J) mm
+                        vmask = valid_joint > 0
+                        ok_j = (t_err <= self.kd_sel_t_joint_mm) if self.kd_sel_t_joint_mm > 0 \
+                            else torch.ones_like(vmask)
+                        t_err_s = (t_err * valid_joint).sum(-1) / n_valid                          # (B,)
+                        ok_s = (t_err_s <= self.kd_sel_t_sample_mm) if self.kd_sel_t_sample_mm > 0 \
+                            else torch.ones_like(t_err_s, dtype=torch.bool)
+                        gap_j = self._kd_dist('joint', kd_src['feat_joint'], t_out['feat_joint'])    # (B,J)
+                        gap_g = self._kd_dist('global', kd_src['feat_global'], t_out['feat_global']) # (B,)
+                        close_j = torch.ones_like(vmask)
+                        close_g = torch.ones_like(ok_s)
+                        if self.kd_sel_gap_q < 1.0:
+                            gv = gap_j[vmask]
+                            if gv.numel() > 0:
+                                close_j = gap_j <= torch.quantile(gv.float(), self.kd_sel_gap_q)
+                            close_g = gap_g <= torch.quantile(gap_g.float(), self.kd_sel_gap_q)
+                        sel_j = (vmask & ok_j & close_j & ok_s[:, None]).float()
+                        sel_s = (ok_s & close_g).float()
+                        kd_sel_joint_frac = float(sel_j.sum() / vmask.sum().clamp_min(1))
+                        kd_sel_sample_frac = float(sel_s.mean())
+                        teacher_err_mm = float(t_err_s.mean())
+                    jw_valid = jw_valid * sel_j        # chia van theo n_valid -> loss ~ ty le duoc chon
+                    sw = sw * sel_s
                 if self.kd_joint_relation:
                     kd_joint_ps, kd_relation_pairs = self._kd_joint_relation(
                         kd_src['feat_joint'], t_out['feat_joint'], valid_joint)
@@ -1485,6 +1528,9 @@ class Student_Trainer:
                 'kd_noise_w': noise_w_mean,
                 'kd_res': kd_res_ps.mean().item(),
                 'lift_err_mm': lift_err_mm,
+                'kd_sel_joint': kd_sel_joint_frac,
+                'kd_sel_sample': kd_sel_sample_frac,
+                'teacher_err_mm': teacher_err_mm,
                 'kd_hint': kd_hint_ps.mean().item(),
                 'kd_hfeat': kd_hfeat_ps.mean().item(),
                 'hint_abs': (model_output['hint_pred'].detach().abs().mean().item()
@@ -1567,6 +1613,9 @@ class Student_Trainer:
               f'InfoNCE: {avg["kd_nce"]:.4f} | noise w: {avg["kd_noise_w"]:.3f}')
         print(f'  Residual (joint-only -> Teacher): {avg["kd_res"]:.4f} | KD fused (J): {avg["kd_joint"]:.4f} | '
               f'loi joint dau vao (MotionBERT): {avg["lift_err_mm"]:.1f} mm')
+        if self.kd_sel:
+            print(f'  KD chon loc: khop duoc chon {avg["kd_sel_joint"] * 100:.1f}% | mau duoc chon (global) '
+                  f'{avg["kd_sel_sample"] * 100:.1f}% | loi Teacher TB {avg["teacher_err_mm"]:.1f} mm')
         if self.kd_joint_relation:
             print(f'  KD joint RELATION (thay MSE feature): {avg["kd_joint_relation"]:.6f} | '
                   f'cap hop le/mau: {avg["kd_relation_pairs"]:.1f}; global KD giu nguyen')
