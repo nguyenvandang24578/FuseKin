@@ -59,6 +59,11 @@ parser.add_argument('--set', type=str, default='',
 parser.add_argument('--oracle_mask_thr', type=float, default=0.0,
                     help='>0: them 2 dieu kien Student dung GT 2D (chi chan doan): khop Halpe lech GT > nguong '
                          '(ty le canh crop, vd 0.1) bi MASK hoac bi THAY bang GT 2D. Can tap 3DPW. 0 = tat')
+parser.add_argument('--oracle_cand', type=int, default=0,
+                    help='>0: do TRAN oracle (chon bang GT) tren tap ung vien pose cho Student DiffLifter: K gia thuyet '
+                         '(K = gia tri nay), lat do sau toan than (+ doi trai/phai), lat do sau tung doan chi va tat ca. '
+                         'Chi chan doan, dung GT. 0 = tat')
+parser.add_argument('--cand_steps', type=int, default=5, help='so buoc DDIM khi sinh K gia thuyet cho --oracle_cand')
 parser.add_argument('--out_dir', type=str, default='',
                     help='thu muc MOI: luu samples.csv (tung mau, tung dieu kien) va summary.txt; rong = chi in')
 args = parser.parse_args()
@@ -222,6 +227,56 @@ def run_three(net, joints_in, feats, store, reg, gt_mesh, **kw):
         store[name]['v'].append(v)
         per[name] = (j, v)
     return per
+
+
+# ---------------- Ung vien pose co cau truc (chi cho --oracle_cand) ----------------
+LR_PAIRS_H36M = ((1, 4), (2, 5), (3, 6), (11, 14), (12, 15), (13, 16))
+LIMBS_H36M = ((1, 2, 3), (4, 5, 6), (11, 12, 13), (14, 15, 16))   # (goc, giua, ngon): chan P/T, tay T/P
+
+
+def pick_best(cands, gt):
+    """cands (B, N, 17, 3), gt (B, 17, 3) -> ung vien MPJPE nho nhat (B, 17, 3). Dung GT: chi la oracle."""
+    err = torch.norm(cands - gt[:, None], dim=-1).mean(-1)               # (B, N)
+    best = err.argmin(1)
+    return cands[torch.arange(cands.shape[0], device=cands.device), best]
+
+
+def depth_reflect(p):
+    """Phan xa do sau quanh goc (z -> -z): hinh chieu 2D (xap xi weak-perspective) giu nguyen,
+    nguoi 'quay mat' <-> 'quay lung' (kem doi tay thuan)."""
+    q = p.clone()
+    q[..., 2] = -q[..., 2]
+    return q
+
+
+def lr_swap(p):
+    q = p.clone()
+    for a, b in LR_PAIRS_H36M:
+        q[:, [a, b]] = p[:, [b, a]]
+    return q
+
+
+def limb_flip_best(p, gt):
+    """Moi chi (goc-giua-ngon): 4 trang thai lat do sau doan tren / doan duoi (giu x, y -> 2D ~ khong doi);
+    chon trang thai gan GT nhat cho TUNG chi (cac chi doc lap nen = chon to hop tot nhat)."""
+    out = p.clone()
+    for a, b, c in LIMBS_H36M:
+        states = []
+        for up in (False, True):
+            for lo in (False, True):
+                q = p[:, [a, b, c]].clone()                                   # (B, 3, 3)
+                if up:
+                    new_bz = 2 * q[:, 0, 2] - q[:, 1, 2]
+                    q[:, 2, 2] = q[:, 2, 2] + (new_bz - q[:, 1, 2])
+                    q[:, 1, 2] = new_bz
+                if lo:
+                    q[:, 2, 2] = 2 * q[:, 1, 2] - q[:, 2, 2]
+                states.append(q)
+        st = torch.stack(states, 1)                                           # (B, 4, 3, 3)
+        err = torch.norm(st[:, :, 1:] - gt[:, None, [b, c]], dim=-1).mean(-1)  # khop goc khong doi
+        best = err.argmin(1)
+        out[:, [a, b, c]] = st[torch.arange(p.shape[0], device=p.device), best]
+    return out
 
 
 def add_rows(rows, name, idx, e_in, per):
@@ -397,6 +452,31 @@ def main():
                     per = run_three(student, pose_3d, feat_s, results[name], reg, gt_mesh,
                                     **student._pe2d_kwargs(j2, jm))
                     add_rows(rows, name, idx, e_in, per)
+
+                if args.oracle_cand > 0 and getattr(student, 'use_diff', False):
+                    # TRAN oracle tren tap ung vien (chon bang GT) -- 2D Halpe goc, Student giu nguyen
+                    cam_bbox = inputs.get('cam_bbox', torch.zeros(img.shape[0], 3)).to(DEVICE).float()
+                    base = student.lift_diffusion(joints2d, joints_mask, cam_bbox)
+                    base = (base - base[:, 0:1]).float()
+                    hyps = student._diff_hyp(joints2d, joints_mask, cam_bbox, args.cand_steps,
+                                             args.oracle_cand, False).float()        # (B, K, 17, 3)
+                    gl = torch.stack([base, depth_reflect(base), lr_swap(depth_reflect(base)), lr_swap(base)], 1)
+                    allc = torch.cat([hyps, gl], 1)
+                    allc_lf = torch.stack([limb_flip_best(allc[:, i], gt_h36m) for i in range(allc.shape[1])], 1)
+                    cand_poses = [
+                        (f'[oracle K={args.oracle_cand} gia thuyet]', pick_best(hyps, gt_h36m)),
+                        ('[oracle lat sau/doi T-P toan than]', pick_best(gl, gt_h36m)),
+                        ('[oracle lat do sau tung chi]', limb_flip_best(base, gt_h36m)),
+                        ('[oracle tat ca ung vien]', pick_best(allc_lf, gt_h36m)),
+                    ]
+                    for tag, pose_c in cand_poses:
+                        name = f'Student (joint DiffLifter) {tag}'
+                        results.setdefault(name, new_cond())
+                        e_in = (torch.norm(pose_c - gt_h36m, dim=-1).mean(-1) * 1000.0).cpu()
+                        inp_err.setdefault(name, []).append(e_in)
+                        per = run_three(student, pose_c.to(pose_3d.dtype), feat_s, results[name], reg, gt_mesh,
+                                        **student._pe2d_kwargs(joints2d, joints_mask))
+                        add_rows(rows, name, idx, e_in, per)
 
             if n_batches % 5 == 0:
                 print(f"  ... da xu ly {n_batches}/{args.max_batches} batch")

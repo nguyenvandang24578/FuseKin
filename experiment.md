@@ -562,3 +562,22 @@ python main/inspect_student_spread.py --mode attention --cfg config/train_teache
 Doi dung YAML/checkpoint run that neu tenkhac. Mac dinh output compare_attention_3dpw_<timestamp> canh Studentckpt, thu muc moi, co the --out_dir. --attn_joints all ve17khop, --attn_block0/1 de xem cac block som; lenh copy day du trong README.
 
 Trang thai: da code/ra source va diff, chua co hinh hay so lieu attention moi. Chua chay/import/kiem cu phap Python, test/train hay modelGPU local theo AGENTS. Khong sua YAML/run/train/loss/checkpoint hien co. Khac attention chi la co so de THU KD, chua chung minh Teacher map hop ly hon. Giong meanheads la it tin hieu cho muc tieu mean-head KD, khong ket luan moi cach KD deu voich.
+
+### Ket qua attention nguoi dung bao (2026-10-25)
+
+Nguoi dung gui log 512 mau (4 nhom, moi nhom 128). Chua nhan summary/YAML/epoch de xac minh dung cap checkpoint, split va block thuc te; khong tu gan log cho lenh vi du o tren. Day la ket qua server do nguoi dung bao, khong phai chay local.
+
+- Mean-head TV mean=0.077004, median=0.068995, p90=0.115972; JS/log2 mean=0.007702.
+- Entropy/log64 Teacher=0.892323, Student=0.888096; Teacher-vs-own-template TV=0.204324.
+- Q1 input43.46mm: TV0.059992, JS0.004387; Q2 input59.15mm: TV0.070209, JS0.006066.
+- Q3 input74.15mm: TV0.076148, JS0.007161; Q4 input115.67mm: TV0.101667, JS0.013193.
+
+Doc log: mean-head attention kha gan nhau; Q4 TV cao hon Q1 khoang1.69 lan. Teacher map thay doi giua mau (template TV lon hon gap Teacher-Student trung binh), khong phai map hoan toan co dinh. Entropy cao cua mean heads khong chung minh tung head deu phang hay model bo qua anh. Khong co nguong TV/JS pho quat de ket luan KD se thanh cong/that bai; tuong quan nhom inputerror khong chung minh nhan qua. Attention khac khong dong nghia Teacher map dung hon.
+
+Ha uu tien KD mean-head attention tren moi mau so voi de xuat truoc khi co log; chua them loss hay khoi dong run. Buoc tiep de quyet dinh: doc groups.csv/joints.csv da xuat de doi chieu Teacher/Student mesh MPJPE17 voi TV (khong so truc tiep mesh14), neu tiep tuc chan doan thi xem vector cap nhat tu anh A*V qua output projection va decoder/output. Cung attention chua dam bao cung value/gate/feature hay pose. Chua co ket qua KD attention de ket luan phuong phap khong hieu qua. Anh dinh kem chua doc duoc noi dung pixel trong phien nay; nhan dinh dua tren log va source cong thuc.Dinh chinh nhan dinh 25/10: "Teacher GT gan nhu khong dung anh" chi dung cho teacher_gt_v2_jotr (4 bo, khong 3DPW) do tren PC/Crowd (+1.2/+1.4 mm). Teacher GT v2 train 3DPW (muc 13) do tren 3DPW: anh TB +20.56 MPJPE / +28.26 MPVPE -> CO dung anh. Hai Teacher, hai tap khac nhau; khong suy chung.
+
+## 27. Tran oracle tap ung vien pose (y tuong Teacher-Critic) - da code, cho chay (2026-10-25)
+Y tuong: thay vi chinh KD, dung Teacher (biet pose nao khop anh) lam critic cham diem tap ung vien pose co cau truc, chon cung roi dua vao Student. Buoc 0 la do tran bang GT. content_ablation_test.py them --oracle_cand K (mac dinh 0 = tat) va --cand_steps (5): ung vien = K gia thuyet DiffLifter (seed 0), phan xa do sau toan than z->-z (+/- doi T-P), lat do sau doan tren/duoi tung chi (4 chi x 4 trang thai, giu x,y), va hop tat ca (moi ung vien + lat chi). Chon bang GT -> chi la tran; Student giu nguyen (pose chon co the lech phan bo luc train Student). Neu tran mesh giam ro so voi oracle K=20 cu -> dang xay critic; neu khong -> dung.
+
+## 28. Script mo xe Teacher - main/analyze_teacher.py (2026-10-25, chua chay)
+Muc tieu: tim kien thuc nao cua Teacher GT co the truyen truoc khi thiet ke lai KD. Eval-only, dung lai build_and_load cua content_ablation_test. A: san Teacher voi pose GT (MPJPE17/PA/MPVPE, goc xoay toan than Procrustes, loi tung khop). B: Teacher voi pose GT bi lam hong co kiem soat (Gauss 10/20/40/80 mm, lat do sau 1 chi, phan xa do sau toan than), anh that vs anh TB -> anh co giup sua pose sai khong. C: Student voi pose lifter / pose GT; Teacher voi pose lifter. D: activation patching Teacher -> Student (token khop sau bo ma hoa; token khop / token anh / ca hai sau fusion) -> % khoang cach lap duoc. E: attention khop->anh tung block, entropy va do lech tam so voi GT 2D (3DPW, pw3d_test_gt2d).
