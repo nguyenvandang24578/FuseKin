@@ -36,7 +36,10 @@ n = len(ds)
 sub = ds if args.max_samples <= 0 or args.max_samples >= n else \
     Subset(ds, np.sort(np.random.default_rng(0).choice(n, args.max_samples, replace=False)).tolist())
 dl = DataLoader(sub, batch_size=64, shuffle=False, num_workers=args.workers)
-offs, perj = [], []
+offs, perj, swp = [], [], []
+SW = {'R_Hip': 'L_Hip', 'L_Hip': 'R_Hip', 'R_Knee': 'L_Knee', 'L_Knee': 'R_Knee'}
+sw_idx = [smpl_names.index(SW[n]) for n in SW]
+sw_h = [H36M.index(n) for n in SW]
 with torch.no_grad():
     for _, targets, _ in dl:
         mesh = targets['smpl_mesh_cam'].float()                              # GT, da tru pelvis H36M
@@ -44,9 +47,15 @@ with torch.no_grad():
         js = torch.einsum('jk,bkc->bjc', Rs, mesh)
         offs.append((js[:, 0] - jh[:, 0]))                                   # pelvis SMPL - pelvis H36M
         perj.append(torch.norm(js[:, idx30] - jh, dim=-1))
+        swp.append(torch.norm(js[:, sw_idx] - jh[:, sw_h], dim=-1))
+        hw_h = torch.norm(jh[:, 1] - jh[:, 4], dim=-1); hw_s = torch.norm(js[:, smpl_names.index('R_Hip')] - js[:, smpl_names.index('L_Hip')], dim=-1)
+        offs_hw = getattr(sys.modules[__name__], '_hw', []); offs_hw.append(torch.stack([hw_h, hw_s], -1)); setattr(sys.modules[__name__], '_hw', offs_hw)
 offs = torch.cat(offs) * 1000; perj = torch.cat(perj) * 1000
 print(f'[{args.set}] n={offs.shape[0]}')
-print(f'(1) |pelvis_H36M(GT) tren mesh da tru pelvis H36M| kiem tra ~0: {torch.einsum("jk,bkc->bjc", Rh, mesh)[:,0].abs().max().item()*1000:.3f} mm')
+print(f'(0) tong hang regressor (=1 -> lech khong phu thuoc tinh tien): H36M {Rh.sum(1).min():.4f}..{Rh.sum(1).max():.4f}, '
+      f'SMPL {Rs.sum(1).min():.4f}..{Rs.sum(1).max():.4f}')
+print(f'(0) pelvis H36M cua mesh GT tap test (z TB): {torch.einsum("jk,bkc->bjc", Rh, mesh)[:,0,2].mean().item()*1000:.0f} mm '
+      f'-> tap test: mesh tuyet doi (khong tru goc); tap train unified: tru pelvis H36M')
 print(f'(1) lech tinh tien d = pelvis_SMPL - pelvis_H36M: |d| TB {offs.norm(dim=-1).mean():.1f} mm '
       f'(median {offs.norm(dim=-1).median():.1f}, p95 {offs.norm(dim=-1).quantile(0.95):.1f}); '
       f'TB theo truc x/y/z = {offs.mean(0).tolist()} mm')
@@ -54,3 +63,10 @@ print(f'    -> san loss mesh L1 khi pred = GT hoan hao (mean |d_xyz|): {offs.abs
 print('(2) lech 3D khop cung ten SMPL30 vs H36M (mm, TB):')
 print('    ' + ', '.join(f'{nm} {perj[:, j].mean():.0f}' for j, nm in enumerate(H36M)))
 print(f'    TB 17 khop: {perj.mean():.1f} mm')
+swp = torch.cat(swp) * 1000
+print('(3) kiem tra dao trai/phai (SMPL ben kia vs H36M): ' + ', '.join(f'SMPL {SW[n]} vs H36M {n} {swp[:, i].mean():.0f}' for i, n in enumerate(SW)))
+hw = torch.cat(_hw) * 1000
+print(f'(3) do rong hong R_Hip-L_Hip: H36M {hw[:, 0].mean():.0f} mm, SMPL {hw[:, 1].mean():.0f} mm')
+jh0 = torch.einsum('jk,bkc->bjc', Rh, mesh); js0 = torch.einsum('jk,bkc->bjc', Rs, mesh)
+print('(4) lech theo truc (SMPL - H36M, mm, batch cuoi) hip/torso: ' + ', '.join(
+    f"{nm} {((js0[:, smpl_names.index(nm)] - jh0[:, H36M.index(nm)]).mean(0) * 1000).round().tolist()}" for nm in ('R_Hip', 'L_Hip', 'Torso')))
