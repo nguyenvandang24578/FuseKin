@@ -11,14 +11,17 @@ Cac muc chon (tu de den kho):
   L4  oracle THEO KHOP: moi khop lay phuong an tot nhat rieng
   L5  oracle THEO NHOM + LAT CHI: moi chi chon trong (K+1) phuong an x 4 trang thai lat do sau (doan tren / duoi)
   L6  L5 + them phuong an phan xa do sau toan than (mat <-> lung)
-Bao cao moi tap: MPJPE17 / PA-MPJPE pose (mm), loi tung khop L0 vs L3/L5; neu co --student_ckpt / --teacher_ckpt:
-mesh (MPJPE17 tu mesh / MPVPE) khi dua pose da chon vao Student / Teacher (anh that).
+Do GIONG HET luc test (main/test_student_3dpw_sets.py): pose da chon -> mang sinh mesh (Student / Teacher, anh that)
+-> mesh -> joint H36M -> dataset.evaluate: MPJPE / PA-MPJPE (14 khop) va MPVPE (mm), toan bo tap.
+OC / PC chay ca 2 ban: chi seq test (pw3d_ocpc_test_only) va toan bo (--ocpc_mode).
+GT chi dung de CHON phuong an (so pose 17 khop voi GT), sai so bao cao la sai so MESH cuoi cung.
+Dong REF: dua pose GT vao mang (can duoi cua mang giai ma).
 
 Vi du:
   python main/oracle_best_hypothesis.py --cfg config/train_student_kd_e1_v2_diff_jotr_l2last.yml \
       --student_ckpt experiment/student_kd_e1_v2_diff_jotr_l2last/checkpoint/best.pth.tar \
       --teacher_ckpt experiment/teacher_gt_v2_jotr/checkpoint/best.pth.tar \
-      --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --K 20 --max_samples 4000 --out_dir experiment/_eval/oracle_best_l2last
+      --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --K 20 --out_dir experiment/_eval/oracle_best_l2last_eval14
 """
 import os, sys
 sys.path.append('./lib')
@@ -40,10 +43,12 @@ parser.add_argument('--student_ckpt', type=str, required=True, help='Student bes
 parser.add_argument('--teacher_ckpt', type=str, default='', help='(tuy chon) Teacher GT de giai ma pose da chon')
 parser.add_argument('--no_mesh', action='store_true', help='chi do pose, khong chay Student/Teacher')
 parser.add_argument('--sets', type=str, default='3dpw,3dpw-oc,3dpw-pc,3dpw-crowd')
+parser.add_argument('--ocpc_mode', type=str, default='both', choices=['test', 'all', 'both'],
+                    help='OC/PC: test = chi seq test, all = toan bo (ro ri), both = ca hai')
 parser.add_argument('--K', type=int, default=20)
 parser.add_argument('--steps', type=int, default=5, help='so buoc DDIM khi sinh K gia thuyet')
 parser.add_argument('--max_samples', type=int, default=0, help='so mau ngau nhien moi tap; 0 = toan bo')
-parser.add_argument('--batch_size', type=int, default=16)
+parser.add_argument('--batch_size', type=int, default=32)
 parser.add_argument('--workers', type=int, default=4)
 parser.add_argument('--seed', type=int, default=0)
 parser.add_argument('--out_dir', type=str, required=True)
@@ -164,6 +169,7 @@ JN = ('Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Tor
       'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist')
 LIMBS = ((1, 2, 3), (4, 5, 6), (11, 12, 13), (14, 15, 16))      # (goc, giua, ngon)
 GROUPS = [list(l) for l in LIMBS] + [[7, 8, 9, 10]]              # 4 chi + than-dau (Pelvis luon = 0)
+REF = 'REF pose GT (tran)'
 LEVELS = ['L0 mac dinh S1/K1', 'L1 trung binh K', 'L2 oracle ca pose', 'L3 oracle theo nhom',
           'L4 oracle theo khop', 'L5 oracle nhom + lat chi', 'L6 L5 + phan xa toan than']
 
@@ -241,17 +247,31 @@ def main():
     if not getattr(student, 'use_diff', False):
         print('[LOI] Student phai dung pose_lifter=diffusion')
         sys.exit(1)
-    teacher = build_and_load('teacher', args.teacher_ckpt)[0] if (args.teacher_ckpt and not args.no_mesh) else None
-    use_s = not args.no_mesh
+    teacher = build_and_load('teacher', args.teacher_ckpt)[0] if args.teacher_ckpt else None
+    nets = [('Student', student)] + ([('Teacher', teacher)] if teacher is not None else [])
     log(f'cfg={args.cfg} | student={args.student_ckpt} | teacher={args.teacher_ckpt or "-"} | K={args.K} S={args.steps} '
-        f'| max_samples={args.max_samples}')
-    log('Pose: MPJPE17 / PA (H36M-17 root-rel, mm). Mesh: MPJPE17 tu mesh / MPVPE (mm), anh that. Oracle dung GT de chon.')
+        f'| max_samples={args.max_samples or "toan bo"}')
+    log('Sai so = dataset.evaluate tren MESH dau ra (MPJPE / PA-MPJPE 14 khop, MPVPE; mm) - giong test_student_3dpw_sets.py')
+    log('Pose da chon (bang GT, oracle) -> mang sinh mesh (anh that) -> mesh -> joint -> sai so.')
+
+    runs = []
+    for name in [s_.strip() for s_ in args.sets.split(',') if s_.strip()]:
+        if name in ('3dpw-oc', '3dpw-pc'):
+            if args.ocpc_mode in ('test', 'both'):
+                runs.append((f'{name} (chi seq test)', name, True))
+            if args.ocpc_mode in ('all', 'both'):
+                runs.append((f'{name} (toan bo, ro ri)', name, False))
+        else:
+            runs.append((name, name, False))
+
+    rows_all = [REF] + LEVELS
     summary = {}
-    for name in [s.strip() for s in args.sets.split(',') if s.strip()]:
+    for label, name, test_only in runs:
+        cfg.DATASET.pw3d_ocpc_test_only = test_only
         try:
             ds = get_test_dataset(name, None)
         except Exception as e:
-            log(f'[{name}] LOI: {type(e).__name__}: {e}')
+            log(f'[{label}] LOI: {type(e).__name__}: {e}')
             continue
         n_all = len(ds)
         if 0 < args.max_samples < n_all:
@@ -261,71 +281,74 @@ def main():
             ds_run = ds
         loader = DataLoader(ds_run, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
         reg = torch.as_tensor(ds.h36m_joint_regressor, dtype=torch.float32, device=DEVICE)
-        acc = {lv: {'pose': [], 'pa': [], 'joint': [], 's_mpjpe': [], 's_mpvpe': [], 't_mpjpe': [], 't_mpvpe': []}
-               for lv in LEVELS}
+        acc = {(lv, tag): {'mpjpe': [], 'pa_mpjpe': [], 'mpvpe': []} for lv in rows_all for tag, _ in nets}
         seen = 0
         with torch.no_grad():
             for bi, (inputs, targets, meta) in enumerate(loader):
-                img = inputs['img'].to(DEVICE).float()
+                img = inputs['img'].to(DEVICE)
                 j2 = inputs['joints'].to(DEVICE).float()
                 jm = inputs['joints_mask'].to(DEVICE).float()
                 cam = inputs.get('cam_bbox', torch.zeros(img.shape[0], 3)).to(DEVICE).float()
                 gt_mesh = targets['smpl_mesh_cam'].to(DEVICE).float()
                 gt17 = h36m_from_mesh(gt_mesh, reg)
                 gt17 = gt17 - gt17[:, 0:1]
-                base = student.lift_diffusion(j2, jm, cam).float()
+                base = student.lift_diffusion(j2, jm, cam).float()          # giong forward_student (S1/K1, seed 0)
                 base = base - base[:, 0:1]
                 torch.manual_seed(args.seed * 100003 + bi)
                 hyps = student._diff_hyp(j2, jm, cam, args.steps, args.K, True).float()   # (B, K, 17, 3)
                 cands = torch.cat([base[:, None], hyps], 1)
-                poses = {'L0 mac dinh S1/K1': base, 'L1 trung binh K': hyps.mean(1)}
+                poses = {REF: gt17, 'L0 mac dinh S1/K1': base, 'L1 trung binh K': hyps.mean(1)}
                 poses.update(select(cands, gt17))
                 refl = cands.clone()
                 refl[..., 2] = -refl[..., 2]
                 poses['L6 L5 + phan xa toan than'] = select(torch.cat([cands, refl], 1), gt17)['L5 oracle nhom + lat chi']
-                feat_s = student.get_image_features(img)[0] if use_s else None
-                feat_t = teacher.get_image_features(img)[0] if teacher is not None else None
-                for lv in LEVELS:
-                    p = poses[lv]
-                    a = acc[lv]
-                    ej = torch.norm(p - gt17, dim=-1)
-                    a['pose'].append(ej.mean(-1).cpu())
-                    a['pa'].append(procrustes_err(p, gt17).cpu())
-                    a['joint'].append(ej.cpu())
-                    for tag, net, f in (('s', student, feat_s), ('t', teacher, feat_t)):
-                        if net is None or f is None:
-                            continue
-                        out = net.smpl_model(joints=p, img_feats=f, is_train=False, return_features=False,
-                                             **net._pe2d_kwargs(j2, jm))
-                        jp = h36m_from_mesh(out['smpl_mesh_cam'], reg)
-                        jg = h36m_from_mesh(gt_mesh, reg)
-                        rp, rg = jp[:, 0:1], jg[:, 0:1]
-                        a[f'{tag}_mpjpe'].append((torch.norm((jp - rp) - (jg - rg), dim=-1).mean(-1)).cpu())
-                        a[f'{tag}_mpvpe'].append((torch.norm((out['smpl_mesh_cam'] - rp) - (gt_mesh - rg), dim=-1).mean(-1)).cpu())
+                gt_np = gt_mesh.cpu().numpy()
+                for tag, net in nets:
+                    feat = net.get_image_features(img)[0]
+                    pe = net._pe2d_kwargs(j2, jm)
+                    for lv in rows_all:
+                        out = net.smpl_model(joints=poses[lv], img_feats=feat, is_train=False,
+                                             return_features=False, **pe)
+                        pm = out['smpl_mesh_cam'].detach().float().cpu().numpy()
+                        outs = [{'smpl_mesh_cam': pm[k], 'smpl_mesh_cam_target': gt_np[k].copy()}
+                                for k in range(pm.shape[0])]
+                        r = ds.evaluate(outs, min(seen, n_all - pm.shape[0]))
+                        for key in ('mpjpe', 'pa_mpjpe', 'mpvpe'):
+                            acc[(lv, tag)][key].extend(r[key])
                 seen += img.shape[0]
-                if (bi + 1) % 20 == 0:
-                    print(f'  [{name}] {seen}/{len(ds_run)}')
+                if (bi + 1) % 50 == 0:
+                    l0 = np.mean(acc[('L0 mac dinh S1/K1', 'Student')]['mpjpe'])
+                    l5 = np.mean(acc[('L5 oracle nhom + lat chi', 'Student')]['mpjpe'])
+                    print(f'  [{label}] {seen}/{len(ds_run)} | Student MPJPE L0 {l0:.2f} -> L5 {l5:.2f}')
         res = {}
-        log(f'\n==================== {name} (n={seen}/{n_all}) ====================')
-        log(f"{'muc':30s} {'pose':>7s} {'PA':>7s}" + ("  | Student mesh MPJPE/MPVPE" if use_s else '')
-            + ("  | Teacher mesh MPJPE/MPVPE" if teacher is not None else ''))
-        for lv in LEVELS:
-            a = acc[lv]
-            r = {'pose_mm': float(torch.cat(a['pose']).mean() * 1000), 'pa_mm': float(torch.cat(a['pa']).mean() * 1000),
-                 'per_joint_mm': (torch.cat(a['joint']).mean(0) * 1000).tolist()}
-            s_ = f"{lv:30s} {r['pose_mm']:7.2f} {r['pa_mm']:7.2f}"
-            for tag, lab in (('s', 'Student'), ('t', 'Teacher')):
-                if a[f'{tag}_mpjpe']:
-                    r[f'{lab}_mesh_mpjpe_mm'] = float(torch.cat(a[f'{tag}_mpjpe']).mean() * 1000)
-                    r[f'{lab}_mesh_mpvpe_mm'] = float(torch.cat(a[f'{tag}_mpvpe']).mean() * 1000)
-                    s_ += f"  | {r[f'{lab}_mesh_mpjpe_mm']:7.2f} / {r[f'{lab}_mesh_mpvpe_mm']:7.2f}"
-            res[lv] = r
+        log(f'\n==================== {label} (n={seen}/{n_all}) ====================')
+        head = f"{'muc':30s}"
+        for tag, _ in nets:
+            head += f" | {tag + ' MPJPE   PA  MPVPE':>27s}"
+        log(head)
+        for lv in rows_all:
+            s_ = f'{lv:30s}'
+            res[lv] = {}
+            for tag, _ in nets:
+                m = {k: float(np.mean(v)) for k, v in acc[(lv, tag)].items()}
+                res[lv][tag] = m
+                s_ += f" | {m['mpjpe']:13.2f} {m['pa_mpjpe']:6.2f} {m['mpvpe']:6.2f}"
             log(s_)
-        for lv in ('L3 oracle theo nhom', 'L5 oracle nhom + lat chi'):
-            log(f"  Tung khop (mm) L0 -> {lv[:2]}: " + ', '.join(
-                f"{JN[j]} {res['L0 mac dinh S1/K1']['per_joint_mm'][j]:.0f}->{res[lv]['per_joint_mm'][j]:.0f}"
-                for j in range(1, 17)))
-        summary[name] = res
+            if lv == REF:
+                log('-' * len(head))
+        summary[label] = {'n': seen, 'n_all': n_all, 'res': res}
+
+    # Bang gon: Student, L0 (= so test cua ban) vs cac muc oracle
+    log('\n' + '=' * 100)
+    log('TOM TAT Student MPJPE / PA / MPVPE (mm, 14 khop, dataset.evaluate)')
+    pick = ['L0 mac dinh S1/K1', 'L2 oracle ca pose', 'L3 oracle theo nhom', 'L5 oracle nhom + lat chi',
+            'L6 L5 + phan xa toan than', REF]
+    short = ['L0 (hien tai)', 'L2 ca pose', 'L3 nhom', 'L5 nhom+lat', 'L6 +phan xa', 'REF GT']
+    log(f"{'tap':28s} {'n':>6s} | " + ' | '.join(f'{x:>20s}' for x in short))
+    for label, d in summary.items():
+        log(f"{label:28s} {d['n']:6d} | " + ' | '.join(
+            f"{d['res'][lv]['Student']['mpjpe']:6.2f}/{d['res'][lv]['Student']['pa_mpjpe']:5.2f}/{d['res'][lv]['Student']['mpvpe']:6.2f}"
+            for lv in pick))
     (out_dir / 'summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding='utf-8')
     log(f'\nDa luu: {out_dir}')
 
