@@ -272,6 +272,30 @@ cfg.DIFFLIFT.train_eval_samples = 0
 # Chi so chon best tren val_set: 'mpjpe' (mac dinh, hanh vi cu) | 'pa_mpjpe'
 cfg.DIFFLIFT.select_metric = 'mpjpe'
 
+""" Selector: chon gia thuyet DiffLifter theo nhom khop bang anh (main/train_selector.py, eval_selector.py) """
+# Chi script Selector doc nhom nay; train.py / Teacher / Student khong dung -> khong anh huong run cu.
+cfg.SELECTOR = edict()
+cfg.SELECTOR.K = 20                   # so gia thuyet DiffLifter (cong pose mac dinh S1/K1 -> K + 1 ung vien)
+cfg.SELECTOR.steps = 5                # so buoc DDIM khi sinh gia thuyet
+cfg.SELECTOR.use_flip = True          # moi chi them 4 trang thai lat do sau (doan tren / duoi)
+# Checkpoint chua 'diff_lifter.*' (vd best.pth.tar cua Student) de ghi de trong so lifter; '' = dung difflift_checkpoint
+cfg.SELECTOR.lifter_from_ckpt = ''
+cfg.SELECTOR.dim = 256
+cfg.SELECTOR.heads = 8
+cfg.SELECTOR.enc_layers = 2
+cfg.SELECTOR.dec_layers = 2
+cfg.SELECTOR.dropout = 0.1
+cfg.SELECTOR.tau = 0.02               # met: muc tieu mem softmax(-loi_nhom / tau)
+cfg.SELECTOR.lr = 1e-4
+cfg.SELECTOR.weight_decay = 1e-4
+cfg.SELECTOR.epochs = 20
+cfg.SELECTOR.lr_step = [14, 18]
+cfg.SELECTOR.lr_factor = 0.1
+# Danh gia nhanh moi epoch (chi log + best tham khao). '' = tat. 3dpw-val chua 2 sequence Crowd -> neu bao Crowd thi
+# dung last.pth.tar, khong dung best.
+cfg.SELECTOR.val_set = ''
+cfg.SELECTOR.val_max_samples = 2000
+
 """ Test Detail """
 cfg.TEST = edict()
 cfg.TEST.batch_size = 64

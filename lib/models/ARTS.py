@@ -17,6 +17,53 @@ from models.teacher_student import Teacher, Student
 os.environ.setdefault("WANDB_MODE", "offline")
 
 
+def build_diff_lifter(path, steps=1, k=1):
+    """DiffLifter tu checkpoint finetune_difflifter.py (model_state = trong so EMA, difflift_cfg = kien truc).
+    Dung chung cho ARTS (Student) va Selector."""
+    assert path, "Can duong dan checkpoint DiffLifter"
+    ck = torch.load(path, map_location='cpu', weights_only=False)
+    dc = ck['difflift_cfg']
+    m = DiffLifter(num_joints=17, embed_dim=dc['embed_dim'], depth=dc['depth'], num_heads=dc['num_heads'],
+                   timesteps=dc['timesteps'], sampling_timesteps=int(steps), num_proposals=int(k),
+                   scale=dc['scale'], drop_path_rate=0.0, gcn_attn=bool(dc.get('gcn_attn', False)))
+    missing = m.load_weights(ck['model_state'])
+    print(f"Load DiffLifter ({path}) epoch {ck.get('epoch')} | S={m.sampling_timesteps} K={m.num_proposals}"
+          + (f" | [CANH BAO] checkpoint khong co camera: thieu {missing}" if missing else ''))
+    if bool(dc.get('soft_conf', False)) != bool(cfg.DATASET.lift_soft_conf):
+        print(f"[CANH BAO] DiffLifter train voi soft_conf={dc.get('soft_conf')} nhung "
+              f"DATASET.lift_soft_conf={cfg.DATASET.lift_soft_conf} -> conf dau vao khac luc train lifter")
+    return m
+
+
+def diff_lift(diff_lifter, pose_2d, joints_mask, cam_bbox, all_hyp=False, random_noise=False, steps=None, k=None):
+    """DiffLifter: pose_2d (B,17,2|3) khung crop [-1,1] (Human36M17Dataset), joints_mask (B,17,1) conf,
+    cam_bbox (B,3). Dau vao giong het finetune_difflifter.evaluate. Tra (B,17,3) met, root-relative
+    (trung binh K gia thuyet), hoac ca K gia thuyet (B,K,17,3) neu all_hyp.
+    steps / k: doi tam thoi so buoc DDIM / so gia thuyet (None = giu cau hinh cua lifter).
+    random_noise=False: nhieu DDIM co dinh (seed 0) -> ket qua lap lai duoc."""
+    p2 = pose_2d[:, 0] if pose_2d.dim() == 4 else pose_2d
+    xy = p2[..., :2].float()
+    conf = joints_mask.to(xy.device).float().reshape(xy.shape[0], xy.shape[1], 1)
+    xy = xy * (conf > 0)                                  # khop mask = 0 -> (0, 0) giong luc train lifter
+    cam = cam_bbox.to(xy.device).float()[:, None, :].expand(-1, xy.shape[1], -1)
+    gen = None
+    if not random_noise:
+        gen = torch.Generator(device=xy.device)
+        gen.manual_seed(0)
+    old = (diff_lifter.sampling_timesteps, diff_lifter.num_proposals)
+    if steps is not None:
+        diff_lifter.sampling_timesteps = int(steps)
+    if k is not None:
+        diff_lifter.num_proposals = int(k)
+    try:
+        mean_pose, _, hyp = diff_lifter(torch.cat([xy, conf, cam], dim=-1), generator=gen)
+    finally:
+        diff_lifter.sampling_timesteps, diff_lifter.num_proposals = old
+    if all_hyp:
+        return hyp - hyp[:, :, 0:1, :]
+    return mean_pose - mean_pose[:, 0:1, :]
+
+
 class ARTS(nn.Module):
     def __init__(self, num_joint, embed_dim):
         super().__init__()
@@ -62,22 +109,8 @@ class ARTS(nn.Module):
         self.freeze_backbone_and_lifter()
 
     def _build_diff_lifter(self):
-        """DiffLifter tu checkpoint finetune_difflifter.py (model_state = trong so EMA, difflift_cfg = kien truc)."""
-        path = cfg.MODEL.get('difflift_checkpoint', '')
-        assert path, "Student can cfg.MODEL.difflift_checkpoint"
-        ck = torch.load(path, map_location='cpu', weights_only=False)
-        dc = ck['difflift_cfg']
-        m = DiffLifter(num_joints=17, embed_dim=dc['embed_dim'], depth=dc['depth'], num_heads=dc['num_heads'],
-                       timesteps=dc['timesteps'], sampling_timesteps=int(cfg.MODEL.get('difflift_steps', 1)),
-                       num_proposals=int(cfg.MODEL.get('difflift_k', 1)), scale=dc['scale'], drop_path_rate=0.0,
-                       gcn_attn=bool(dc.get('gcn_attn', False)))
-        missing = m.load_weights(ck['model_state'])
-        print(f"Load DiffLifter ({path}) epoch {ck.get('epoch')} | S={m.sampling_timesteps} K={m.num_proposals}"
-              + (f" | [CANH BAO] checkpoint khong co camera: thieu {missing}" if missing else ''))
-        if bool(dc.get('soft_conf', False)) != bool(cfg.DATASET.lift_soft_conf):
-            print(f"[CANH BAO] DiffLifter train voi soft_conf={dc.get('soft_conf')} nhung "
-                  f"DATASET.lift_soft_conf={cfg.DATASET.lift_soft_conf} -> conf dau vao khac luc train lifter")
-        return m
+        return build_diff_lifter(cfg.MODEL.get('difflift_checkpoint', ''), cfg.MODEL.get('difflift_steps', 1),
+                                 cfg.MODEL.get('difflift_k', 1))
 
     def freeze_backbone_and_lifter(self):
         for module in (self.backbone, self.diff_lifter):
@@ -99,32 +132,13 @@ class ARTS(nn.Module):
         return feature_map, global_feature
 
     def lift_diffusion(self, pose_2d, joints_mask, cam_bbox, all_hyp=False, random_noise=False):
-        """DiffLifter: pose_2d (B,17,2|3) khung crop [-1,1] (Human36M17Dataset), joints_mask (B,17,1) conf,
-        cam_bbox (B,3). Dau vao giong het finetune_difflifter.evaluate. Tra (B,17,3) met, root-relative
-        (trung binh K gia thuyet), hoac ca K gia thuyet (B,K,17,3) neu all_hyp."""
-        p2 = pose_2d[:, 0] if pose_2d.dim() == 4 else pose_2d
-        xy = p2[..., :2].float()
-        conf = joints_mask.to(xy.device).float().reshape(xy.shape[0], xy.shape[1], 1)
-        xy = xy * (conf > 0)                                  # khop mask = 0 -> (0, 0) giong luc train lifter
-        cam = cam_bbox.to(xy.device).float()[:, None, :].expand(-1, xy.shape[1], -1)
-        gen = None
-        if not random_noise:
-            gen = torch.Generator(device=xy.device)
-            gen.manual_seed(0)                                # nhieu DDIM co dinh -> ket qua lap lai duoc
-        mean_pose, _, hyp = self.diff_lifter(torch.cat([xy, conf, cam], dim=-1), generator=gen)
-        if all_hyp:
-            return hyp - hyp[:, :, 0:1, :]
-        return mean_pose - mean_pose[:, 0:1, :]
+        """Xem diff_lift."""
+        return diff_lift(self.diff_lifter, pose_2d, joints_mask, cam_bbox, all_hyp=all_hyp, random_noise=random_noise)
 
     def _diff_hyp(self, pose_2d, joints_mask, cam_bbox, steps, k, random_noise):
         """K gia thuyet DiffLifter voi S / K tam thoi (khong doi cau hinh S, K chinh). (B, K, 17, 3) root-rel."""
-        dl = self.diff_lifter
-        old = (dl.sampling_timesteps, dl.num_proposals)
-        dl.sampling_timesteps, dl.num_proposals = int(steps), int(k)
-        try:
-            return self.lift_diffusion(pose_2d, joints_mask, cam_bbox, all_hyp=True, random_noise=random_noise)
-        finally:
-            dl.sampling_timesteps, dl.num_proposals = old
+        return diff_lift(self.diff_lifter, pose_2d, joints_mask, cam_bbox, all_hyp=True,
+                         random_noise=random_noise, steps=steps, k=k)
 
     @staticmethod
     def _pe2d_kwargs(pose_2d, joints_mask=None):

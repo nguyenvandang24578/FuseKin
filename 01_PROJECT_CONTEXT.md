@@ -252,3 +252,12 @@ Người dùng yêu cầu bỏ cờ thừa và code chết; file bỏ được c
 - `Teacher_Tester = Student_Tester = Tester`. Script đánh giá dùng chung `lib/utils/ckpt_tools.build_and_load`.
 - Thay đổi khởi tạo (bỏ module) làm đổi chuỗi RNG -> run mới không trùng bit với run cũ cùng seed; resume run cũ sẽ không nạp được optimizer (dùng optimizer mới).
 
+
+## 21. Selector chọn giả thuyết DiffLifter (2026-10-25, đã code, chờ chạy)
+
+Pipeline test (không GT): 2D Halpe -> DiffLifter (đóng băng) sinh pose S1/K1 + K=20 giả thuyết S=5 -> mỗi chi thêm 4 trạng thái lật độ sâu -> **Selector** chọn 1 phương án cho từng nhóm (4 chi + thân-đầu) -> ghép pose -> Teacher GT (đóng băng) giải mã mesh.
+- `lib/models/selector.py`: `SelectorNet` (token ảnh SPIN 8x8 + token khớp [2D, conf, đặc trưng ảnh lấy mẫu tại khớp] -> encoder 2 lớp; token phương án [tọa độ nhóm, lệch so với trung bình ứng viên, nhóm, trạng thái lật] -> decoder 2 lớp -> điểm). Loss CE mềm, mục tiêu softmax(-lỗi nhóm/tau), tau=0.02 m. `limb_states`, `build_options`, `group_errors`, `assemble` dùng chung.
+- `lib/utils/selector_tools.py`: backbone SPIN + lifter đóng băng (`SELECTOR.lifter_from_ckpt` nạp `diff_lifter.*` từ checkpoint Student để dùng đúng lifter), sinh ứng viên, `evaluate` (L0 / Selector / Oracle; pose MPJPE17 và mesh qua Teacher bằng dataset.evaluate; % khoảng cách lấy lại).
+- `models/ARTS.py`: tách `build_diff_lifter`, `diff_lift` thành hàm dùng chung (ARTS gọi lại, hành vi không đổi).
+- `main/train_selector.py` (chỉ train Selector, không cần Teacher), `main/eval_selector.py`; YAML `config/train_selector_l2last.yml`; key `cfg.SELECTOR.*` chỉ script Selector đọc.
+- Chọn checkpoint: `best.pth.tar` theo pose MPJPE17 trên 3dpw-val (2000 mẫu) chỉ để tham khảo; 3dpw-val chứa 2 sequence Crowd -> báo Crowd/bảng cuối dùng `last.pth.tar`.

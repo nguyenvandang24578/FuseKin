@@ -680,3 +680,30 @@ _h36m_proj_heatmap), lib/models/teacher_student.py (them output smpl_mesh_cam_re
 - Oracle `oracle_best_hypothesis.py` đo bằng `dataset.evaluate` (người dùng chạy, Student l2last ep27 + Teacher teacher_gt_v2_jotr, K=20): L0 khớp bảng test (3DPW 75.06/47.80/91.49; OC test 76.23/46.45/91.21). Teacher giải mã: 3DPW L0 74.99 -> L2 61.44 -> L3 52.24 -> L5 47.30 -> L6 44.86; REF pose GT 21.92/14.11/34.06. Student giải mã: L5 57.19, REF 42.79. OC test: Teacher L5 48.51, REF 25.94. Kết luận: phương án tốt có sẵn trong K giả thuyết; Teacher tận dụng pose tốt, Student thì không.
 - Dọn source theo yêu cầu (chi tiết `01_PROJECT_CONTEXT.md` mục 20). Chưa chạy; cần smoke test trên server trước khi train Teacher lại.
 
+
+## 34. Teacher GT sau sua loss (teacher_gt_v2_jotr_rootfix, 2026-10-25)
+Cung YAML train_teacher_k16_v2_jotr.yml, chi khac loss mesh / chieu 2D. Best epoch 40 (cu: 46), ca hai chon tren 3DPW test.
+MPJPE / PA / MPVPE (14 khop, dataset.evaluate), moi / cu:
+- 3dpw: 22.43/14.55/32.64 vs 21.92/14.11/34.06
+- OC chi test: 26.87/17.64/39.52 vs 25.94/17.77/41.56; OC toan bo: 23.95/17.45/38.06 vs 24.06/17.33/39.27
+- PC chi test (281 mau): 21.11/18.93/40.29 vs 20.36/17.93/42.95; PC toan bo: 27.50/20.00/40.89 vs 26.98/18.83/40.89
+- Crowd: 27.61/19.26/40.42 vs 27.12/18.07/39.83
+Nhan xet: MPVPE giam 1.2-2.7 mm o 3DPW/OC/PC test (Crowd +0.6, PC toan bo 0); MPJPE tang 0.5-0.9, PA tang 0.4-1.2. Chenh lech nho, 1 run moi ben (AWL lech ~1 mm giua seed) -> sua loss KHONG doi dang ke Teacher khi dau vao la GT. Can do Teacher moi lam bo giai ma pose DiffLifter (oracle_best_hypothesis) truoc khi chon Teacher cho Selector.
+
+## 35. Oracle voi Teacher rootfix + Student student_kd_full_3dpw (2026-10-25, nguoi dung chay)
+Hypothesis DiffLifter lay tu trong so diff_lifter trong checkpoint Student (khac l2last o muc 33) -> KHONG so truc tiep voi Teacher cu.
+MPJPE (dataset.evaluate), Student / Teacher rootfix giai ma:
+- 3dpw: REF 38.91/22.43; L0 76.15/78.13; L2 66.61/65.27; L3 61.10/56.88; L5 56.75/50.95; L6 54.42/48.10
+- OC test: L0 79.67/82.51; L3 61.71/58.50; L5 57.05/52.65
+- PC test (281): L0 65.12/55.72; L5 54.56/40.31
+- Crowd: L0 96.62/95.42; L3 77.95/72.27; L5 73.55/66.42
+So voi muc 33 (Teacher cu + l2last): Student L2/L3/L5 gan nhu bang (66.6/61.1/56.8 vs 65.7/60.5/57.2) -> chat luong gia thuyet tuong duong; Teacher rootfix L0 78.13 vs 74.99, L5 50.95 vs 47.30 -> Teacher moi giai ma pose khong hoan hao kem hon ~3-4 mm (gia thuyet, chua A/B cung lifter). Can chay A/B: cung Student, doi Teacher cu.
+A/B cung Student student_kd_full_3dpw (cung gia thuyet), doi Teacher cu teacher_gt_v2_jotr: Teacher cu / rootfix MPJPE
+3dpw L0 77.82/78.13, L3 56.49/56.88, L5 50.59/50.95; OC L5 51.52/52.65; PC L5 39.15/40.31; Crowd L5 66.76/66.42.
+-> Hai Teacher NGANG NHAU khi giai ma pose DiffLifter (chenh <= 1.1 mm). Gia thuyet "Teacher moi kem 3-4 mm" o tren SAI:
+chenh lech den tu lifter trong checkpoint Student (lifter trong l2last cho Teacher L0 74.99 / L5 47.30, tot hon ~3 mm
+du Student giai ma thi gan bang).
+
+## 36. Selector (2026-10-25, da code, chua chay)
+Muc tieu (lifter l2last, Teacher giai ma, 3DPW MPJPE14): L0 ~75 -> Oracle cung tap phuong an (L5) ~47-51. Bao % khoang cach
+lay lai = (L0 - Selector) / (L0 - Oracle). Chi tiet thiet ke 01_PROJECT_CONTEXT muc 21. Ket qua: chua co.

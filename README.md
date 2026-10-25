@@ -66,6 +66,13 @@ python main/train.py --cfg config/train_student_kd_e1_v2_diff_jotr_l2last.yml --
 python main/test_student_3dpw_sets.py --cfg config/train_teacher_k16_v2_jotr.yml --ckpt experiment/teacher_gt_v2_jotr_rootfix/checkpoint/best.pth.tar --gpu 0
 ```
 
+Train / đánh giá Selector chọn giả thuyết DiffLifter (chỉ train Selector; Teacher dùng lúc đánh giá):
+
+```bash
+python main/train_selector.py --cfg config/train_selector_l2last.yml --exp_name selector_l2last --gpu 0
+python main/eval_selector.py --cfg config/train_selector_l2last.yml --ckpt experiment/selector_l2last/checkpoint/last.pth.tar --teacher_ckpt experiment/teacher_gt_v2_jotr_rootfix/checkpoint/best.pth.tar --gpu 0
+```
+
 Trần oracle chọn giả thuyết DiffLifter (giải mã bằng Student / Teacher, đo bằng `dataset.evaluate`):
 
 ```bash
