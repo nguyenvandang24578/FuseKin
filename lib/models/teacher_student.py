@@ -692,9 +692,9 @@ class FusionPose2Mesh(nn.Module):
             full_pose, shape_param, cam_trans
         )
         if is_train and getattr(cfg.LOSS, 'DETACH_POSE_FOR_PROJ', True):
-            joint_proj_det, _, mesh_cam_proj, _ = self.get_coord(full_pose.detach(), shape_param, cam_trans)
+            joint_proj_det, _, mesh_cam_proj, mesh_render_det = self.get_coord(full_pose.detach(), shape_param, cam_trans)
         else:
-            joint_proj_det, mesh_cam_proj = joint_proj, mesh_cam
+            joint_proj_det, mesh_cam_proj, mesh_render_det = joint_proj, mesh_cam, mesh_cam_render
 
         result = {
             # --- dung cho loss voi GT ---
@@ -704,6 +704,7 @@ class FusionPose2Mesh(nn.Module):
             'smpl_mesh_cam': mesh_cam,                 # (B, 6890, 3) root-relative
             'smpl_mesh_cam_proj': mesh_cam_proj,
             'smpl_mesh_cam_render': mesh_cam_render,   # (B, 6890, 3) tuyet doi
+            'smpl_mesh_cam_render_det': mesh_render_det,  # nhu tren, pose detach neu DETACH_POSE_FOR_PROJ (loss chieu proj_h36m)
             'smpl_pose': full_pose,
             'smpl_shape': shape_param,
             'cam_param': cam_trans,

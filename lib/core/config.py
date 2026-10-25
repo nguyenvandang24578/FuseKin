@@ -549,6 +549,13 @@ cfg.LOSS.w_mesh = 0.0              # OFF by default
 cfg.LOSS.w_pose = 0.0              # OFF by default
 cfg.LOSS.t_min_for_smpl = 500      # only compute aux SMPL losses when t >= this
 cfg.LOSS.DETACH_POSE_FOR_PROJ = True # Detach pose (but not shape) for 2D projection loss
+# Sua quy uoc khop trong loss (mac dinh TAT de checkpoint cu tai lap duoc; xem experiment.md muc 32):
+# mesh_root_h36m: loss mesh tru pelvis H36M (J_h36m @ mesh) cho pred, giong GT (GT da tru pelvis H36M).
+#   Truoc day pred tru pelvis SMPL -> lech tinh tien ~38 mm, san loss L1 ~19 mm/toa do du pred dung hoan hao.
+# proj_h36m: loss chieu 2D dung H36M-17 hoi quy tu mesh (giong GT 2D) thay vi khop SMPL-30 chon theo ten
+#   (hong lech ~15 cm, Torso ~17 cm, TB 68 mm).
+cfg.LOSS.mesh_root_h36m = False
+cfg.LOSS.proj_h36m = False
 
 """ Model (continued) """
 cfg.MODEL.REFINER = 'hypergcn'    # 'hypergcn' or 'diffusion'

@@ -233,3 +233,8 @@ Nguoi dung chon xem attention hai checkpoint truoc, chi xet KD neu khac biet ro;
 lib/utils/attention_diagnostics.py: extract_joint_image_attention lay softmax Qjoint-Kimage that tu feat_layers, kiem tra (B,H,17,64), normalize/mean head FP32->CPU; save_attention_diagnostics xuat overlay8x8 cung scale, hieu Student-Teacher, mean maps/std nhan biet qua entropy/template-TV. TV/JS[0,1], KL Teacher||Student nats, entropy/log64, do da dang heads, perjoint/input errors/MPJPE17 tu mesh; Q1-Q4 theo input error16 bo pelvis. Template-TV dung mean Teacher cua cungjoint qua mau, can >=2mau. NPZ luu mean maps/pose/indices/grid centers. Khong mask attention theo detector/conf, chi luu detector_valid de doc nhom; tat ca17GTmesh hop le. Khong coi attention la confidence pose hay ep peak tai joint.
 
 Output compare_attention_<split>_<timestamp> canh checkpoint Student: attention_overview.png, vis_attention/, CSV mau/khop/nhom, attention.npz, summary/YAML/log. Khong auto gan nhan hieu qua hay train theo threshold TV/JS. Khac mean maps chua chung minh Teacher tot hon; mean-head giong nhau khong dong nghia moi head giong nhau. Chua doi loss/model/checkpoint/YAML train, chua chay/import/kiem cu phap Python local theo AGENTS. Lenh README, trang thai experiment.md muc30.
+
+## 16. Key moi 2026-10-25 (mac dinh tat)
+- LOSS.mesh_root_h36m: loss mesh tru pelvis H36M cho pred (GT da tru pelvis H36M). Truoc: lech ~38 mm.
+- LOSS.proj_h36m: loss chieu 2D dung H36M-17 tu mesh (giong GT 2D) thay vi SMPL-30 theo ten (lech TB 68 mm).
+- Model tra them 'smpl_mesh_cam_render_det' (mesh tuyet doi, pose detach neu DETACH_POSE_FOR_PROJ).

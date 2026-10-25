@@ -660,3 +660,16 @@ Phan F (800 mau 3DPW): coef1/coef2 Teacher 1.04/0.90, 0.98/0.87, 0.95/0.86; Stud
 ## 31. Can tren oracle chon phuong an DiffLifter - main/oracle_best_hypothesis.py (2026-10-25, chua chay)
 Ket qua lan do truoc (content_ablation --oracle_cand 20, 3DPW 2400 mau, Student l2last, MPJPE17): pose/mesh mac dinh 69.2/68.6; oracle K=20 ca pose 55.9/60.0; lat mat-lung toan than 68.6/67.7; lat do sau tung chi 62.3/63.3; gop tat ca 49.6/55.1. Script moi chay nhieu tap: muc L0 mac dinh, L1 trung binh K, L2 oracle ca pose, L3 oracle theo nhom (4 chi + than-dau), L4 oracle theo khop, L5 nhom + lat chi, L6 L5 + phan xa toan than; bao pose MPJPE17/PA, loi tung khop, va mesh khi dua pose da chon vao Student / Teacher (tuy chon).
 Ket qua oracle_best_hypothesis (Student l2last + Teacher jotr, K=20 S=5, 4000 mau/tap; pose MPJPE17 / mesh Teacher giai ma): 3DPW L0 68.3/67.5, L2 55.0/54.9, L3 46.4/47.0, L5 42.6/43.0, L6 40.9/40.9 (Student giai ma L5 52.0). PC L0 74.2/78.2 -> L5 49.3/54.5; Crowd L0 79.4/82.9 -> L5 53.2/58.7, L6 50.2/54.4. L1 (trung binh K) = L0. Chon theo nhom chi >> ca pose (~9 mm); lat chi them ~4 mm (co tay 3DPW 111 -> 59); lat mat-lung chi dang ke o Crowd. Teacher giai ma pose da chon tot hon Student ~9-10 mm o muc oracle; o L0 bang nhau -> Teacher dung duoc lam bo giai ma luc test (khong can GT). CANH BAO: OC L0 pose 45.9 mm thap bat thuong so voi log lifter L2 ep40 (OC 84.4) -> can kiem tra loader OC theo YAML Student. Huong de xuat: Critic chon theo tung chi + Teacher giai ma.
+
+## 32. Loi quy uoc khop trong loss mesh / loss chieu 2D (2026-10-25)
+Do bang main/check_root_proj_convention.py (3DPW test, 2000 mau, mesh GT):
+- Loss mesh: GT mesh tru pelvis H36M (fusekin_sample.py, PW3D train), pred mesh tru pelvis SMPL (get_coord). Lech pelvis
+  SMPL - H36M: TB 38.2 mm (median 36.0, p95 54.6), chu yeu truc y (+26 mm). San loss mesh L1 khi pred = GT hoan hao: 19.1 mm/toa do.
+- Loss chieu 2D: GT 2D = chieu H36M-17 (J_h36m @ mesh); pred = SMPL-30 chon theo ten. Lech 3D cung ten TB 68.4 mm:
+  Torso 170, R_Hip 152, L_Hip 139, Nose 90, Head_top 83 mm. Khong dao trai/phai (so cheo 242-294 mm); do rong hong
+  H36M 292 mm vs SMPL 137 mm, hong SMPL thap hon 11-14 cm -> khac dinh nghia khop.
+- Eval (dataset.evaluate) KHONG bi anh huong (tu tru cung goc 2 phia). Chi anh huong luc train (ca Teacher_Trainer va
+  Student_Trainer dua mesh_loss + body_joint_proj vao AWL; cfg.LOSS.w_mesh khong tat duoc).
+Sua (mac dinh TAT): cfg.LOSS.mesh_root_h36m (pred mesh tru pelvis H36M truoc loss), cfg.LOSS.proj_h36m (chieu H36M-17 tu
+mesh tuyet doi smpl_mesh_cam_render_det, pose detach nhu cu). Code: lib/core/base.py (_mesh_for_loss, _proj_for_loss,
+_h36m_proj_heatmap), lib/models/teacher_student.py (them output smpl_mesh_cam_render_det). Ban sao: *.bak_rootfix.

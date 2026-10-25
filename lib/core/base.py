@@ -171,6 +171,31 @@ def prepare_network(args, load_dir='', is_train=True):
     return dataloader, dataset_list, model, criterion, optimizer, lr_scheduler, loss_history, test_error_history
 
 
+
+def _h36m_proj_heatmap(J_h36m, mesh_abs):
+    """H36M-17 hoi quy tu mesh TUYET DOI (camera) -> chieu phoi canh giong get_coord -> toa do output_hm_shape."""
+    j = torch.matmul(J_h36m[None, :, :], mesh_abs)
+    x = j[:, :, 0] / (j[:, :, 2] + 1e-4) * cfg.DATASET.focal[0] + cfg.DATASET.princpt[0]
+    y = j[:, :, 1] / (j[:, :, 2] + 1e-4) * cfg.DATASET.focal[1] + cfg.DATASET.princpt[1]
+    x = x / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+    y = y / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+    return torch.stack((x, y), 2)
+
+
+def _mesh_for_loss(J_h36m, pred_mesh):
+    """cfg.LOSS.mesh_root_h36m: doi goc mesh pred (dang tru pelvis SMPL) sang pelvis H36M, giong GT."""
+    if cfg.LOSS.get('mesh_root_h36m', False):
+        return pred_mesh - torch.matmul(J_h36m[None, 0:1, :], pred_mesh)
+    return pred_mesh
+
+
+def _proj_for_loss(J_h36m, model_output, h36m_from_smpl30):
+    """cfg.LOSS.proj_h36m: chieu H36M-17 tu mesh (giong GT 2D); mac dinh: khop SMPL-30 chon theo ten (cu)."""
+    if cfg.LOSS.get('proj_h36m', False):
+        return _h36m_proj_heatmap(J_h36m, model_output['smpl_mesh_cam_render_det'])
+    return model_output['joint_proj_det'][:, h36m_from_smpl30, :2]
+
+
 class Trainer:
     def __init__(self, args, load_dir):
         self.batch_generator, self.dataset_list, self.model, self.loss, self.optimizer, self.lr_scheduler, self.loss_history, self.error_history\
@@ -331,7 +356,7 @@ class Trainer:
             
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
-            mesh_loss = self.coordLoss(pred_mesh, gt_mesh_cam, is_valid_fit[:, None, None])
+            mesh_loss = self.coordLoss(_mesh_for_loss(self.J_regressor, pred_mesh), gt_mesh_cam, is_valid_fit[:, None, None])
 
             # ---- Combine losses ----
             if use_diffusion:
@@ -618,13 +643,13 @@ class Teacher_Trainer:
             fit_shape_valid = is_valid_fit[:, None]
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
-            mesh_loss = self.coordLoss(pred_mesh, gt_mesh_cam, is_valid_fit[:, None, None])
+            mesh_loss = self.coordLoss(_mesh_for_loss(self.J_regressor, pred_mesh), gt_mesh_cam, is_valid_fit[:, None, None])
 
             # 2D projection loss: dung phep chieu phoi canh cua chinh model (focal/princpt trong cfg.DATASET),
             # toa do he heatmap. joint_proj_det da detach pose neu cfg.LOSS.DETACH_POSE_FOR_PROJ bat.
             gt_orig_joint_img = targets['orig_joint_img'].cuda()
             orig_joint_trunc = meta['orig_joint_trunc'].cuda()
-            pred_joint_proj = model_output['joint_proj_det'][:, self.h36m_from_smpl30, :2]
+            pred_joint_proj = _proj_for_loss(self.J_regressor, model_output, self.h36m_from_smpl30)
             loss_body_joint_proj = self.jotr_coord_loss(
                 pred_joint_proj,
                 gt_orig_joint_img[:, :, :2],
@@ -1438,7 +1463,7 @@ class Student_Trainer:
 
             # Loss body_joint_proj (2D): dung phep chieu phoi canh cua chinh model (focal/princpt trong cfg.DATASET),
             # toa do he heatmap. joint_proj_det da detach pose neu cfg.LOSS.DETACH_POSE_FOR_PROJ bat.
-            pred_joint_proj = model_output['joint_proj_det'][:, self.h36m_from_smpl30, :2]
+            pred_joint_proj = _proj_for_loss(self.J_regressor, model_output, self.h36m_from_smpl30)
             loss_body_joint_proj = self.jotr_coord_loss(
                 pred_joint_proj,
                 gt_orig_joint_img[:, :, :2],
@@ -1449,7 +1474,7 @@ class Student_Trainer:
             fit_shape_valid = is_valid_fit[:, None]
             smpl_pose_loss = self.jotr_param_loss(pred_smplpose, gt_smplpose, fit_pose_valid).mean()
             smpl_shape_loss = self.jotr_param_loss(pred_smplshape, gt_smplshape, fit_shape_valid).mean()
-            mesh_loss = self.coordLoss(pred_mesh, gt_mesh_cam, is_valid_fit[:, None, None])
+            mesh_loss = self.coordLoss(_mesh_for_loss(self.J_regressor, pred_mesh), gt_mesh_cam, is_valid_fit[:, None, None])
 
             loss_dict = {
                 'smpl_joint_cam': loss_smpl_joint_cam,
