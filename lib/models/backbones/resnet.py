@@ -64,6 +64,14 @@ class ResNetBackbone(nn.Module):
         # Chuan hoa dau vao (mac dinh = khong chuan hoa, giu hanh vi cu)
         self.register_buffer('input_mean', torch.zeros(1, 3, 1, 1))
         self.register_buffer('input_std', torch.ones(1, 3, 1, 1))
+        self.heat_fuse = None   # FuseKin-v3 [A]: ghep heatmap 2D vao feature stride 4 (enable_heatmap_fusion)
+
+    def enable_heatmap_fusion(self, num_joints=17):
+        """[A] (3DCrowdNet): x = x + Conv3x3([x, heatmap]) sau maxpool (64 kenh, stride 4). Conv khoi tao 0
+        -> luc dau backbone y het ban pretrain."""
+        self.heat_fuse = nn.Conv2d(64 + num_joints, 64, kernel_size=3, padding=1)
+        nn.init.zeros_(self.heat_fuse.weight)
+        nn.init.zeros_(self.heat_fuse.bias)
 
     def _make_layer(self, block, planes, blocks, stride=1, norm_layer=nn.BatchNorm2d):
         downsample = None
@@ -136,15 +144,21 @@ class ResNetBackbone(nn.Module):
         print(f'     bn1.running_mean[:3] = {self.bn1.running_mean[:3].tolist()}')
 
     # ------------------------------------------------------------------
-    def forward(self, image):
+    def forward(self, image, heatmap=None, return_f16=False):
+        """heatmap (B, J, h, w) cung kich thuoc feature sau maxpool (chi dung khi da enable_heatmap_fusion).
+        return_f16: tra them feature layer3 (stride 16)."""
         image = (image - self.input_mean) / self.input_std
         x = self.relu(self.bn1(self.conv1(image)))
         x = self.maxpool(x)
+        if self.heat_fuse is not None and heatmap is not None:
+            x = x + self.heat_fuse(torch.cat([x, heatmap.to(x.dtype)], 1))
         x = self.layer1(x)
         x = self.layer2(x)
-        x = self.layer3(x)
-        feature_map = self.layer4(x)
+        f16 = self.layer3(x)
+        feature_map = self.layer4(f16)
         feature_token = feature_map.mean(dim=(-2, -1)).unsqueeze(1)
+        if return_f16:
+            return feature_map, feature_token, f16
         return feature_map, feature_token
 
 

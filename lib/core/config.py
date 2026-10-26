@@ -202,6 +202,38 @@ cfg.MODEL.kd_joint_relation_log_grad = False
 cfg.MODEL.kd_lambda = 1.0
 cfg.MODEL.kd_hard_w = 1.0
 
+# ---- FuseKin-v3 (2026-10-26): moi module mac dinh TAT -> kien truc / hanh vi v2 ----
+# [A] Backbone: fine-tune ResNet (lr = TRAIN.lr * v3_bb_lr_scale; BN giu thong ke) va/hoac ghep heatmap 2D Halpe
+#     vao feature stride 4 (Conv3x3 khoi tao 0, 3DCrowdNet). Heatmap Gauss sigma tinh theo o 64x64.
+cfg.MODEL.v3_bb_finetune = False
+cfg.MODEL.v3_bb_lr_scale = 0.1
+cfg.MODEL.v3_bb_heatmap = False
+cfg.MODEL.v3_heatmap_sigma = 2.0
+# [B] Feature anh F16 (layer3) + F8 (layer4) lay tai khop 2D -> cong vao token khop (Linear khoi tao 0).
+cfg.MODEL.v3_joint_feat = False
+# [B'] Bias attention theo so hop tren khung xuong trong self-attn giua cac khop (BlockGCN), khoi tao 0.
+cfg.MODEL.v3_hop_bias = False
+# [C] Head phan bo do sau tung khop (PandaPose): phan loai v3_depth_bins bin trong [-R, R] met (tuong doi pelvis),
+#     CE mem (sigma 1 bin) trong so v3_depth_loss_w; do sau ky vong + entropy cong vao token khop (khoi tao 0).
+cfg.MODEL.v3_depth_head = False
+cfg.MODEL.v3_depth_bins = 64
+cfg.MODEL.v3_depth_range = 1.0
+cfg.MODEL.v3_depth_loss_w = 0.1
+# [D] Tinh chinh lap kieu ReFit: so buoc (0 = tat), GRU tung tham so (24 goc + shape + camera), feedback = feature
+#     tai khop da chieu (cua so 3x3 tren F16) + sai lech 2D Halpe x conf + cam_bbox; dropout theo khop; loss moi buoc
+#     trong so gamma^(so buoc con lai).
+cfg.MODEL.v3_refine_iters = 0
+cfg.MODEL.v3_refine_feat_dim = 32
+cfg.MODEL.v3_refine_hidden = 32
+cfg.MODEL.v3_refine_dropout = 0.25
+cfg.MODEL.v3_refine_gamma = 0.85
+# [E] Loss khop 3D co do bat dinh hoc duoc tung khop (|e| / sigma + log sigma) va nhieu 2D luc train Student
+#     (ti le mau v3_pose2d_noise_prob; 0 = tat): jitter std (toa do [-1,1]) + mat khop.
+cfg.MODEL.v3_joint_uncert = False
+cfg.MODEL.v3_pose2d_noise_prob = 0.0
+cfg.MODEL.v3_pose2d_noise_std = 0.02
+cfg.MODEL.v3_pose2d_drop_prob = 0.05
+
 """ Train Detail """
 cfg.TRAIN = edict()
 cfg.TRAIN.print_freq = 20

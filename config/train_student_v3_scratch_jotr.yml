@@ -1,0 +1,76 @@
+# FuseKin-v3 Student FROM SCRATCH (khong KD, khong khoi tao tu Teacher) - giao thuc JOTR (4 bo, khong 3DPW).
+# Muc tieu: thang Student scratch v2 cung du lieu / lich train; thang roi moi them KD (can Teacher v3 cung kien truc).
+# Moi module v3 bat / tat bang co MODEL.v3_* ben duoi (tat het = kien truc v2). Chi tiet: 01_PROJECT_CONTEXT muc 22.
+#   [A] v3_bb_finetune / v3_bb_heatmap   backbone fine-tune + heatmap 2D ghep vao stride 4
+#   [B] v3_joint_feat, [B'] v3_hop_bias  feature anh tai khop 2D; bias attention theo hop
+#   [C] v3_depth_head                    phan bo do sau tung khop (phan loai bin)
+#   [D] v3_refine_iters                  tinh chinh lap kieu ReFit (0 = tat)
+#   [E] v3_joint_uncert, v3_pose2d_noise_prob  loss khop co do bat dinh; nhieu 2D luc train
+# kd_hard_w 0.5: giong loss Student scratch v2 cu (0.5 * hard + privileged) de so cong bang.
+# Chay: python main/train.py --cfg ./config/train_student_v3_scratch_jotr.yml --exp_name student_v3_scratch_jotr --gpu 0
+DATASET:
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']   # giao thuc JOTR: KHONG 3DPW
+  test_list: ['3dpw']
+  workers: 8
+  pw3d_2d_source: 'halpe26'
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: True     # conf lien tuc cho DiffLifter, giong luc train lifter
+  h36m_2d_source: 'halpe26'
+  muco_2d_source: 'halpe26'
+  fusekin_unified: True    # mau train thong nhat cho 4 bo (lib/utils/fusekin_sample.py)
+
+MODEL:
+  name: 'student'
+  resnet_type: 50
+  hpe_dim: 512
+  difflift_checkpoint: './experiment/finetune_difflifter_r25_cam_gtmask_d512_e40/latest_epoch.bin'
+  difflift_steps: 1
+  difflift_k: 1
+  backbone_pretrained: 'spin'
+  student_use_kd: False    # from scratch
+  init_student_from_teacher: False
+  kd_hard_w: 0.5
+
+  # ---- FuseKin-v3 ----
+  v3_bb_finetune: True     # [A]
+  v3_bb_lr_scale: 0.1
+  v3_bb_heatmap: True      # [A]
+  v3_heatmap_sigma: 2.0
+  v3_joint_feat: True      # [B]
+  v3_hop_bias: True        # [B']
+  v3_depth_head: True      # [C]
+  v3_depth_bins: 64
+  v3_depth_range: 1.0
+  v3_depth_loss_w: 0.1
+  v3_refine_iters: 3       # [D] 0 = tat
+  v3_refine_feat_dim: 32
+  v3_refine_hidden: 32
+  v3_refine_dropout: 0.25
+  v3_refine_gamma: 0.85
+  v3_joint_uncert: True    # [E]
+  v3_pose2d_noise_prob: 0.3   # [E] 0 = tat
+  v3_pose2d_noise_std: 0.02
+  v3_pose2d_drop_prob: 0.05
+
+TRAIN:
+  print_freq: 20
+  batch_size: 32
+  shuffle: True
+  dataset_ratio: [0.25, 0.25, 0.25, 0.25]   # Human36M, MuCo, MSCOCO, CrowdPose
+  samples_per_epoch: 32000                   # 1000 iter / epoch voi batch 32
+  begin_epoch: 1
+  end_epoch: 30
+  scheduler: 'step'
+  lr: 0.0001
+  lr_step: [15, 22, 27]
+  lr_factor: 0.5
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 32
+  shuffle: False
+  select_dataset: '3dpw'
+  final_test_list: ['3dpw']     # train xong: nap best.pth.tar, test 1 lan

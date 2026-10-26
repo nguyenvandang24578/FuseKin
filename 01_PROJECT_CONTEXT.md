@@ -261,3 +261,13 @@ Pipeline test (không GT): 2D Halpe -> DiffLifter (đóng băng) sinh pose S1/K1
 - `models/ARTS.py`: tách `build_diff_lifter`, `diff_lift` thành hàm dùng chung (ARTS gọi lại, hành vi không đổi).
 - `main/train_selector.py` (chỉ train Selector, không cần Teacher), `main/eval_selector.py`; YAML `config/train_selector_l2last.yml`; key `cfg.SELECTOR.*` chỉ script Selector đọc.
 - Chọn checkpoint: `best.pth.tar` theo pose MPJPE17 trên 3dpw-val (2000 mẫu) chỉ để tham khảo; 3dpw-val chứa 2 sequence Crowd -> báo Crowd/bảng cuối dùng `last.pth.tar`.
+
+## 22. FuseKin-v3 (2026-10-26, đã code, chưa chạy)
+
+Mọi module bật bằng cờ `cfg.MODEL.v3_*`, mặc định tắt = kiến trúc/hành vi v2 (không thêm module, không đổi thứ tự khởi tạo). YAML mẫu bật hết: `config/train_student_v3_scratch_jotr.yml` (Student scratch, giao thức JOTR, `kd_hard_w 0.5` giống loss scratch cũ).
+- **[A]** `v3_bb_finetune` (backbone train, nhóm lr riêng `TRAIN.lr * v3_bb_lr_scale`, khóa `lr_scale` được `lr_warmup` tôn trọng; BN giữ thống kê vì backbone luôn eval), `v3_bb_heatmap` (`ResNetBackbone.enable_heatmap_fusion`: x += Conv3x3([x, heatmap Halpe×conf]) sau maxpool, conv khởi tạo 0; heatmap `ARTS.make_heatmaps`). Backbone trả thêm F16 (layer3) khi cần.
+- **[B]** `v3_joint_feat`: `sample_joint_feats` lấy F16+F8 tại khớp 2D (mask 0 -> 0) -> `jf_proj` (khởi tạo 0) cộng vào token khớp trước fusion. **[B']** `v3_hop_bias`: bias attention (hop 0..8, mỗi head) trong self-attn giữa khớp.
+- **[C]** `v3_depth_head`: `JointDepthHead` phân loại độ sâu tương đối pelvis (64 bin, [-1, 1] m); kỳ vọng/entropy/(z lifter - kỳ vọng) -> `depth_proj` (khởi tạo 0) cộng vào token khớp; loss CE mềm (`base._depth_loss`, trọng số `v3_depth_loss_w`), log lỗi độ sâu mm.
+- **[D]** `v3_refine_iters` T: `RefitRefiner` + `StreamGRU` 26 luồng (24 góc 6D + shape + camera thô), feedback = F16/F8 cửa sổ 3x3 tại H36M-17 chiếu từ mesh + (Halpe - chiếu)×conf + tham số + `cam_bbox`; dropout theo khớp; gradient chỉ qua delta. Output chính = bước cuối; `refine_history` -> `base._hard_losses` cộng loss các bước trước, trọng số gamma^(số bước còn lại), chuẩn hóa.
+- **[E]** `v3_joint_uncert`: `smpl_model.joint_log_sigma`, loss khớp 3D = |e|·e^{-s} + s. `v3_pose2d_noise_prob`: `base._noisy_2d` (jitter + mất khớp) trước lifter/heatmap/PE của Student.
+- Teacher dùng chung kiến trúc (cờ áp cho cả hai). KD Student v3 cần Teacher v3 (checkpoint Teacher v2 thiếu key module mới -> load_model_weights báo lỗi). Script phân tích gọi `smpl_model` trực tiếp (oracle, analyze_teacher) chỉ hỗ trợ model v2.

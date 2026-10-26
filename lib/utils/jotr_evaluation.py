@@ -35,7 +35,8 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda'):
                 teacher_gt_joints = teacher_gt_joints - teacher_gt_joints[:, 0:1, :]
                 outputs = model(model_inputs['img'], teacher_gt_joints, is_train=False,
                                 pose_2d=model_inputs['joints'].float(),
-                                joints_mask=model_inputs.get('joints_mask'))
+                                joints_mask=model_inputs.get('joints_mask'),
+                                cam_bbox=model_inputs.get('cam_bbox'))
             else:
                 outputs = model(
                     model_inputs['img'], model_inputs['joints'],

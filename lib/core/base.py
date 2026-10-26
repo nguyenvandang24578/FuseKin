@@ -116,6 +116,23 @@ def _restore_resume_state(trainer, student=False):
         print(f'===> [resume] CANH BAO: khong nap duoc optimizer ({str(e)[:100]}) -> dung optimizer moi')
 
 
+def _make_optimizer(model):
+    """Nhu get_optimizer; neu v3_bb_finetune: backbone (tru module ghep heatmap) co lr = TRAIN.lr * v3_bb_lr_scale
+    (khoa 'lr_scale' trong param group, lr_warmup cung ton trong)."""
+    if not cfg.MODEL.v3_bb_finetune:
+        return get_optimizer(model=model)
+    assert cfg.TRAIN.optimizer == 'adam', 'v3_bb_finetune hien chi ho tro optimizer adam'
+    bb, rest = [], []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        (bb if name.startswith('backbone.') and not name.startswith('backbone.heat_fuse.') else rest).append(p)
+    scale = float(cfg.MODEL.v3_bb_lr_scale)
+    print(f'===> Optimizer: {len(rest)} tensor lr={cfg.TRAIN.lr:.1e} | backbone {len(bb)} tensor lr x{scale}')
+    return torch.optim.Adam([{'params': rest},
+                             {'params': bb, 'lr': cfg.TRAIN.lr * scale, 'lr_scale': scale}], lr=cfg.TRAIN.lr)
+
+
 def prepare_network(args, load_dir='', is_train=True):
     dataset_names = cfg.DATASET.train_list if is_train else cfg.DATASET.test_list
     dataset_list, dataloader = get_dataloader(args, dataset_names, is_train)
@@ -129,7 +146,7 @@ def prepare_network(args, load_dir='', is_train=True):
         model = model.cuda()
 
     if is_train:
-        optimizer = get_optimizer(model=model)
+        optimizer = _make_optimizer(model)
         lr_scheduler = get_scheduler(optimizer=optimizer)
 
     if load_dir and (not is_train or args.resume_training):
@@ -201,8 +218,15 @@ def _smpl_hard_losses(trainer, model_output, targets, meta, gt_fit_joint_cam, fi
     # H36M-17 hoi quy tu mesh pred, root-relative (giong GT fit_joint_cam)
     pred_pose = torch.matmul(trainer.J_regressor[None, :, :], pred_mesh)
     pred_pose = pred_pose - pred_pose[:, 0:1, :]
-    loss_smpl_joint_cam = trainer.jotr_coord_loss(
-        pred_pose, gt_fit_joint_cam, fit_joint_trunc * is_valid_fit[:, None, None]).mean()
+    jvalid = fit_joint_trunc * is_valid_fit[:, None, None]
+    coord = trainer.jotr_coord_loss(pred_pose, gt_fit_joint_cam, jvalid)              # (B, J, 3)
+    log_sigma = _joint_log_sigma(trainer)
+    if log_sigma is None:
+        loss_smpl_joint_cam = coord.mean()
+    else:
+        # [E] L1 co do bat dinh hoc duoc tung khop (SAM 3D Body): |e| / sigma + log sigma
+        vj = jvalid.reshape(coord.shape[0], -1)
+        loss_smpl_joint_cam = (coord.mean(-1) * torch.exp(-log_sigma)[None] + log_sigma[None] * vj).mean()
     fit_pose_valid = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
     fit_shape_valid = is_valid_fit[:, None]
     smpl_pose_loss = trainer.jotr_param_loss(model_output['smpl_pose'], targets['pose_param'].cuda(),
@@ -224,6 +248,68 @@ def _smpl_hard_losses(trainer, model_output, targets, meta, gt_fit_joint_cam, fi
         'body_joint_proj': loss_body_joint_proj,
     }
     return loss_dict, pred_pose
+
+
+def _joint_log_sigma(trainer):
+    net = trainer.model.module if hasattr(trainer.model, 'module') else trainer.model
+    return getattr(net.smpl_model, 'joint_log_sigma', None)
+
+
+def _hard_losses(trainer, model_output, targets, meta, gt_fit_joint_cam, fit_joint_trunc, is_valid_fit):
+    """5 loss voi GT cho uoc luong cuoi; neu co tinh chinh lap [D]: cong ca cac buoc truoc voi trong so
+    gamma^(so buoc con lai), chuan hoa theo tong trong so (ReFit giam sat moi buoc)."""
+    final, _ = _smpl_hard_losses(trainer, model_output, targets, meta, gt_fit_joint_cam, fit_joint_trunc, is_valid_fit)
+    hist = model_output.get('refine_history')
+    if not hist:
+        return final
+    g = float(cfg.MODEL.v3_refine_gamma)
+    T = len(hist)
+    tot = dict(final)
+    wsum = 1.0
+    for i, out in enumerate(hist):
+        w = g ** (T - i)
+        li, _ = _smpl_hard_losses(trainer, out, targets, meta, gt_fit_joint_cam, fit_joint_trunc, is_valid_fit)
+        for k in tot:
+            tot[k] = tot[k] + w * li[k]
+        wsum += w
+    return {k: v / wsum for k, v in tot.items()}
+
+
+def _depth_loss(model_output, gt_rootrel, valid_joint):
+    """[C] CE mem cho phan bo do sau tung khop: muc tieu Gauss quanh do sau GT (sigma = 1 bin). Tra (loss, mm)."""
+    logits = model_output['depth_logits'].float()                                   # (B, J, bins)
+    bins, R = logits.shape[-1], float(cfg.MODEL.v3_depth_range)
+    centers = torch.linspace(-R, R, bins, device=logits.device)
+    z = gt_rootrel[..., 2].float().clamp(-R, R)
+    width = 2 * R / (bins - 1)
+    target = torch.softmax(-((centers[None, None] - z[..., None]) / width) ** 2 / 2, -1)
+    ce = -(target * torch.log_softmax(logits, -1)).sum(-1)                         # (B, J)
+    v = valid_joint.float()
+    loss = (ce * v).sum() / v.sum().clamp_min(1.0)
+    with torch.no_grad():
+        err = ((model_output['depth_exp'].float() - z).abs() * v).sum() / v.sum().clamp_min(1.0) * 1000
+    return loss, float(err)
+
+
+def _noisy_2d(pose2d, mask):
+    """[E] Nhieu 2D luc train Student (tren ti le v3_pose2d_noise_prob mau): jitter cac khop hop le
+    (std v3_pose2d_noise_std, toa do [-1,1]) + mat khop ngau nhien (v3_pose2d_drop_prob, khong mat pelvis)."""
+    p = float(cfg.MODEL.v3_pose2d_noise_prob)
+    if p <= 0:
+        return pose2d, mask
+    B, J = pose2d.shape[:2]
+    sel = (torch.rand(B, 1, 1, device=pose2d.device) < p).float()
+    m = mask.reshape(B, J, 1)
+    valid = (m > 0).float()
+    xy = pose2d[..., :2] + torch.randn_like(pose2d[..., :2]) * float(cfg.MODEL.v3_pose2d_noise_std) * valid * sel
+    drop = (torch.rand(B, J, 1, device=pose2d.device) < float(cfg.MODEL.v3_pose2d_drop_prob)).float() * sel
+    drop[:, 0] = 0
+    m = m * (1 - drop)
+    out = pose2d.clone()
+    out[..., :2] = xy * (m > 0).float()
+    if out.shape[-1] >= 3:
+        out[..., 2:3] = out[..., 2:3] * (m > 0).float()
+    return out, m.reshape(mask.shape)
 
 
 def _apply_awl(trainer, loss_dict):
@@ -330,13 +416,20 @@ class Teacher_Trainer:
             # PE vi tri khop lay tu 2D Halpe (nhieu), cung nguon voi Student
             model_output = self.model(input_image, teacher_model_input, is_train=True,
                                       pose_2d=inputs['joints'].cuda().float(),
-                                      joints_mask=inputs['joints_mask'].cuda().float())
+                                      joints_mask=inputs['joints_mask'].cuda().float(),
+                                      cam_bbox=inputs['cam_bbox'].cuda().float() if 'cam_bbox' in inputs else None)
 
-            loss_terms, _ = _smpl_hard_losses(self, model_output, targets, meta, gt_fit_joint_cam,
-                                              fit_joint_trunc, is_valid_fit)
+            loss_terms = _hard_losses(self, model_output, targets, meta, gt_fit_joint_cam, fit_joint_trunc,
+                                      is_valid_fit)
             loss, _ = _apply_awl(self, loss_terms)
 
             extra_stats = {}
+            if 'depth_logits' in model_output:
+                vj = (fit_joint_trunc.squeeze(-1) if fit_joint_trunc.dim() == 3 else fit_joint_trunc) * is_valid_fit[:, None]
+                d_loss, d_mm = _depth_loss(model_output, teacher_gt_pose3d, vj)
+                loss = loss + float(cfg.MODEL.v3_depth_loss_w) * d_loss
+                extra_stats['depth_loss'] = d_loss.item()
+                extra_stats['depth_err_mm'] = d_mm
             if self.img_probe:
                 valid_joint = fit_joint_trunc.squeeze(-1) if fit_joint_trunc.dim() == 3 else fit_joint_trunc
                 valid_joint = valid_joint * is_valid_fit[:, None]
@@ -676,14 +769,16 @@ class Student_Trainer:
             input_image = inputs['img'].cuda().float()
             input_pose2d = inputs['joints'].cuda().float()
             joints_mask = inputs['joints_mask'].cuda().float()
+            input_pose2d, joints_mask = _noisy_2d(input_pose2d, joints_mask)       # [E] (0 = tat)
             gt_orig_joint_cam = targets['orig_joint_cam'].cuda()
             gt_fit_joint_cam = targets['fit_joint_cam'].cuda()
             fit_joint_trunc = meta['fit_joint_trunc'].cuda()
             is_valid_fit = meta['is_valid_fit'].cuda()
             gt_pose_input = gt_orig_joint_cam - gt_orig_joint_cam[:, 0:1, :]
+            cam_bbox = inputs['cam_bbox'].cuda().float()
 
             model_output = self.model(input_image, input_pose2d, is_train=True, joints_mask=joints_mask,
-                                      cam_bbox=inputs['cam_bbox'].cuda().float())
+                                      cam_bbox=cam_bbox)
 
             # ---------- mask khop hop le ----------
             valid_joint = fit_joint_trunc.squeeze(-1) if fit_joint_trunc.dim() == 3 else fit_joint_trunc
@@ -701,7 +796,7 @@ class Student_Trainer:
             if self.use_kd:
                 with torch.no_grad():
                     t_out = self.teacher(input_image, gt_pose_input, is_train=False,
-                                         pose_2d=input_pose2d, joints_mask=joints_mask)
+                                         pose_2d=input_pose2d, joints_mask=joints_mask, cam_bbox=cam_bbox)
                 self._ensure_projectors(model_output)
                 sw = valid_joint.sum(-1) / n_valid                                             # (B,) 1 | 0
                 kd_proj_ps = (self._kd_dist('proj', model_output['feat_joint_in'], t_out['feat_joint_in'])
@@ -723,10 +818,15 @@ class Student_Trainer:
             privileged_loss = ((privileged_error * valid_joint).sum(-1) / n_valid).mean()
 
             # ---------- hard loss ----------
-            loss_terms, _ = _smpl_hard_losses(self, model_output, targets, meta, gt_fit_joint_cam,
-                                              fit_joint_trunc, is_valid_fit)
+            loss_terms = _hard_losses(self, model_output, targets, meta, gt_fit_joint_cam, fit_joint_trunc,
+                                      is_valid_fit)
             hard_loss, _ = _apply_awl(self, loss_terms)
             loss = self.kd_hard_w * hard_loss + self.kd_lambda * kd_loss + privileged_loss
+            depth_stats = {}
+            if 'depth_logits' in model_output:
+                d_loss, d_mm = _depth_loss(model_output, gt_pose_input, valid_joint)
+                loss = loss + float(cfg.MODEL.v3_depth_loss_w) * d_loss
+                depth_stats = {'depth_loss': d_loss.item(), 'depth_err_mm': d_mm}
 
             # Do gradient tai tham so fusion (KD relation): feature gather cua DataParallel la cac nhanh rieng,
             # khong dung grad theo feature joint gather de tranh log nham bang 0.
@@ -763,6 +863,7 @@ class Student_Trainer:
                 'kd_global': kd_global_ps.mean().item(),
                 'privileged_3d': privileged_loss.item(),
                 'lift_err_mm': lift_err_mm,
+                **depth_stats,
             }
             if self.kd_joint_relation:
                 step_stats['kd_joint_relation'] = step_stats['kd_joint']
@@ -802,6 +903,7 @@ class Student_Trainer:
                     f'[P {step_stats["kd_proj"]:.3f} J {step_stats["kd_joint"]:.3f} G {step_stats["kd_global"]:.3f}] '
                     f'{gate_text}'
                     f'lift: {lift_err_mm:.0f}mm '
+                    + (f'depth: {depth_stats["depth_err_mm"]:.0f}mm ' if depth_stats else '') +
                     f'priv: {step_stats["privileged_3d"]:.3f} '
                     f'tl: {loss.detach().item():.3f}'
                 )
@@ -811,7 +913,8 @@ class Student_Trainer:
         avg = {k: v / n_batch for k, v in running.items()}
         print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f} | '
               f'KD dist proj: {avg["kd_proj"]:.4f} | joint: {avg["kd_joint"]:.4f} | global: {avg["kd_global"]:.4f}')
-        print(f'  Privileged 3D: {avg["privileged_3d"]:.4f} | loi joint dau vao (DiffLifter): {avg["lift_err_mm"]:.1f} mm')
+        print(f'  Privileged 3D: {avg["privileged_3d"]:.4f} | loi joint dau vao (DiffLifter): {avg["lift_err_mm"]:.1f} mm'
+              + (f' | do sau [C]: loss {avg["depth_loss"]:.4f}, loi {avg["depth_err_mm"]:.1f} mm' if 'depth_loss' in avg else ''))
         if self.kd_joint_relation:
             print(f'  KD joint RELATION (thay MSE feature): {avg["kd_joint_relation"]:.6f} | '
                   f'cap hop le/mau: {avg["kd_relation_pairs"]:.1f}; global KD giu nguyen')

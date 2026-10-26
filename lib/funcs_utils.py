@@ -29,7 +29,7 @@ def lr_warmup(optimizer, lr, epoch, base):
     min_lr = getattr(cfg.TRAIN, 'min_lr', 1e-6)
     warmup_lr = min_lr + (lr - min_lr) * (epoch / base)
     for param_group in optimizer.param_groups:
-        param_group['lr'] = warmup_lr
+        param_group['lr'] = warmup_lr * param_group.get('lr_scale', 1.0)   # lr_scale: nhom backbone FuseKin-v3
     return warmup_lr
 
 

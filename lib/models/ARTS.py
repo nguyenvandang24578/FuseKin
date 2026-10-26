@@ -17,6 +17,27 @@ from models.teacher_student import Teacher, Student
 os.environ.setdefault("WANDB_MODE", "offline")
 
 
+def make_heatmaps(pose_2d, joints_mask, size=64, sigma=2.0):
+    """[A] Heatmap Gauss tu 2D [-1,1] (B,J,2|3) x conf (B,J,1) -> (B, J, size, size). Khop mask = 0 -> 0."""
+    p2 = pose_2d[:, 0] if pose_2d.dim() == 4 else pose_2d
+    xy = (p2[..., :2].float() + 1.0) * 0.5 * size - 0.5                        # tam o pixel cua luoi size x size
+    conf = joints_mask.reshape(xy.shape[0], xy.shape[1]).float().clamp(0, 1)
+    g = torch.arange(size, device=xy.device, dtype=xy.dtype)
+    gx = torch.exp(-(g[None, None, :] - xy[..., 0:1]) ** 2 / (2 * sigma ** 2))    # (B, J, W)
+    gy = torch.exp(-(g[None, None, :] - xy[..., 1:2]) ** 2 / (2 * sigma ** 2))    # (B, J, H)
+    return gy[..., :, None] * gx[..., None, :] * conf[..., None, None]
+
+
+def v3_model_kwargs():
+    """Tham so FusionPose2Mesh cho cac module FuseKin-v3 tu cfg.MODEL.v3_* (mac dinh TAT = v2)."""
+    M = cfg.MODEL
+    return dict(joint_feat=bool(M.v3_joint_feat), hop_bias=bool(M.v3_hop_bias), depth_head=bool(M.v3_depth_head),
+                depth_bins=int(M.v3_depth_bins), depth_range=float(M.v3_depth_range),
+                refine_iters=int(M.v3_refine_iters), refine_feat_dim=int(M.v3_refine_feat_dim),
+                refine_hidden=int(M.v3_refine_hidden), refine_dropout=float(M.v3_refine_dropout),
+                joint_uncert=bool(M.v3_joint_uncert))
+
+
 def build_diff_lifter(path, steps=1, k=1):
     """DiffLifter tu checkpoint finetune_difflifter.py (model_state = trong so EMA, difflift_cfg = kien truc).
     Dung chung cho ARTS (Student) va Selector."""
@@ -72,6 +93,11 @@ class ARTS(nn.Module):
             raise ValueError(f"MODEL.name khong hop le: {self.mode}. Chon 'teacher' hoac 'student'.")
 
         self.backbone = ResNetBackbone(cfg.MODEL.resnet_type)
+        # FuseKin-v3 [A]: fine-tune backbone (lr nho, xem base.prepare_network) + ghep heatmap Halpe vao stride 4
+        self.bb_finetune = bool(cfg.MODEL.v3_bb_finetune)
+        self.bb_heatmap = bool(cfg.MODEL.v3_bb_heatmap)
+        if self.bb_heatmap:
+            self.backbone.enable_heatmap_fusion(17)
         # Nap trong so pretrain cho backbone ('spin' | 'imagenet' | '' = ngau nhien).
         # Khi nap checkpoint da train, load_model_weights ghi de backbone (va chuan hoa anh) bang ban trong checkpoint.
         bb_src = cfg.MODEL.get('backbone_pretrained', '')
@@ -91,16 +117,20 @@ class ARTS(nn.Module):
         if self.mode == 'student' and cfg.MODEL.get('difflift_spread_gate_zero', False) and not self.diff_spread_gate:
             raise ValueError('difflift_spread_gate_zero can bat difflift_spread_gate')
 
+        v3 = v3_model_kwargs()
+        self.need_f16 = v3['joint_feat'] or v3['depth_head'] or v3['refine_iters'] > 0
+        if self.bb_finetune or self.bb_heatmap or self.need_f16:
+            print(f'===> FuseKin-v3: bb_finetune={self.bb_finetune} bb_heatmap={self.bb_heatmap} {v3}')
         if self.mode == 'teacher':
             print('Dang goi mo hinh teacher (GT 3D + PE 2D Halpe)')
             self.smpl_model = Teacher(num_joint=num_joint, embed_dim=embed_dim, depth=3,
-                                      use_img_probe=bool(cfg.MODEL.get('img_probe', False)))
+                                      use_img_probe=bool(cfg.MODEL.get('img_probe', False)), **v3)
         else:
             print('Dang goi mo hinh student (DiffLifter)')
             self.smpl_model = Student(num_joint=num_joint, embed_dim=embed_dim, depth=3,
                                       spread_gate=self.diff_spread_gate,
                                       spread_gate_zero=bool(cfg.MODEL.get('difflift_spread_gate_zero', False)),
-                                      spread_gate_hidden=int(cfg.MODEL.get('difflift_spread_gate_hidden', 64)))
+                                      spread_gate_hidden=int(cfg.MODEL.get('difflift_spread_gate_hidden', 64)), **v3)
             if self.diff_spread_gate:
                 print(f'===> Spread gate: 2*sigmoid, init=1, zero_std={cfg.MODEL.difflift_spread_gate_zero}, '
                       f'hidden={cfg.MODEL.difflift_spread_gate_hidden}')
@@ -113,11 +143,16 @@ class ARTS(nn.Module):
                                  cfg.MODEL.get('difflift_k', 1))
 
     def freeze_backbone_and_lifter(self):
-        for module in (self.backbone, self.diff_lifter):
+        # Backbone: dong bang tru khi v3_bb_finetune (khi do chi BN giu thong ke cu, xem train()); module ghep
+        # heatmap luon duoc train.
+        for module in ((None if self.bb_finetune else self.backbone), self.diff_lifter):
             if module is not None:
                 for param in module.parameters():
                     param.requires_grad = False
                 module.eval()
+        if self.backbone.heat_fuse is not None:
+            for param in self.backbone.heat_fuse.parameters():
+                param.requires_grad = True
 
     def train(self, mode=True):
         super().train(mode)
@@ -130,6 +165,21 @@ class ARTS(nn.Module):
         feature_map, global_feature = self.backbone(image)
         global_feature = global_feature.reshape(image.shape[0], 1, -1)
         return feature_map, global_feature
+
+    def image_feats(self, image, pose_2d=None, joints_mask=None):
+        """Feature cho smpl_model: dict img_feats (F8) [+ img_feats16 (F16)]. Co gradient neu backbone duoc train
+        (v3_bb_finetune) hoac co module ghep heatmap; nguoc lai chay no_grad nhu v2."""
+        heat = None
+        if self.bb_heatmap:
+            assert pose_2d is not None and joints_mask is not None, 'v3_bb_heatmap can pose_2d + joints_mask'
+            heat = make_heatmaps(pose_2d, joints_mask, size=image.shape[-1] // 4, sigma=float(cfg.MODEL.v3_heatmap_sigma))
+        grad = self.bb_finetune or self.bb_heatmap
+        with torch.set_grad_enabled(grad and torch.is_grad_enabled()):
+            out = self.backbone(image, heatmap=heat, return_f16=self.need_f16)
+        feats = {'img_feats': out[0]}
+        if self.need_f16:
+            feats['img_feats16'] = out[2]
+        return feats
 
     def lift_diffusion(self, pose_2d, joints_mask, cam_bbox, all_hyp=False, random_noise=False):
         """Xem diff_lift."""
@@ -153,15 +203,15 @@ class ARTS(nn.Module):
             m = None
         return dict(joints_2d=p2[..., :2], joints_2d_mask=m)
 
-    def forward_teacher(self, image, gt_pose_3d, is_train, pose_2d=None, joints_mask=None):
+    def forward_teacher(self, image, gt_pose_3d, is_train, pose_2d=None, joints_mask=None, cam_bbox=None):
         # gt_pose_3d: (B, 17, 3), met, root-relative (da xu ly o Trainer)
-        with torch.no_grad():
-            feature_map, _ = self.get_image_features(image)
+        feats = self.image_feats(image, pose_2d, joints_mask)
         result = self.smpl_model(
             joints=gt_pose_3d,
-            img_feats=feature_map,
             is_train=is_train,
             return_features=True,
+            cam_bbox=cam_bbox,
+            **feats,
             **self._pe2d_kwargs(pose_2d, joints_mask),
         )
         result['teacher_input_joints'] = gt_pose_3d
@@ -169,8 +219,8 @@ class ARTS(nn.Module):
 
     def forward_student(self, image, pose_2d, is_train, joints_mask=None, cam_bbox=None):
         spread = None
+        feats = self.image_feats(image, pose_2d, joints_mask)
         with torch.no_grad():
-            feature_map, _ = self.get_image_features(image)
             assert cam_bbox is not None and joints_mask is not None, \
                 "Student (DiffLifter) can joints_mask + inputs['cam_bbox']"
             pose_3d = self.lift_diffusion(pose_2d, joints_mask, cam_bbox)
@@ -183,10 +233,11 @@ class ARTS(nn.Module):
 
         result = self.smpl_model(
             joints=pose_3d,
-            img_feats=feature_map,
             is_train=is_train,
             return_features=True,
             joint_spread=spread,
+            cam_bbox=cam_bbox,
+            **feats,
             **self._pe2d_kwargs(pose_2d, joints_mask),
         )
         result['privileged_3d'] = self.privileged_joint_head(result['feat_joint'])
@@ -198,7 +249,8 @@ class ARTS(nn.Module):
     def forward(self, image, joints, is_train=True, joints_mask=None, pose_2d=None, cam_bbox=None):
         """Teacher: joints = GT 3D, pose_2d = 2D Halpe (cho PE). Student: joints = 2D Halpe, cam_bbox bat buoc."""
         if self.mode == 'teacher':
-            return self.forward_teacher(image, joints, is_train, pose_2d=pose_2d, joints_mask=joints_mask)
+            return self.forward_teacher(image, joints, is_train, pose_2d=pose_2d, joints_mask=joints_mask,
+                                        cam_bbox=cam_bbox)
         return self.forward_student(image, joints, is_train, joints_mask=joints_mask, cam_bbox=cam_bbox)
 
 

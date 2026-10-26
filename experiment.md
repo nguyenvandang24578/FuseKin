@@ -712,3 +712,20 @@ Ket qua v1 (nguoi dung chay 3 epoch, 6.9 phut/epoch): train nhom L0/Selector/Ora
 pose mac dinh: giu L0 la phuong an manh (gia thuyet S5 don le sai nhieu hon), mang khong biet phuong an nao la L0, CE mem
 khong phat chon sai. Dung v1. v2 (config/train_selector_l2last_v2.yml): prior giu L0 (embedding + bias logit khoi tao 5),
 loss sai so ky vong (cm, w 1) + CE mem w 0.1, log ti le giu L0. Chua chay.
+Ket qua v2 (20 epoch, nguoi dung chay): train nhom L0/Selector/Oracle 76.4/66.3/45.3 mm (lay lai ~32% tren train), top1
+12.7%, giu L0 54% (than-dau 39%). 3dpw-val pose MPJPE17 L0 65.90 / Selector 65.33 / Oracle 42.19 -> chi lay lai 2.4%;
+tren val Selector giu L0 76-89% o chi (khong loi: chan 62/62, tay 82/83, 88/87), than-dau 61 -> 59 (giu L0 46%).
+Ket luan: Selector hoc duoc tren phan bo train nhung KHONG chuyen sang 3DPW (khoang cach tong quat hoa lon); prior giu L0
+lam no an toan (khong te hon L0) nhung gan nhu khong loi. Chua ro Selector dung anh hay chi dung thong ke pose cua tung bo.
+Danh gia test v2 (last, epoch 20, Teacher rootfix; nguoi dung chay). LUU Y: log nap lifter
+experiment/finetune_difflifter_r25_cam_gtmask_d512_e40_3dpw/latest_epoch.bin va KHONG co dong nap lifter_from_ckpt ->
+KHONG phai lifter l2last; Teacher L0 78.13 trung oracle cua student_kd_full_3dpw (muc 35) -> cung lifter do.
+Mesh qua Teacher MPJPE/PA/MPVPE, L0 -> Selector (Oracle): 3dpw 78.13/49.44/93.04 -> 77.60/49.58/92.71 (50.95), lay lai 2.0%;
+OC test 82.51 -> 81.05 (52.65) 4.9%; PC test (281) 55.72 -> 57.53 (40.31) -11.8%; Crowd 95.42 -> 95.51 (66.42) -0.3%.
+Ket luan: Selector anh SPIN dong bang gan nhu khong loi tren 3DPW (<= 1.5 mm), giu L0 75-90% o chi.
+
+## 37. FuseKin-v3 (2026-10-26, da code, chua chay)
+Thiet ke tu doc paper (3DCrowdNet, DPMesh, JOTR, ReFit, PandaPose, SAM 3D Body, ScoreHypo, BlockGCN): [A] backbone fine-tune +
+heatmap 2D vao stride 4, [B] feature anh tai khop + [B'] bias hop, [C] phan bo do sau tung khop, [D] tinh chinh lap ReFit +
+sai lech 2D, [E] loss do bat dinh + nhieu 2D. Chi tiet 01_PROJECT_CONTEXT muc 22. Moc so sanh: Student scratch v2 (nguoi dung
+da co, cung giao thuc). Ket qua: chua co.
