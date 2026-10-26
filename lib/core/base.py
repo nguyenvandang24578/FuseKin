@@ -224,9 +224,18 @@ def _smpl_hard_losses(trainer, model_output, targets, meta, gt_fit_joint_cam, fi
     if log_sigma is None:
         loss_smpl_joint_cam = coord.mean()
     else:
-        # [E] L1 co do bat dinh hoc duoc tung khop (SAM 3D Body): |e| / sigma + log sigma
+        # [E] Do bat dinh tung khop. KHONG dua NLL (|e| / sigma + log sigma, co the AM) vao AWL: AWL gia dinh loss >= 0,
+        # loss am -> 0.5 / p^2 no tung (log epoch 6-11: trong so smpl_joint_cam 43 -> 7.5e5) -> train vo.
+        # Cach moi: (1) AWL nhan L1 co trong so khop w = exp(-log_sigma) (detach, chuan hoa trung binh = 1) -> luon >= 0,
+        # cung thang do voi v2; (2) log_sigma hoc rieng bang NLL tren loi detach (grad chi vao log_sigma),
+        # cong NGOAI AWL qua khoa 'joint_sigma_nll' (xem _apply_awl).
         vj = jvalid.reshape(coord.shape[0], -1)
-        loss_smpl_joint_cam = (coord.mean(-1) * torch.exp(-log_sigma)[None] + log_sigma[None] * vj).mean()
+        err_j = coord.mean(-1)                                                       # (B, J)
+        w = torch.exp(-log_sigma.detach())
+        w = w / w.mean()
+        loss_smpl_joint_cam = (err_j * w[None]).mean()
+        nll = (err_j.detach() * torch.exp(-log_sigma)[None] + log_sigma[None]) * vj
+        sigma_nll = nll.sum() / vj.sum().clamp_min(1.0)
     fit_pose_valid = meta['fit_param_valid'].cuda() * is_valid_fit[:, None]
     fit_shape_valid = is_valid_fit[:, None]
     smpl_pose_loss = trainer.jotr_param_loss(model_output['smpl_pose'], targets['pose_param'].cuda(),
@@ -247,6 +256,8 @@ def _smpl_hard_losses(trainer, model_output, targets, meta, gt_fit_joint_cam, fi
         'mesh_loss': mesh_loss,
         'body_joint_proj': loss_body_joint_proj,
     }
+    if log_sigma is not None:
+        loss_dict['joint_sigma_nll'] = sigma_nll      # [E] cong ngoai AWL
     return loss_dict, pred_pose
 
 
@@ -315,12 +326,19 @@ def _noisy_2d(pose2d, mask):
 def _apply_awl(trainer, loss_dict):
     """Trong so shape (shape_param_loss_w) roi AWL. Tra (tong loss, dict loss da qua AWL)."""
     loss_dict = dict(loss_dict)
+    sigma_nll = loss_dict.pop('joint_sigma_nll', None)   # [E] khong qua AWL (co the am)
     if trainer.shape_loss_w <= 0:
         loss_dict.pop('smpl_shape')   # bo han khoi AWL (giu voi gia tri 0 -> trong so AWL ve vo cung -> NaN)
     elif trainer.shape_loss_w != 1.0:
         loss_dict['smpl_shape'] = loss_dict['smpl_shape'] * trainer.shape_loss_w
+    for k, v in loss_dict.items():   # AWL chi dung voi loss >= 0 (xem experiment.md muc 38)
+        if float(v.detach()) < 0:
+            raise RuntimeError(f'Loss {k} = {float(v):.4f} < 0 dua vao AWL -> trong so AWL se no')
     loss_dict = trainer.awl(loss_dict)
-    return sum(loss_dict.values()), loss_dict
+    total = sum(loss_dict.values())
+    if sigma_nll is not None:
+        total = total + sigma_nll
+    return total, loss_dict
 
 
 def _log_awl(trainer):
@@ -329,6 +347,9 @@ def _log_awl(trainer):
         return
     awl_w = {k: (0.5 / (p.detach() ** 2)).item() for k, p in zip(trainer.awl.keys, trainer.awl.params)}
     print('  AWL trong so: ' + ' | '.join(f'{k}: {v:.3f}' for k, v in awl_w.items()))
+    bad = {k: v for k, v in awl_w.items() if v > 10.0}
+    if bad:   # binh thuong ~0.3-3; > 10 = dau hieu loss dua vao AWL bi am / sai thang (su co 2026-10-26)
+        print(f'  [CANH BAO] trong so AWL bat thuong {bad} -> kiem tra loss tuong ung (phai >= 0)')
     if cfg.TRAIN.wandb:
         wandb.log({f'awl_w/{k}': v for k, v in awl_w.items()})
 

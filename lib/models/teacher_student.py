@@ -760,9 +760,11 @@ class FusionPose2Mesh(nn.Module):
             history = []
             for _ in range(self.refine_iters):
                 history.append(result)
-                xy_proj = self._project_h36m(result['smpl_mesh_cam_render'])
-                x = self.refiner.feedback(fmaps, xy_proj, joints_2d[..., :2], conf2d, rot6d, shape_param,
-                                          cam_raw, cb, is_train and self.training)
+                # Feedback dung uoc luong truoc DA DETACH (ReFit): grad buoc t khong chay nguoc qua phep chieu
+                # (chia cho z, de no khi tz nho) vao uoc luong truoc; clamp de diem chieu lech xa khong lam no input.
+                xy_proj = self._project_h36m(result['smpl_mesh_cam_render'].detach()).clamp(-2.0, 2.0)
+                x = self.refiner.feedback(fmaps, xy_proj, joints_2d[..., :2], conf2d, rot6d.detach(),
+                                          shape_param.detach(), cam_raw.detach(), cb, is_train and self.training)
                 delta, h = self.refiner.gru(x, h)                                # (B, 26, 10)
                 # Gradient chi qua delta, khong qua uoc luong truoc (ReFit) -> on dinh
                 rot6d = rot6d.detach() + delta[:, :24, :6]

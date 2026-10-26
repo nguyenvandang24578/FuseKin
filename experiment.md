@@ -729,3 +729,13 @@ Thiet ke tu doc paper (3DCrowdNet, DPMesh, JOTR, ReFit, PandaPose, SAM 3D Body, 
 heatmap 2D vao stride 4, [B] feature anh tai khop + [B'] bias hop, [C] phan bo do sau tung khop, [D] tinh chinh lap ReFit +
 sai lech 2D, [E] loss do bat dinh + nhieu 2D. Chi tiet 01_PROJECT_CONTEXT muc 22. Moc so sanh: Student scratch v2 (nguoi dung
 da co, cung giao thuc). Ket qua: chua co.
+
+## 38. FuseKin-v3 scratch (full A-E) vo train tu epoch 6-7 -> loi [E] + AWL, da sua
+
+- Run `student_v3_scratch_jotr` (bat du A, B, B', C, D, E). 3DPW theo epoch: 157.6 -> 127.1 -> 104.3 -> 94.2 -> 84.7 -> **83.34/53.55/100.21 (ep6)** -> 89.9 (ep7) -> ... -> 175.2/123.3/230.4 (ep11).
+- Trieu chung: `smpl3d` am (-0.1 -> -0.86), total loss am toi -7e5; trong so AWL `smpl_joint_cam` (0.5/p^2) 0.6 -> 43 (ep6) -> 6.3e4 (ep7) -> 7.5e5 (ep10).
+- Nguyen nhan: [E] dua NLL `|e|/sigma + log sigma` (am khi sigma < 1 m) vao AWL. AWL `0.5/p^2 * L + log(1+p^2)` gia dinh L >= 0; L < 0 -> giam p ve 0 de loss -> -vo cung -> trong so khuech dai grad hang tram nghin lan -> vo mo hinh.
+- Sua (lib/core/base.py, `_smpl_hard_losses` + `_apply_awl`): AWL nhan L1 co trong so khop w = exp(-log_sigma) (detach, chuan hoa mean = 1, luon >= 0, cung thang do v2); log_sigma hoc rieng bang NLL tren loi detach (grad chi vao log_sigma), cong ngoai AWL (khoa `joint_sigma_nll`).
+- Phai train lai tu dau (khong resume: tham so AWL trong checkpoint da hong). Checkpoint ep6 chi tham khao.
+- Ra soat toan bo code v3 sau su co (2026-10-26): [A] heatmap (toa do luoi, zero-init, BN eval, lr x0.1 qua MultiStepLR/warmup), [B] grid_sample (align_corners=False khop chuan hoa x/W*2-1), [B'] attn_mask (B*h, J, J) dung thu tu PyTorch, [C] target/bin, [E] nhieu 2D: khong thay loi.
+  Sua them [D]: feedback cua vong tinh chinh dung uoc luong truoc DA DETACH (truoc day comment noi detach nhung grad van chay qua phep chieu chia z va qua rot6d/shape/cam vao uoc luong truoc) + clamp diem chieu [-2, 2]. Khong phai nguyen nhan vo train (do la [E] + AWL) nhung la nguon bat on tiem an.

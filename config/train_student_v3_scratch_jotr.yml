@@ -59,10 +59,10 @@ TRAIN:
   dataset_ratio: [0.25, 0.25, 0.25, 0.25]   # Human36M, MuCo, MSCOCO, CrowdPose
   samples_per_epoch: 32000                   # 1000 iter / epoch voi batch 32
   begin_epoch: 1
-  end_epoch: 30
+  end_epoch: 22                # 2026-10-27: rut ngan (truoc 30)
   scheduler: 'step'
   lr: 0.0001
-  lr_step: [15, 22, 27]
+  lr_step: [10, 16, 20]        # 2026-10-27: giam lr som hon (truoc [15, 22, 27]); LUU Y khac lich scratch v2
   lr_factor: 0.5
   warmup_epochs: 1
   min_lr: 0.000001
