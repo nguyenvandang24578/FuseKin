@@ -1,0 +1,74 @@
+# Teacher v3 (giao thuc JOTR): GIONG train_teacher_k16_v2_jotr.yml (GT 3D + che khop 30% + img_probe),
+# CONG bo co v3_* GIONG HET train_student_v3_scratch_jotr.yml (Student KD khoi tao tu Teacher -> cung kien truc;
+# Student_Trainer dung Teacher bang chinh co v3_* trong yml Student). Lich giong Student v3: [10, 16, 20], 22 epoch.
+# v3_pose2d_noise_prob chi tac dung o Student_Trainer -> Teacher khong co nhieu 2D (de 0 cho ro).
+# Dieu kien di tiep KD: Teacher v3 phai tot hon Teacher v2 rootfix tren 3DPW.
+# Chay: python main/train.py --cfg ./config/train_teacher_v3_jotr.yml --exp_name teacher_v3_jotr --gpu 0
+DATASET:
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']   # giao thuc JOTR: KHONG 3DPW
+  test_list: ['3dpw']
+  workers: 16
+  pw3d_2d_source: 'halpe26'
+  halpe26_conf_thr: 0.3
+  h36m_2d_source: 'halpe26'
+  muco_2d_source: 'halpe26'
+  lift_soft_conf: True
+  fusekin_unified: True
+
+MODEL:
+  name: 'teacher'
+  resnet_type: 50
+  hpe_dim: 512
+  backbone_pretrained: 'spin'
+
+  # ---- Che khop GT de ep Teacher dung anh ----
+  teacher_joint_corrupt_prob: 0.3
+  teacher_joint_corrupt_warmup_epochs: 5
+
+  # ---- Head tham do anh ----
+  img_probe: True
+  img_probe_w: 0.1
+
+  # ---- FuseKin-v3 ----
+  v3_bb_finetune: True     # [A]
+  v3_bb_lr_scale: 0.1
+  v3_bb_heatmap: True      # [A]
+  v3_heatmap_sigma: 2.0
+  v3_joint_feat: True      # [B]
+  v3_hop_bias: True        # [B']
+  v3_depth_head: True      # [C]
+  v3_depth_bins: 64
+  v3_depth_range: 1.0
+  v3_depth_loss_w: 0.1
+  v3_refine_iters: 3       # [D] 0 = tat
+  v3_refine_feat_dim: 32
+  v3_refine_hidden: 32
+  v3_refine_dropout: 0.25
+  v3_refine_gamma: 0.85
+  v3_joint_uncert: True    # [E]
+  v3_pose2d_noise_prob: 0.0   # chi Student_Trainer dung; Teacher khong nhieu 2D
+  v3_pose2d_noise_std: 0.02
+  v3_pose2d_drop_prob: 0.05
+
+TRAIN:
+  print_freq: 20
+  batch_size: 32
+  shuffle: True
+  dataset_ratio: [0.25, 0.25, 0.25, 0.25]   # Human36M, MuCo, MSCOCO, CrowdPose
+  samples_per_epoch: 32000
+  begin_epoch: 1
+  end_epoch: 22
+  scheduler: 'step'
+  lr: 0.0001
+  lr_step: [10, 16, 20]
+  lr_factor: 0.5
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 32
+  shuffle: False
+  select_dataset: '3dpw'
+  final_test_list: ['3dpw']

@@ -739,3 +739,21 @@ da co, cung giao thuc). Ket qua: chua co.
 - Phai train lai tu dau (khong resume: tham so AWL trong checkpoint da hong). Checkpoint ep6 chi tham khao.
 - Ra soat toan bo code v3 sau su co (2026-10-26): [A] heatmap (toa do luoi, zero-init, BN eval, lr x0.1 qua MultiStepLR/warmup), [B] grid_sample (align_corners=False khop chuan hoa x/W*2-1), [B'] attn_mask (B*h, J, J) dung thu tu PyTorch, [C] target/bin, [E] nhieu 2D: khong thay loi.
   Sua them [D]: feedback cua vong tinh chinh dung uoc luong truoc DA DETACH (truoc day comment noi detach nhung grad van chay qua phep chieu chia z va qua rot6d/shape/cam vao uoc luong truoc) + clamp diem chieu [-2, 2]. Khong phai nguyen nhan vo train (do la [E] + AWL) nhung la nguon bat on tiem an.
+
+## 39. FuseKin-v3 scratch (full A-E, da sua [E]+AWL va [D] detach) - KET QUA (2026-10-27, nguoi dung chay)
+
+- Lich lr_step [10, 16, 20], 22 epoch. best.pth.tar = epoch 15 (chon theo 3DPW test).
+- 3DPW: **75.53 / 48.31 / 90.22** (MPJPE / PA / MPVPE).
+  - vs JOTR 76.4 / 48.7 / 92.6: thang ca 3.
+  - vs DPMesh 73.6 / 47.4 / 90.7: MPVPE thang (-0.48), MPJPE thua +1.93, PA thua +0.91.
+  - Nguoi dung: tot hon ca Student KD v2.
+- Chua co: OC / PC / Crowd (giao thuc JOTR -> --ocpc_mode all), so last.pth.tar, ablation tung module.
+
+## 40. Ke hoach KD cho v3 (2026-10-27, da code, chua chay)
+
+- Buoc 1: Teacher v3 `config/train_teacher_v3_jotr.yml` (--exp_name teacher_v3_jotr): Teacher v2 JOTR (GT 3D + che khop 30% + img_probe) + bo co v3_* giong het Student v3; lich [10, 16, 20] / 22 epoch. Dieu kien di tiep: tot hon Teacher v2 rootfix tren 3DPW.
+- Buoc 2: Student v3 KD `config/train_student_v3_kd_jotr.yml` (--exp_name student_v3_kd_jotr): v3 scratch + cong thuc E1 cua v2 (init tu Teacher, KD feat joint + global, kd_hard_w 1.0, kd_lambda 1.0, w_proj 0). So voi v3 scratch 75.53 / 48.31 / 90.22.
+- Code moi:
+  - base.Student_Trainer: khi bat [A] (v3_bb_finetune / v3_bb_heatmap) va init_student_from_teacher -> copy CA backbone (+ heat_fuse) tu Teacher (truoc chi copy smpl_model -> smpl_model quen feature backbone da fine-tune nhung chay tren SPIN goc).
+  - cfg.TEST.save_best_per_set (mac dinh False): moi epoch luu them checkpoint/best_<tap>.pth.tar (chi trong so) theo MPJPE tung tap trong test_list; lich su o test_log['per_set'] (giu qua resume). Bat trong yml Student KD voi test_list 4 tap (OC / PC toan bo = giao thuc JOTR).
+- Buoc 3 (sau khi co so buoc 2): ablation init-only (kd_lambda 0); thu kd_joint_relation / KD do sau [C] neu con cach DPMesh.

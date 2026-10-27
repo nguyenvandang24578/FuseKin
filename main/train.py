@@ -87,7 +87,7 @@ for epoch in range(cfg.TRAIN.begin_epoch, cfg.TRAIN.end_epoch + 1):
     trainer.train(epoch)
     trainer.lr_scheduler.step()
 
-    tester.test(epoch, current_model=trainer.model)
+    test_results = tester.test(epoch, current_model=trainer.model)
 
     if len(trainer.error_history['joint']) > 0:
         is_best = tester.joint_error < min(trainer.error_history['joint']) or tester.surface_error < min(trainer.error_history['surface'])
@@ -113,7 +113,17 @@ for epoch in range(cfg.TRAIN.begin_epoch, cfg.TRAIN.end_epoch + 1):
         ckpt['awl_state_dict'] = trainer.awl.state_dict()
     if getattr(trainer, 'feat_projector', None) is not None:   # None khi khong dung KD (student_use_kd: False)
         ckpt['projector_state_dict'] = trainer.feat_projector.state_dict()
-    save_checkpoint(ckpt, epoch, is_best)
+    # Best rieng tung tap (TEST.save_best_per_set): chi luu trong so mo hinh (khong optimizer) -> nhe
+    if cfg.TEST.get('save_best_per_set', False) and test_results:
+        per_set = trainer.error_history.setdefault('per_set', {})
+        for set_name, m in test_results.items():
+            hist = per_set.setdefault(set_name, [])
+            if not hist or m['mpjpe'] < min(hist):
+                light = {k: v for k, v in ckpt.items() if k not in ('optim_state_dict', 'scheduler_state_dict')}
+                torch.save(light, os.path.join(cfg.checkpoint_dir, f'best_{set_name}.pth.tar'))
+                print(f'  -> best_{set_name}.pth.tar (epoch {epoch}, MPJPE {m["mpjpe"]:.2f})')
+            hist.append(m['mpjpe'])
+    save_checkpoint(ckpt, epoch, is_best)   # sau khoi per-set -> test_log trong last.pth.tar co du lich su per_set (resume)
 
 print('Training Finished! All logs were saved in ', cfg.checkpoint_dir)
 

@@ -342,6 +342,9 @@ cfg.TEST.select_dataset = ''
 # Test 1 LAN sau khi train xong (main/train.py nap best.pth.tar roi danh gia tren cac tap nay). [] = khong test cuoi.
 # Vd test_list ['3dpw-val'] (moi epoch chi val) + final_test_list ['3dpw'].
 cfg.TEST.final_test_list = []
+# Luu them checkpoint/best_<tap>.pth.tar cho MOI tap trong DATASET.test_list (theo MPJPE tap do), ngoai best.pth.tar.
+# Giong cach JOTR / DPMesh phat hanh 1 checkpoint / tap. Mac dinh tat.
+cfg.TEST.save_best_per_set = False
 
 
 def _update_dict(cfg_sub, v, prefix=''):

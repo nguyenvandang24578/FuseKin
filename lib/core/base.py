@@ -684,6 +684,11 @@ class Student_Trainer:
                                        f'missing={bad_missing[:5]}, unexpected={bad_unexpected[:5]}')
                 print(f'===> Student smpl_model khoi tao tu Teacher | missing={len(missing)} '
                       f'(joint encoder/gate Student), unexpected={len(unexpected)} (joint encoder/probe Teacher)')
+                if cfg.MODEL.v3_bb_finetune or cfg.MODEL.v3_bb_heatmap:
+                    # [A] Teacher da fine-tune backbone / heat_fuse -> smpl_model cua Teacher quen feature cua
+                    # backbone DO; Student phai nhan dung backbone nay, khong giu SPIN goc.
+                    self.model.backbone.load_state_dict(self.teacher.backbone.state_dict(), strict=True)
+                    print('===> [A] Student backbone (+ heat_fuse) khoi tao tu Teacher')
 
             self.teacher = torch.nn.DataParallel(self.teacher).cuda()
             self.teacher.eval()
