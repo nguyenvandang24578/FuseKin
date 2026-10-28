@@ -780,3 +780,11 @@ da co, cung giao thuc). Ket qua: chua co.
   (2) fixfar: chi sua ~3% khop sai tho -> PC -12.3, Crowd -14.0 mm (PC 80.75 < DPMesh 82.2; Crowd 83.55 vs 79.9) -> khoang cach PC / Crowd gan nhu toan bo do it khop sai tho (nham nguoi), khong phai nhieu nho.
   (3) Lifter tren OC chi 42 mm (3DPW 72) -> tap OC de ve pose voi 2D Halpe; giai thich mot phan OC 63.
   Them bien the dropfar (bo khop xa, mask 0) de do loi ich neu chi PHAT HIEN duoc khop sai.
+- KET QUA Student v3 KD (student_v3_kd_jotr, 22 epoch, nguoi dung 2026-10-28): best (chon theo 3DPW test) 3DPW **74.62 / 47.64 / 89.80**.
+  vs v3 scratch 75.53 / 48.31 / 90.22: -0.91 / -0.67 / -0.42 (1 seed; dao dong giua epoch ~ +-1 mm -> loi ich KD nho, chua chac).
+  vs DPMesh 73.6 / 47.4 / 90.7: MPJPE +1.02, PA +0.24, MPVPE -0.90 (thang). vs InstanceHMR 73.2 / 44.3 / 80.3: con thua.
+- KET QUA dropfar (v3 scratch, PC / Crowd): mesh MPJPE halpe / dropfar / fixfar / gt = PC 93.04 / 89.47 / 80.75 / 86.81 ; Crowd 97.54 / 93.64 / 83.55 / 84.58.
+  Mau xau (>=1 khop xa tu tin) = 9.0% PC / 10.2% Crowd: MPJPE ~261 mm (dropfar ~222, fixfar ~113, gt ~83); mau sach 76.4 / 79.0 (~ muc 3DPW).
+  Khop xa nhieu nhat: L_Wrist 13-15% (lech trai/phai ro: R_Wrist 5-6%).
+  Doc: (1) khoang cach PC / Crowd = ~10% mau hong nang (~260 mm), con lai ngang 3DPW. (2) chi BO khop xa lay lai it (-3.6 / -3.9) -> can toa do dung hoac mo hinh chiu duoc 2D nham nguoi.
+  (3) mesh MPJPE (93) >> lifter (74) tren PC, PA 58.6 -> mo hinh KHUECH DAI loi o mau xau (nghi xoay toan than; nghi [D] keo theo phan du 2D sai). Them vao script: halpe_init (mesh truoc [D]) + lift17 tach xau / sach de kiem.

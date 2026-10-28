@@ -73,7 +73,7 @@ def run_set(model, ds, loader, dev):
     hm = torch.tensor([cfg.output_hm_shape[2], cfg.output_hm_shape[1]], dtype=torch.float32, device=dev)
     acc = {k: np.zeros(J) for k in ('err', 'det', 'far', 'hi', 'far_hi', 'gin', 'miss')}
     err_list, sample_bad = [], []
-    mesh = {v: {'mpjpe': [], 'pa_mpjpe': [], 'mpvpe': []} for v in VARIANTS}
+    mesh = {v: {'mpjpe': [], 'pa_mpjpe': [], 'mpvpe': []} for v in VARIANTS + ('halpe_init',)}
     lift = {v: [] for v in VARIANTS}
     seen = 0
     for bi, (inputs, targets, meta) in enumerate(tqdm(loader, leave=False)):
@@ -113,10 +113,14 @@ def run_set(model, ds, loader, dev):
                             ('gt', (gt_in, gin))):
             out = model(img, jj, is_train=False, joints_mask=mm, cam_bbox=cam)
             lift[v].append((torch.norm(out['lifted_joints_3d'] - gt17, dim=-1).mean(-1) * 1000).cpu().numpy())
-            pm = out['smpl_mesh_cam'].float().cpu().numpy()
-            res = ds.evaluate([{'smpl_mesh_cam': pm[k], 'smpl_mesh_cam_target': tgt_np[k]} for k in range(B)], seen)
-            for k_ in mesh[v]:
-                mesh[v][k_].extend(res[k_])
+            todo = [(v, out['smpl_mesh_cam'])]
+            if v == 'halpe' and out.get('refine_history'):
+                todo.append(('halpe_init', out['refine_history'][0]['smpl_mesh_cam']))   # truoc tinh chinh [D]
+            for name_, mesh_t in todo:
+                pm = mesh_t.float().cpu().numpy()
+                res = ds.evaluate([{'smpl_mesh_cam': pm[k], 'smpl_mesh_cam_target': tgt_np[k]} for k in range(B)], seen)
+                for k_ in mesh[name_]:
+                    mesh[name_][k_].extend(res[k_])
         seen += B
 
     bad = np.concatenate(sample_bad)
@@ -128,9 +132,14 @@ def run_set(model, ds, loader, dev):
                 'miss_pct': 100 * d(acc['miss'], acc['gin']), 'samples_with_far_conf_hi_pct': 100 * float(bad.mean()),
                 'per_joint_far_pct': {H36M_NAMES[j]: 100 * float(acc['far'][j] / max(acc['det'][j], 1)) for j in range(J)}},
          'd2': {}}
-    for v in VARIANTS:
+    for v in VARIANTS + ('halpe_init',):
+        if not mesh[v]['mpjpe']:
+            continue
         mp = np.asarray(mesh[v]['mpjpe'])
-        r['d2'][v] = {'lift_mpjpe17': float(np.concatenate(lift[v]).mean()),
+        lf = np.concatenate(lift['halpe' if v == 'halpe_init' else v])
+        r['d2'][v] = {'lift_mpjpe17': float(lf.mean()),
+                      'lift_bad_samples': float(lf[bad].mean()) if bad.any() else float('nan'),
+                      'lift_clean_samples': float(lf[~bad].mean()) if (~bad).any() else float('nan'),
                       **{k_: float(np.mean(x)) for k_, x in mesh[v].items()},
                       'mpjpe_bad_samples': float(mp[bad].mean()) if bad.any() else float('nan'),
                       'mpjpe_clean_samples': float(mp[~bad].mean()) if (~bad).any() else float('nan')}
@@ -145,11 +154,12 @@ def show(label, n, r):
           f'{a["miss_pct"]:.1f}% | mau co >=1 khop xa tu tin {a["samples_with_far_conf_hi_pct"]:.1f}%')
     top = sorted(a['per_joint_far_pct'].items(), key=lambda x: -x[1])[:5]
     print('   khop xa nhieu nhat: ' + ', '.join(f'{k} {v:.1f}%' for k, v in top))
-    print(f'D2 {"2D":<7} | {"lift17":>7} | {"MPJPE":>7} | {"PA":>6} | {"MPVPE":>7} | {"MPJPE mau xau":>13} | {"MPJPE mau sach":>14}')
-    for v in VARIANTS:
-        m = r['d2'][v]
-        print(f'   {v:<7} | {m["lift_mpjpe17"]:>7.2f} | {m["mpjpe"]:>7.2f} | {m["pa_mpjpe"]:>6.2f} | {m["mpvpe"]:>7.2f} | '
-              f'{m["mpjpe_bad_samples"]:>13.2f} | {m["mpjpe_clean_samples"]:>14.2f}')
+    print(f'D2 {"2D":<10} | {"lift17":>7} | {"MPJPE":>7} | {"PA":>6} | {"MPVPE":>7} | {"MPJPE xau/sach":>15} | {"lift17 xau/sach":>15}')
+    for v, m in r['d2'].items():
+        print(f'   {v:<10} | {m["lift_mpjpe17"]:>7.2f} | {m["mpjpe"]:>7.2f} | {m["pa_mpjpe"]:>6.2f} | {m["mpvpe"]:>7.2f} | '
+              f'{m["mpjpe_bad_samples"]:>7.2f}/{m["mpjpe_clean_samples"]:<7.2f} | '
+              f'{m["lift_bad_samples"]:>7.2f}/{m["lift_clean_samples"]:<7.2f}')
+    print('   (halpe_init = mesh TRUOC tinh chinh [D], cung 2D halpe)')
 
 
 def main():
