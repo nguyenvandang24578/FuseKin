@@ -757,3 +757,19 @@ da co, cung giao thuc). Ket qua: chua co.
   - base.Student_Trainer: khi bat [A] (v3_bb_finetune / v3_bb_heatmap) va init_student_from_teacher -> copy CA backbone (+ heat_fuse) tu Teacher (truoc chi copy smpl_model -> smpl_model quen feature backbone da fine-tune nhung chay tren SPIN goc).
   - cfg.TEST.save_best_per_set (mac dinh False): moi epoch luu them checkpoint/best_<tap>.pth.tar (chi trong so) theo MPJPE tung tap trong test_list; lich su o test_log['per_set'] (giu qua resume). Bat trong yml Student KD voi test_list 4 tap (OC / PC toan bo = giao thuc JOTR).
 - Buoc 3 (sau khi co so buoc 2): ablation init-only (kd_lambda 0); thu kd_joint_relation / KD do sau [C] neu con cach DPMesh.
+- KET QUA Teacher v3 (teacher_v3_jotr, nguoi dung chay 2026-10-28): 3DPW **25.70 / 16.99 / 36.41** (input GT 3D, best chon theo 3DPW test).
+  vs Teacher v2 rootfix 22.43 / 14.55 / 32.64 (50 epoch) -> v3 KEM hon 3.3 / 2.4 / 3.8 mm -> KHONG dat dieu kien da dat.
+  Yeu to lan: lich 22 vs 50 epoch. Gia thuyet (chua kiem): [D] keo phep chieu ve 2D Halpe (nhieu hon GT 3D) va cac nhanh 2D ([A] heatmap, [B]) lam Teacher dua vao 2D detector thay vi GT 3D.
+  Quyet dinh de xuat: van chay buoc 2 (Student KD), vi tieu chi that la Student so voi v3 scratch 75.53; chenh Teacher 3 mm nho so voi khoang Teacher-Student ~50 mm.
+- Student v3 KD (student_v3_kd_jotr), log den epoch 13 (nguoi dung gui 2026-10-28; OC / PC toan bo):
+  3DPW MPJPE theo epoch 77.98, 77.47, 78.55, 76.97, **75.98 (ep5)**, 77.43, 78.31, 77.31, 76.31, 77.05, 76.48, 76.02, 77.21 -> phang tu ep1 (init tu Teacher), dao dong +-1 mm.
+  Best tung tap den ep13: 3DPW 75.98 (ep5) | OC 62.49 (ep11) | PC 90.48 (ep4) | Crowd 95.40 (ep2).
+  So DPMesh (73.6 / 70.9 / 82.2 / 79.9): 3DPW +2.4, OC -8.4, PC +8.3, Crowd +15.5 -> yeu o nguoi-che-nguoi.
+  So v3 scratch 3DPW 75.53: KD chua hon (chenh < dao dong giua epoch). Con 2 moc giam lr (16, 20).
+  KD feat: J ~0.04, G ~0.024 nho tu dau (Student khoi tao tu Teacher); tong loss train van giam trong khi 3DPW phang.
+
+## 41. Chan doan 2D tren PC / Crowd (2026-10-28, da code, chua chay)
+- `main/diag_2d_crowd.py`: D1 loi 2D Halpe vs GT 2D (px crop 256, % khop xa > 40 px, % xa ma conf >= 0.5 = nghi nham nguoi, % bo khop);
+  D2 Student voi 2D halpe / fixfar (chi thay khop xa bang GT) / gt (toan bo GT 2D) -> lift17 + mesh dataset.evaluate, tach mau xau / sach. In n tung tap (doi chieu dinh nghia OC).
+- Doc ket qua: gt giam PC / Crowd ve ~ DPMesh -> 2D la nut that; fixfar lay lai phan lon -> loi chinh la khop sai tho (nham nguoi) -> giai phap A (nhieu "doi nguoi" luc train).
+- Luu y da phat hien: 3dpw-crowd = 3DPW VALIDATION (courtyard_hug_00, courtyard_dancing_00) -> chon checkpoint theo 3dpw-val se ro ri Crowd; tap chon sach = val bo 2 seq nay.
