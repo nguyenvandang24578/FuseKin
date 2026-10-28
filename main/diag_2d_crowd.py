@@ -48,6 +48,9 @@ parser.add_argument('--variants', type=str, default='halpe,dropfar,fixfar,gt',
 parser.add_argument('--miss_thr', type=int, default=8, help='D3: mau "mat nhieu 2D" = so khop Halpe mask 0 >= nguong')
 parser.add_argument('--iou_thr', type=float, default=0.5, help='D3: mau "crop lech" = IoU(crop that, crop ly tuong) < nguong')
 parser.add_argument('--vis_k', type=int, default=20, help='so mau te nhat moi tap luu hinh toan anh (0 = khong ve)')
+parser.add_argument('--lifter_ckpt', type=str, default='',
+                    help='thay DiffLifter trong Student bang checkpoint finetune_difflifter (.bin) -> do lift17 cua lifter '
+                         'moi (mesh van qua Student cu, chi tham khao)')
 parser.add_argument('--gpu', type=str, default='0')
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -270,6 +273,14 @@ def show(label, n, r):
 def main():
     dev = torch.device('cuda')
     model = build_and_load('student', args.ckpt, dev)[0]
+    if args.lifter_ckpt:
+        from models.ARTS import build_diff_lifter
+        lifter = build_diff_lifter(args.lifter_ckpt, cfg.MODEL.get('difflift_steps', 1), cfg.MODEL.get('difflift_k', 1))
+        lifter = lifter.to(dev).eval()
+        for p_ in lifter.parameters():
+            p_.requires_grad = False
+        model.diff_lifter = lifter
+        print(f'===> Thay DiffLifter bang {args.lifter_ckpt} (lift17 = lifter moi; mesh qua Student cu -> chi tham khao)')
     bs = args.batch_size or cfg.TEST.batch_size
     summary = {}
     for name in [s.strip() for s in args.sets.split(',') if s.strip()]:

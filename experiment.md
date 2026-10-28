@@ -791,3 +791,14 @@ da co, cung giao thuc). Ket qua: chua co.
 - KET QUA halpe_init + lift tach xau / sach (v3 scratch): mau xau lift17 221 (PC) / 222 (Crowd) vs sach 59 / 67; mesh truoc [D] 263.8 / 263.1 vs sau 260.9 / 260.4 -> [D] KHONG khuech dai (gia thuyet cu SAI); loi sinh tu DiffLifter khi 2D nham nguoi, mesh chep lai.
 - Them D3 vao diag_2d_crowd.py: crop that so voi crop "ly tuong" (cung quy tac, tinh tu GT 2D) -> IoU / lech tam / ti le; nhom mat >= 8 khop 2D, crop lech (IoU < 0.5), nham nguoi; "gop vao TB" (mm); --vis_k hinh toan anh mau te nhat (crop, Halpe, GT); --variants halpe de chay nhanh.
 - Ghi chu crop: test 3DPW cat theo bbox tu khop Halpe (x1.2, vuong, x1.1; < 2 khop -> bbox RootNet) = giao thuc 3DCrowdNet / JOTR; train cat theo bbox GT -> lech train / test.
+- KET QUA D3 (v3 scratch, --variants halpe): crop KHONG phai van de (IoU TB 0.84-0.88; nhom crop lech / mat >= 8 khop <= 0.5%, gop <= 0.1 mm).
+  Nham nguoi gop vao TB: PC 16.64 mm (9.0% mau, MPJPE 260.9), Crowd 18.59 (10.2%, 260.4), 3DPW 1.17 (3.2%, 111.3), OC 0.89 (2.7%, 95.0).
+  [D] o OC lam TE hon: truoc [D] 61.84 / 42.39 / 77.05 vs sau 63.24 / 43.20 / 78.27 (3DPW / PC / Crowd [D] giup 0.7 / 1.2 / 1.75).
+  OC n = 20243 (doi chieu voi JOTR / DPMesh).
+
+## 42. Giai phap A: DiffLifter voi nhieu "bat nham nguoi" (2026-10-28, da code, chua chay)
+- Phat hien: lifter hien tai (gtmask_d512_e40) train voi DATASET.halpe_gt_mask_thr 0.1 -> moi khop Halpe lech GT > 0.1 canh crop bi MASK tren tap train -> lifter KHONG BAO GIO thay khop sai voi conf cao khi train (occ_corrupt co sai cho nhung HA conf ve gan nguong) -> test gap khop nham nguoi conf cao thi tin theo.
+- Code: main/finetune_difflifter.py wrong_person_corrupt (cfg.DIFFLIFT.wp_aug_prob, wp_shift_min / max, wp_arm_prob; mac dinh tat): 1 doan dau chi (co tay | khuyu+co tay | co chan | goi+co chan, tay 70%) doi 40-120 px huong ngau nhien, GIU conf.
+- YAML config/finetune_difflifter_d512_e40_wp.yaml = gtmask_d512_e40 + wp_aug_prob 0.2 (1 yeu to). save_dir experiment/finetune_difflifter_d512_e40_wp.
+- diag_2d_crowd.py --lifter_ckpt: thay lifter trong Student de do lift17 (xau / sach) cua lifter moi.
+- Lua chon tiep (chua lam): tat halpe_gt_mask_thr (de loi that cua Halpe o MuCo / CrowdPose vao train); them nhieu nham nguoi cho Student.

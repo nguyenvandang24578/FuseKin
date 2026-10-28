@@ -1,0 +1,73 @@
+# =====================================================================
+# finetune_difflifter_d512_e40_wp: GIONG HET finetune_difflifter_r25_cam_gtmask_d512_e40.yaml, CHI THEM nhieu
+# "bat nham nguoi" (DIFFLIFT.wp_aug_prob 0.2): 1 doan dau chi (tay 70%) doi 40-120 px, conf GIU NGUYEN.
+# Ly do (diag_2d_crowd 2026-10-28): mau PC / Crowd co khop Halpe nam tren nguoi khac (conf cao) -> lifter 221 mm
+# (sach 59 mm) -> gop 16.6 / 18.6 mm vao MPJPE PC / Crowd.
+# LUU Y: halpe_gt_mask_thr 0.1 (giu nguyen) MASK moi khop Halpe lech GT > 0.1 tren tap train -> loi nham nguoi
+# THAT khong bao gio xuat hien voi conf cao khi train lifter; nhieu wp bu lai bang loi tong hop.
+# Moc so sanh (lifter cu, ep40, MPJPE17): 3dpw 77.32 | OC 84.43 | PC 99.87 | Crowd 112.04 (log full_eval moi 5 epoch).
+# Chay:
+#   python main/finetune_difflifter.py --cfg config/finetune_difflifter_d512_e40_wp.yaml --gpu 0
+# =====================================================================
+
+DATASET:
+  lift_only: True
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']
+  test_list: ['3dpw', 'Human36M', '3dpw-oc', '3dpw-pc', '3dpw-crowd']
+  pw3d_2d_source: 'halpe26'
+  h36m_2d_source: 'halpe26'
+  muco_2d_source: 'halpe26'
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: True
+  workers: 8
+  no_rot_aug: False
+  halpe_gt_mask_thr: 0.1
+
+DIFFLIFT:
+  embed_dim: 512
+  depth: 8
+  num_heads: 8
+  drop_rate: 0.1
+  drop_path_rate: 0.1
+
+  timesteps: 1000
+  sampling_timesteps: 1
+  num_proposals: 1
+  scale: 3.0
+
+  # Training
+  val_set: '3dpw-val'
+  select_metric: 'pa_mpjpe'
+  save_dir: 'experiment/finetune_difflifter_d512_e40_wp'
+  epochs: 40
+  lr: 0.0003
+  lr_decay: 0.99
+  weight_decay: 0.01
+  batch_size: 512
+  save_freq: 5
+  iters_per_epoch: 0
+  print_freq: 50
+  balance_datasets: False
+  dataset_ratio: [0.25, 0.25, 0.25, 0.25]   # Human36M, MuCo, MSCOCO, CrowdPose
+  samples_per_epoch: 512000
+  resume: ''
+  ema_decay: 0.999
+  train_eval_samples: 2000
+
+  # Danh gia them trong luc train (chi log)
+  epoch_eval_sets: ['3dpw']
+  full_eval_sets: ['Human36M', '3dpw-oc', '3dpw-pc', '3dpw-crowd']
+  full_eval_freq: 5
+
+  # Augmentation 2D giu nhu r25_cam
+  joint_drop_prob: 0.05
+  limb_drop_prob: 0.05
+  jitter_std: 0.02
+  occ_aug_prob: 0.15
+  occ_shift_std: 0.15
+
+  # Nhieu "bat nham nguoi" (MOI, yeu to duy nhat thay doi)
+  wp_aug_prob: 0.2
+  wp_shift_min: 0.3125     # 40 px trong crop 256
+  wp_shift_max: 0.9375     # 120 px
+  wp_arm_prob: 0.7
