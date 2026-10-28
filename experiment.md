@@ -788,3 +788,6 @@ da co, cung giao thuc). Ket qua: chua co.
   Khop xa nhieu nhat: L_Wrist 13-15% (lech trai/phai ro: R_Wrist 5-6%).
   Doc: (1) khoang cach PC / Crowd = ~10% mau hong nang (~260 mm), con lai ngang 3DPW. (2) chi BO khop xa lay lai it (-3.6 / -3.9) -> can toa do dung hoac mo hinh chiu duoc 2D nham nguoi.
   (3) mesh MPJPE (93) >> lifter (74) tren PC, PA 58.6 -> mo hinh KHUECH DAI loi o mau xau (nghi xoay toan than; nghi [D] keo theo phan du 2D sai). Them vao script: halpe_init (mesh truoc [D]) + lift17 tach xau / sach de kiem.
+- KET QUA halpe_init + lift tach xau / sach (v3 scratch): mau xau lift17 221 (PC) / 222 (Crowd) vs sach 59 / 67; mesh truoc [D] 263.8 / 263.1 vs sau 260.9 / 260.4 -> [D] KHONG khuech dai (gia thuyet cu SAI); loi sinh tu DiffLifter khi 2D nham nguoi, mesh chep lai.
+- Them D3 vao diag_2d_crowd.py: crop that so voi crop "ly tuong" (cung quy tac, tinh tu GT 2D) -> IoU / lech tam / ti le; nhom mat >= 8 khop 2D, crop lech (IoU < 0.5), nham nguoi; "gop vao TB" (mm); --vis_k hinh toan anh mau te nhat (crop, Halpe, GT); --variants halpe de chay nhanh.
+- Ghi chu crop: test 3DPW cat theo bbox tu khop Halpe (x1.2, vuong, x1.1; < 2 khop -> bbox RootNet) = giao thuc 3DCrowdNet / JOTR; train cat theo bbox GT -> lech train / test.
