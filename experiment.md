@@ -773,3 +773,10 @@ da co, cung giao thuc). Ket qua: chua co.
   D2 Student voi 2D halpe / fixfar (chi thay khop xa bang GT) / gt (toan bo GT 2D) -> lift17 + mesh dataset.evaluate, tach mau xau / sach. In n tung tap (doi chieu dinh nghia OC).
 - Doc ket qua: gt giam PC / Crowd ve ~ DPMesh -> 2D la nut that; fixfar lay lai phan lon -> loi chinh la khop sai tho (nham nguoi) -> giai phap A (nhieu "doi nguoi" luc train).
 - Luu y da phat hien: 3dpw-crowd = 3DPW VALIDATION (courtyard_hug_00, courtyard_dancing_00) -> chon checkpoint theo 3dpw-val se ro ri Crowd; tap chon sach = val bo 2 seq nay.
+- KET QUA diag_2d_crowd (v3 scratch best, nguoi dung chay 2026-10-28), mesh MPJPE14 halpe -> fixfar -> gt | lift17 halpe -> gt | % khop xa tu tin:
+  3dpw n=35515: 75.53 -> 74.63 -> 84.15 | 71.69 -> 89.10 | 0.3% ; OC n=20243: 63.24 -> 62.97 -> 74.65 | 41.99 -> 76.97 | 0.3%
+  PC n=2218: **93.04 -> 80.75** -> 86.81 | 74.02 -> 88.46 | 3.0% ; Crowd n=1923: **97.54 -> 83.55** -> 84.58 | 82.67 -> 88.82 | 3.5%
+  Doc: (1) bien the gt KHONG hop le (GT 2D chieu tu mesh lech dinh nghia khop Halpe ma lifter hoc -> te hon ca Halpe o 3DPW / OC).
+  (2) fixfar: chi sua ~3% khop sai tho -> PC -12.3, Crowd -14.0 mm (PC 80.75 < DPMesh 82.2; Crowd 83.55 vs 79.9) -> khoang cach PC / Crowd gan nhu toan bo do it khop sai tho (nham nguoi), khong phai nhieu nho.
+  (3) Lifter tren OC chi 42 mm (3DPW 72) -> tap OC de ve pose voi 2D Halpe; giai thich mot phan OC 63.
+  Them bien the dropfar (bo khop xa, mask 0) de do loi ich neu chi PHAT HIEN duoc khop sai.

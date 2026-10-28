@@ -8,9 +8,12 @@ D1 (chat luong 2D Halpe, so voi GT 2D = chieu H36M-17 tu mesh GT vao cung khung 
 D2 (oracle 2D): chay Student voi 3 loai 2D; MOI nhanh (DiffLifter, heatmap [A], feature tai khop [B]/[C], PE,
    tinh chinh [D]) deu nhan cung 2D do:
    - halpe  : nhu test that (phai trung so test)
+   - dropfar: chi BO (mask 0) cac khop xa, khong biet toa do dung -> loi ich neu chi PHAT HIEN duoc khop sai
    - fixfar : chi thay cac khop xa (> far_px) bang GT (conf 1), giu nguyen khop con lai
               -> tach phan loi do khop sai tho (nham nguoi) voi phan do nhieu nho
-   - gt     : toan bo GT 2D (conf 1; khop GT ngoai khung -> mask 0) -> tran tren khi 2D hoan hao
+   - gt     : toan bo GT 2D (conf 1; khop GT ngoai khung -> mask 0). LUU Y (ket qua 2026-10-28): GT 2D chieu tu
+              mesh (dinh nghia khop H36M) LECH dinh nghia khop Halpe ma DiffLifter da hoc -> lifter / mesh TE HON
+              ca Halpe tren 3DPW / OC -> KHONG phai tran tren hop le; dropfar / fixfar moi la oracle dung.
    Moi loai: lifter MPJPE17 (so voi GT H36M-17 tu mesh) + mesh dataset.evaluate (MPJPE14 / PA / MPVPE, mm),
    va mesh MPJPE14 tach theo mau CO / KHONG co khop xa tu tin (xac dinh tren Halpe).
 Gioi han: crop va cam_bbox van tinh tu 2D Halpe (nhu test that) -> neu Halpe bat nham nguoi, crop co the lech.
@@ -60,7 +63,7 @@ from utils.jotr_dataset import get_test_dataset
 J = 17
 H36M_NAMES = ('Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck', 'Nose',
               'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist')
-VARIANTS = ('halpe', 'fixfar', 'gt')
+VARIANTS = ('halpe', 'dropfar', 'fixfar', 'gt')
 PX = cfg.input_img_shape[1] / 2.0          # [-1, 1] -> pixel trong crop
 
 
@@ -104,7 +107,10 @@ def run_set(model, ds, loader, dev):
         fix_conf = torch.where(far > 0, torch.ones_like(jm), jm)
         fix_in = torch.cat([j2[..., :2] * (1 - far) + g2 * far, fix_conf], -1)
         tgt_np = gt_mesh.cpu().numpy()
-        for v, (jj, mm) in (('halpe', (j2, jm)), ('fixfar', (fix_in, fix_conf)), ('gt', (gt_in, gin))):
+        drop_conf = jm * (1 - far)                                                # khop xa -> mask 0 (coi nhu mat)
+        drop_in = torch.cat([j2[..., :2] * (drop_conf > 0), drop_conf], -1)
+        for v, (jj, mm) in (('halpe', (j2, jm)), ('dropfar', (drop_in, drop_conf)), ('fixfar', (fix_in, fix_conf)),
+                            ('gt', (gt_in, gin))):
             out = model(img, jj, is_train=False, joints_mask=mm, cam_bbox=cam)
             lift[v].append((torch.norm(out['lifted_joints_3d'] - gt17, dim=-1).mean(-1) * 1000).cpu().numpy())
             pm = out['smpl_mesh_cam'].float().cpu().numpy()
@@ -166,12 +172,12 @@ def main():
         json.dump({'ckpt': args.ckpt, 'cfg': args.cfg, 'far_px': args.far_px, 'conf_hi': args.conf_hi,
                    'results': summary}, f, indent=2, ensure_ascii=False)
     print('\n' + '=' * 100)
-    print(f'TOM TAT ({args.ckpt}) | mesh MPJPE14: halpe -> fixfar -> gt | lift17 halpe -> gt | 2D xa tu tin %')
+    print(f'TOM TAT ({args.ckpt}) | mesh MPJPE14: halpe / dropfar / fixfar / gt | lift17 cung thu tu | 2D xa tu tin %')
     for label, r in summary.items():
         m = r['d2']
-        print(f'  {label:<26} n={r["n_set"]:>6} | {m["halpe"]["mpjpe"]:6.2f} -> {m["fixfar"]["mpjpe"]:6.2f} -> '
-              f'{m["gt"]["mpjpe"]:6.2f} | {m["halpe"]["lift_mpjpe17"]:6.2f} -> {m["gt"]["lift_mpjpe17"]:6.2f} | '
-              f'{r["d1"]["far_conf_hi_pct"]:5.1f}%')
+        print(f'  {label:<26} n={r["n_set"]:>6} | ' + ' / '.join(f'{m[v]["mpjpe"]:6.2f}' for v in VARIANTS) + ' | '
+              + ' / '.join(f'{m[v]["lift_mpjpe17"]:6.2f}' for v in VARIANTS) + f' | {r["d1"]["far_conf_hi_pct"]:5.1f}%'
+              + f' (xa moi conf {r["d1"]["far_pct"]:4.1f}%)')
     print(f'Da luu: {out}')
 
 
