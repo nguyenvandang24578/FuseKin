@@ -121,6 +121,10 @@ cfg.DATASET.halpe_gt_mask_thr = 0.0
 # Hau to file Halpe-26 cua 3DPW (test / OC / PC / Crowd): '' = 3DPW_{tag}_halpe26.json (trich bang bbox GT, cu);
 # '_opbox' = trich bang bbox tu khop OpenPose cua dung nguoi (tools/extract_halpe26_3dpw.py --bbox_source openpose_best)
 cfg.DATASET.pw3d_halpe_suffix = ''
+# THU NGHIEM ORACLE (2026-10-29): thay 2D dau vao (Halpe) bang GT 2D (orig_joint_img, khung hm) o MOI bo train / test,
+# mask = khop GT trong khung crop (conf 1). Dung cho ca lifter (lift_only) va Student. Tu bat pw3d_test_gt2d.
+# GT 2D: H36M / MuCo = khop mocap chieu; MSCOCO / CrowdPose / 3DPW = H36M-17 hoi quy tu mesh SMPL chieu. Crop van tu Halpe.
+cfg.DATASET.input_2d_gt = False
 # Nguon 2D dau vao cua Human36M (train + test):
 #   'gt_posefix' (mac dinh, giong JOTR): train = GT 2D + nhieu PoseFix, test = GT 2D sach
 #   'halpe26'   : Human36M_{split}_halpe26.npz tu tools/extract_halpe26_h36m.py (nguong = halpe26_conf_thr)

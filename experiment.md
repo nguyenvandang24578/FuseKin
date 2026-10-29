@@ -825,3 +825,9 @@ da co, cung giao thuc). Ket qua: chua co.
   Dataset doc file moi qua cfg.DATASET.pw3d_halpe_suffix ('' mac dinh | '_opbox'), chi tap khong phai train. Ban sao script cu: tools/extract_halpe26_3dpw.py.bak_opbox.
 - Thu nghiem opbox (hinh nguoi dung, 3DPW-Crowd): co mau OpenPose GAN NHAM nguoi (bbox GT bao nguoi dan ong, OpenPose tren nguoi phu nu) -> openpose_best "sua" thanh SAI; thong ke "lech OP" danh lua.
   Them: extract --bbox_source combo (lech OpenPose + 1 - IoU(bbox bo xuong, bbox GT)); compare_2d_sources --halpe_new_suffix: dem sua / lam hong THEO GT 2D.
+
+## 44. ORACLE GT 2D: lifter + Student v3 scratch (2026-10-29, da code, chua chay)
+- Muc dich: tran tren neu 2D hoan hao (khong nham nguoi) -> sua 2D dang gia bao nhieu tren 3DPW / OC / PC / Crowd.
+- Code: cfg.DATASET.input_2d_gt (mac dinh False): Human36M17Dataset thay inputs joints / joints_mask bang GT 2D (targets orig_joint_img khung hm -> [-1, 1]; mask = orig_joint_trunc * orig_joint_valid, conf 1) o moi bo train / test; tu bat pw3d_test_gt2d; in 1 lan min / max GT 2D moi bo de kiem. lift_pseudo3d_sample (COCO / CrowdPose lifter) nay tra GT 2D chieu tu mesh NeuralAnnot (truoc la 0).
+  GT 2D: H36M / MuCo = khop mocap chieu; COCO / CrowdPose / 3DPW = H36M-17 hoi quy tu mesh -> dinh nghia khop hoi khac giua bo. Crop test van tu Halpe.
+- YAML: config/finetune_difflifter_d512_e40_gt2d.yaml (= gtmask_d512_e40 + input_2d_gt); config/train_student_v3_scratch_jotr_gt2d.yml (= v3 scratch + input_2d_gt + lifter gt2d latest; 4 tap moi epoch + best tung tap).

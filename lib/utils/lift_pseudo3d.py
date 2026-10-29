@@ -13,6 +13,7 @@ import torch
 from core.config import cfg
 from utils.preprocessing import augmentation_noimg
 from utils.cam_bbox import cam_bbox_feat, est_cam, view_rot
+from utils.transforms import cam2pixel
 
 H36M_FLIP_PAIRS = ((1, 4), (2, 5), (3, 6), (14, 11), (15, 12), (16, 13))
 
@@ -108,6 +109,14 @@ def lift_pseudo3d_sample(ds, data, smpl_param, cam_param):
     # Pseudo-GT 3D: get_smpl_coord da xu ly lat (pose + tinh tien) -> mesh khop anh da lat
     mesh, _, _, _ = ds.get_smpl_coord(smpl_param, cam_param, do_flip, img_shape)    # (6890, 3) met
     j3d = np.dot(ds.h36m_joint_regressor, mesh).astype(np.float32)                    # (17, 3)
+    # GT 2D (cho DATASET.input_2d_gt): chieu H36M-17 tu mesh (anh da lat) bang camera NeuralAnnot -> khung hm
+    j2d = cam2pixel(j3d, cam_param['focal'], cam_param['princpt']).astype(np.float32)
+    xy1 = np.concatenate((j2d[:, :2], np.ones_like(j2d[:, :1])), 1)
+    j2d[:, :2] = np.dot(img2bb_trans, xy1.transpose(1, 0)).transpose(1, 0)[:, :2]
+    j2d[:, 0] = j2d[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+    j2d[:, 1] = j2d[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+    j2d_trunc = ((j2d[:, 0] >= 0) * (j2d[:, 0] < cfg.output_hm_shape[2]) * (j2d[:, 1] >= 0) *
+                 (j2d[:, 1] < cfg.output_hm_shape[1])).reshape(-1, 1).astype(np.float32)
     j3d = j3d - j3d[0:1]                                                                # root = Pelvis
     # NeuralAnnot fit nhu camera nhin THANG vao nguoi -> xoay sang camera uoc luong (nguoi lech tam -> nhin cheo)
     cam = est_cam(img_shape)
@@ -120,9 +129,9 @@ def lift_pseudo3d_sample(ds, data, smpl_param, cam_param):
 
     inputs = {'img': torch.zeros(1), 'joints': xy, 'joints_mask': mask,
               'cam_bbox': cam_bbox_feat(bbox, cam, img_shape, do_flip, rot)}
-    targets = {'orig_joint_img': np.zeros((17, 3), dtype=np.float32), 'orig_joint_cam': j3d}
+    targets = {'orig_joint_img': j2d, 'orig_joint_cam': j3d}
     meta = {'orig_joint_valid': np.ones((17, 1), dtype=np.float32),
-            'orig_joint_trunc': np.ones((17, 1), dtype=np.float32),
+            'orig_joint_trunc': j2d_trunc,
             'is_3D': float(True)}
     return inputs, targets, meta
 
