@@ -243,6 +243,11 @@ cfg.TRAIN.shuffle = True
 # [] = TAT (cach cu: MultipleDatasets keo moi bo bang bo lon nhat). samples_per_epoch: so mau / epoch (0 = tong so mau).
 cfg.TRAIN.dataset_ratio = []
 cfg.TRAIN.samples_per_epoch = 0
+# Cach tron bo train (2026-10-29). 'ratio' = nhu tren (dataset_ratio + samples_per_epoch, lay mau co hoan lai);
+# 'full' = moi epoch duyet HET hop 4 bo, moi mau dung 1 lan, xao tron (ti le theo kich thuoc bo; bo qua dataset_ratio);
+# 'jotr' = kieu 3DCrowdNet / JOTR: nhom 3D (Human36M, MuCo) va nhom 2D (MSCOCO, CrowdPose) keo bang nhau (50 / 50),
+#          trong moi nhom ti le theo kich thuoc bo.
+cfg.TRAIN.mix_mode = 'ratio'
 cfg.TRAIN.begin_epoch = 1
 cfg.TRAIN.end_epoch = 20
 cfg.TRAIN.scheduler = 'cosine'

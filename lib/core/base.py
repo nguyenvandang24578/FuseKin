@@ -53,6 +53,25 @@ def get_dataloader(args, dataset_names, is_train):
     if not is_train:
         return dataset_list, dataloader_list
     else:
+        mix = cfg.TRAIN.get('mix_mode', 'ratio')
+        if mix in ('full', 'jotr'):
+            # Duyet het du lieu moi epoch (khong lay mau co hoan lai), xao tron
+            if mix == 'full':
+                trainset_loader = MultipleDatasets(dataset_list, make_same_len=False)
+            else:
+                g3 = [ds for n, ds in zip(dataset_names, dataset_list) if n in ('Human36M', 'MuCo')]
+                g2 = [ds for n, ds in zip(dataset_names, dataset_list) if n not in ('Human36M', 'MuCo')]
+                assert g3 and g2, f"mix_mode 'jotr' can ca bo 3D (Human36M / MuCo) lan bo 2D: {dataset_names}"
+                trainset_loader = MultipleDatasets([MultipleDatasets(g3, make_same_len=False),
+                                                    MultipleDatasets(g2, make_same_len=False)], make_same_len=True)
+            n_tot = len(trainset_loader)
+            for name, ds in zip(dataset_names, dataset_list):
+                print(f'# [{mix}] {name}: {len(ds)} mau')
+            bs = batch_per_dataset * len(dataset_names)
+            print(f'# [{mix}] mau / epoch: {n_tot} -> {n_tot // bs} iter / epoch (batch {bs})')
+            batch_generator = DataLoader(dataset=trainset_loader, batch_size=bs, shuffle=True,
+                                         num_workers=cfg.DATASET.workers, pin_memory=False)
+            return dataset_list, batch_generator
         ratio = list(cfg.TRAIN.get('dataset_ratio', []) or [])
         if ratio:
             # Tron theo ti le: noi cac bo (khong lap), moi mau trong so = ti le bo / so mau bo

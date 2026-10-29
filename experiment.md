@@ -802,3 +802,20 @@ da co, cung giao thuc). Ket qua: chua co.
 - YAML config/finetune_difflifter_d512_e40_wp.yaml = gtmask_d512_e40 + wp_aug_prob 0.2 (1 yeu to). save_dir experiment/finetune_difflifter_d512_e40_wp.
 - diag_2d_crowd.py --lifter_ckpt: thay lifter trong Student de do lift17 (xau / sach) cua lifter moi.
 - Lua chon tiep (chua lam): tat halpe_gt_mask_thr (de loi that cua Halpe o MuCo / CrowdPose vao train); them nhieu nham nguoi cho Student.
+- KET QUA lifter wp (finetune_difflifter_d512_e40_wp, 40 epoch, final test = best_epoch theo PA 3dpw-val, nguoi dung 2026-10-29), MPJPE17 / PA:
+  3dpw 68.33 / 45.03 | H36M 53.84 / 41.59 | OC 47.28 / 32.61 | PC 76.05 / 50.49 | Crowd 79.01 / 49.37.
+  Cung giao thuc lifter cu gtmask_d512_e40 (best ep11, muc 482): 3dpw 73.11 / 49.24 | H36M 55.45 / 42.86 | OC 80.44 / 52.86 | PC 95.94 / 60.28 | Crowd 99.94 / 55.88
+  -> -4.8 / -1.6 / -33.2 / -19.9 / -20.9 mm MPJPE. OC -33 KHONG hop ly voi 1 thay doi nham nguoi (OC chi 2.7% mau nham nguoi) va mau thuan diag_2d_crowd
+  (lifter cu ep40 trong Student: OC lift17 42 vs eval script ep40 84.4) -> OC trong eval finetune_difflifter va trong diag do KHAC nhau; can do ca hai lifter bang CUNG diag_2d_crowd --lifter_ckpt truoc khi ket luan.
+- SO SANH CUNG diag_2d_crowd (Student v3 scratch, thay lifter; lift17 toan tap | xau / sach):
+  lifter cu (gtmask latest ep40, = lifter trong Student): 3DPW 71.69 | 100.15 / 70.76 ; OC 41.99 | 62.79 / 41.41 ; PC 74.02 | 220.99 / 59.45 ; Crowd 82.67 | 222.00 / 66.77
+  lifter wp (best_epoch):                                 3DPW 68.30 |  99.89 / 67.26 ; OC 47.25 | 73.34 / 46.52 ; PC 76.04 | 222.47 / 61.53 ; Crowd 78.99 | 223.09 / 62.54
+  (diag cua lifter wp trung final test cua finetune_difflifter: 68.33 / 47.28 / 76.05 / 79.01 -> 2 script do giong nhau; bang "lifter cu best ep11" o tren la checkpoint KHAC lifter trong Student.)
+  KET LUAN: nhieu wp KHONG sua mau nham nguoi (PC / Crowd xau 221 -> 222, 222 -> 223). Thay doi con lai (3DPW -3.4, OC +5.3, Crowd sach -4.2) co the do khac epoch (best vs latest ep40), khong do wp.
+  Giai thich: tu 2D don thuan, 1 doan chi bi doi (xuong van hop ly) KHONG phan biet duoc voi tu the that -> lifter khong the tu phat hien; o mau xau that nhieu khop cung lech (fixfar con 113 vs gt 83). Can bang chung tu ANH (Student) hoac 2D tot hon.
+
+## 43. Student v3 scratch voi du lieu FULL (2026-10-29, da code, chua chay)
+- Nguoi dung chot: bo huong lifter wp, giu lifter cu (gtmask latest ep40); thu luong du lieu.
+- Code: cfg.TRAIN.mix_mode ('ratio' mac dinh = cu | 'full' = moi epoch duyet het hop 4 bo, moi mau 1 lan, shuffle | 'jotr' = nhom 3D (H36M, MuCo) / 2D (COCO, CrowdPose) 50/50 kieu 3DCrowdNet, trong nhom ti le theo kich thuoc). lib/core/base.get_dataloader in so mau tung bo + iter / epoch.
+- YAML config/train_student_v3_scratch_jotr_full.yml = v3 scratch + mix_mode 'full'; end_epoch 12, lr_step [6, 9, 11] TAM (chinh theo do dai epoch thuc).
+- So voi v3 scratch 75.53 / 48.31 / 90.22. Yeu to lan: ti le bo theo kich thuoc (khong con 25%), tong luot mau, lich lr.
