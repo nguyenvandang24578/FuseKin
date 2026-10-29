@@ -819,3 +819,4 @@ da co, cung giao thuc). Ket qua: chua co.
 - Code: cfg.TRAIN.mix_mode ('ratio' mac dinh = cu | 'full' = moi epoch duyet het hop 4 bo, moi mau 1 lan, shuffle | 'jotr' = nhom 3D (H36M, MuCo) / 2D (COCO, CrowdPose) 50/50 kieu 3DCrowdNet, trong nhom ti le theo kich thuoc). lib/core/base.get_dataloader in so mau tung bo + iter / epoch.
 - YAML config/train_student_v3_scratch_jotr_full.yml = v3 scratch + mix_mode 'full'; end_epoch 12, lr_step [6, 9, 11] TAM (chinh theo do dai epoch thuc).
 - So voi v3 scratch 75.53 / 48.31 / 90.22. Yeu to lan: ti le bo theo kich thuoc (khong con 25%), tong luot mau, lich lr.
+- 2026-10-29: main/compare_2d_sources.py (CPU, khong model): so Halpe-26 / OpenPose (JOTR dung cho 3DPW / OC / PC) / Higher-HRNet (JOTR dung cho Crowd) voi GT 2D tren 12 khop chi; % khop xa, % bo, % mau Halpe xau ma nguon khac tot ("cuu duoc"); hinh so sanh. Muc dich: xem detector khac co bat dung mau kho khong.

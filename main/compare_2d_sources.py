@@ -1,0 +1,186 @@
+"""
+main/compare_2d_sources.py -- So sanh nguon 2D tren CUNG mau 3DPW, voi GT 2D:
+  - halpe    : Halpe-26 (RTMPose, top-down) -- FuseKin dang dung
+  - openpose : OpenPose co san trong annotation (JOTR / 3DCrowdNet dung cho 3DPW / OC / PC)
+  - hhrnet   : Higher-HRNet bottom-up (JOTR / 3DCrowdNet dung cho 3DPW-Crowd; chi co o tap crowd)
+GT 2D = H36M-17 hoi quy tu mesh SMPL GT, chieu len ANH GOC. So tren 12 khop chi (vai, khuyu, co tay, hong, goi, co chan)
+co cung ten o ca 3 dinh dang. Loi chuan hoa theo kich thuoc nguoi (canh lon nhat bbox GT 2D, px).
+Moi nguon: loi TB / trung vi, % khop xa (> --far x kich thuoc nguoi) trong khop phat hien, % khop bo (conf <= nguong rieng
+cua nguon: Halpe DATASET.halpe26_conf_thr, OpenPose / HHRNet PW3D.conf_thr), % mau co >= 1 khop xa;
+va trong cac mau Halpe XAU: % mau nguon khac TOT (khong khop xa, phat hien >= 8 / 12 khop) -> "cuu duoc".
+Ve --vis_k mau Halpe te nhat: cac o Halpe | OpenPose | HHRNet (do = GT, xanh = nguon, vang = khop lech xa).
+Khong can GPU / model. OC / PC luon TOAN BO tap (giao thuc JOTR).
+Chay:
+  python main/compare_2d_sources.py --cfg ./config/train_student_v3_scratch_jotr.yml --sets 3dpw-pc,3dpw-crowd
+"""
+import os, sys
+sys.path.append('./lib')
+sys.path.append('./')
+os.environ["OMP_NUM_THREADS"] = "1"
+import argparse
+import json
+
+parser = argparse.ArgumentParser(description='So sanh 2D Halpe / OpenPose / Higher-HRNet tren 3DPW')
+parser.add_argument('--cfg', type=str, required=True, help='yml bat ky co duong dan du lieu (vd yml Student v3)')
+parser.add_argument('--sets', type=str, default='3dpw-pc,3dpw-crowd')
+parser.add_argument('--far', type=float, default=0.2, help='nguong khop xa, ti le kich thuoc nguoi (~40 px crop 256)')
+parser.add_argument('--vis_k', type=int, default=30)
+parser.add_argument('--max_samples', type=int, default=0, help='0 = toan bo tap')
+args = parser.parse_args()
+
+import numpy as np
+from tqdm import tqdm
+from core.config import cfg, update_config
+update_config(args.cfg)
+cfg.DATASET.pw3d_2d_source = 'halpe26'
+cfg.DATASET.pw3d_ocpc_test_only = False
+
+import __init_path  # noqa: F401
+from utils.jotr_dataset import get_test_dataset
+from utils.transforms import cam2pixel
+
+LIMB = ('L_Shoulder', 'R_Shoulder', 'L_Elbow', 'R_Elbow', 'L_Wrist', 'R_Wrist',
+        'L_Hip', 'R_Hip', 'L_Knee', 'R_Knee', 'L_Ankle', 'R_Ankle')
+PAIRS = ((0, 2), (2, 4), (1, 3), (3, 5), (6, 8), (8, 10), (7, 9), (9, 11), (0, 1), (6, 7), (0, 6), (1, 7))
+SOURCES = ('halpe', 'openpose', 'hhrnet')
+
+
+def collect(name):
+    ds = get_test_dataset(name, None).dataset          # PW3D
+    h_idx = [ds.h36m_joints_name.index(n) for n in LIMB]
+    o_idx = [ds.openpose_joints_name.index(n) for n in LIMB]
+    c_idx = [ds.coco_joints_name.index(n) for n in LIMB]
+    thr = {'halpe': float(cfg.DATASET.halpe26_conf_thr), 'openpose': float(ds.conf_thr), 'hhrnet': float(ds.conf_thr)}
+    hh = None
+    if name == '3dpw-crowd':
+        p = os.path.join(cfg.DATASET.jotr_data_root, 'PW3D', '3DPW_validation_crowd_hhrnet_result.json')
+        if os.path.isfile(p):
+            with open(p) as f:
+                hh = json.load(f)
+        else:
+            print(f'[CANH BAO] khong thay {p} -> bo qua hhrnet')
+    items = ds.datalist[:args.max_samples] if args.max_samples else ds.datalist
+    rec = []
+    for it in tqdm(items, desc=name):
+        mesh, _ = ds.get_smpl_coord(it['smpl_param'])
+        gt = cam2pixel(np.dot(ds.h36m_joint_regressor, mesh), it['cam_param']['focal'], it['cam_param']['princpt'])[:, :2]
+        size = float(max(np.ptp(gt[:, 0]), np.ptp(gt[:, 1]), 1.0))
+        gt12 = gt[h_idx]
+        src = {'halpe': np.asarray(it['halpe_h36m'])[h_idx] if it['halpe_h36m'] is not None else None,
+               'openpose': np.asarray(it['openpose'])[o_idx]}
+        if hh is not None:
+            r = hh.get(str(it['ann_id']))
+            src['hhrnet'] = np.asarray(r['coco_joints'], dtype=np.float32)[c_idx] if r is not None else None
+        out = {'img_path': it['img_path'], 'gt12': gt12, 'size': size}
+        for s, k in src.items():
+            if k is None:
+                continue
+            det = k[:, 2] > thr[s]
+            e = np.linalg.norm(k[:, :2] - gt12, axis=1) / size
+            out[s] = {'xy': k[:, :2], 'det': det, 'e': e, 'far': det & (e > args.far)}
+        rec.append(out)
+    return rec
+
+
+def summarize(rec):
+    res = {}
+    for s in SOURCES:
+        rs = [r for r in rec if s in r]
+        if not rs:
+            continue
+        det = np.stack([r[s]['det'] for r in rs]); e = np.stack([r[s]['e'] for r in rs])
+        far = np.stack([r[s]['far'] for r in rs])
+        ed = e[det]
+        res[s] = {'n': len(rs), 'err_mean_pct': 100 * float(ed.mean()) if ed.size else float('nan'),
+                  'err_median_pct': 100 * float(np.median(ed)) if ed.size else float('nan'),
+                  'far_pct': 100 * float(far.sum() / max(det.sum(), 1)), 'miss_pct': 100 * float(1 - det.mean()),
+                  'samples_far_pct': 100 * float(far.any(1).mean()),
+                  'per_joint_far_pct': {LIMB[j]: 100 * float(far[:, j].sum() / max(det[:, j].sum(), 1)) for j in range(len(LIMB))}}
+    bad = [r for r in rec if 'halpe' in r and r['halpe']['far'].any()]
+    for s in ('openpose', 'hhrnet'):
+        both = [r for r in bad if s in r]
+        if both:
+            ok = [(not r[s]['far'].any()) and r[s]['det'].sum() >= 8 for r in both]
+            res.setdefault('rescue', {})[s] = {'halpe_bad': len(both), 'pct_ok': 100 * float(np.mean(ok))}
+    return res
+
+
+def show(name, res):
+    print(f'\n===== [{name}] khop xa = loi > {args.far:.2f} x kich thuoc nguoi | 12 khop chi =====')
+    print(f'   {"nguon":<9} | {"n":>6} | {"loi TB %":>8} | {"trung vi %":>10} | {"xa %":>6} | {"bo %":>6} | {"mau co khop xa %":>16}')
+    for s in SOURCES:
+        if s in res:
+            m = res[s]
+            print(f'   {s:<9} | {m["n"]:>6} | {m["err_mean_pct"]:>8.1f} | {m["err_median_pct"]:>10.1f} | {m["far_pct"]:>6.2f} | '
+                  f'{m["miss_pct"]:>6.1f} | {m["samples_far_pct"]:>16.1f}')
+            top = sorted(m['per_joint_far_pct'].items(), key=lambda x: -x[1])[:4]
+            print('             khop xa nhieu: ' + ', '.join(f'{k} {v:.1f}%' for k, v in top))
+    for s, m in res.get('rescue', {}).items():
+        print(f'   Mau Halpe XAU ({m["halpe_bad"]}): {s} TOT (khong khop xa, >= 8/12 khop) o {m["pct_ok"]:.1f}%')
+
+
+def vis(name, rec):
+    import cv2
+    bad = [r for r in rec if 'halpe' in r and r['halpe']['far'].any()]
+    bad.sort(key=lambda r: (-int(r['halpe']['far'].sum()), -float(r['halpe']['e'][r['halpe']['det']].max())))
+    out_dir = os.path.join(cfg.output_dir, 'vis', name)
+    os.makedirs(out_dir, exist_ok=True)
+    for rank, r in enumerate(bad[:args.vis_k]):
+        im = cv2.imread(r['img_path'])
+        if im is None:
+            continue
+        g = r['gt12']
+        c, half = g.mean(0), 0.9 * r['size']
+        x0, y0 = int(max(c[0] - half, 0)), int(max(c[1] - half, 0))
+        x1, y1 = int(min(c[0] + half, im.shape[1])), int(min(c[1] + half, im.shape[0]))
+        panels = []
+        for s in SOURCES:
+            if s not in r:
+                continue
+            p = im.copy()
+            for a, b in PAIRS:
+                cv2.line(p, tuple(g[a].astype(int)), tuple(g[b].astype(int)), (0, 0, 255), 2)
+            d, xy = r[s]['det'], r[s]['xy']
+            for a, b in PAIRS:
+                if d[a] and d[b]:
+                    cv2.line(p, tuple(xy[a].astype(int)), tuple(xy[b].astype(int)), (0, 200, 0), 2)
+            for j in range(len(LIMB)):
+                if d[j]:
+                    cv2.circle(p, tuple(xy[j].astype(int)), 4, (0, 200, 0), -1)
+                    if r[s]['far'][j]:
+                        cv2.line(p, tuple(xy[j].astype(int)), tuple(g[j].astype(int)), (0, 255, 255), 2)
+            p = p[y0:y1, x0:x1]
+            if p.size == 0:
+                continue
+            f = 384.0 / p.shape[0]
+            p = cv2.resize(p, None, fx=f, fy=f)
+            txt = f'{s}: xa {int(r[s]["far"].sum())} | bo {int((~d).sum())}'
+            cv2.putText(p, txt, (6, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
+            cv2.putText(p, txt, (6, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+            panels.append(p)
+        if panels:
+            h = min(q.shape[0] for q in panels)
+            cv2.imwrite(os.path.join(out_dir, f'{rank:02d}_{os.path.basename(os.path.dirname(r["img_path"]))}_'
+                                              f'{os.path.basename(r["img_path"])}'),
+                        cv2.hconcat([q[:h] for q in panels]))
+    print(f'   hinh {min(args.vis_k, len(bad))} mau Halpe te nhat: {out_dir}  (do = GT, xanh = nguon 2D, vang = lech xa)')
+
+
+def main():
+    summary = {}
+    for name in [s.strip() for s in args.sets.split(',') if s.strip()]:
+        rec = collect(name)
+        res = summarize(rec)
+        show(name, res)
+        if args.vis_k > 0:
+            vis(name, rec)
+        summary[name] = res
+    os.makedirs(cfg.output_dir, exist_ok=True)
+    out = os.path.join(cfg.output_dir, 'compare_2d_sources.json')
+    with open(out, 'w', encoding='utf-8') as f:
+        json.dump({'far': args.far, 'results': summary}, f, indent=2, ensure_ascii=False)
+    print(f'\nDa luu: {out}')
+
+
+if __name__ == '__main__':
+    main()
