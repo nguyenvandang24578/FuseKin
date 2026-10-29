@@ -26,6 +26,8 @@ parser.add_argument('--sets', type=str, default='3dpw-pc,3dpw-crowd')
 parser.add_argument('--far', type=float, default=0.2, help='nguong khop xa, ti le kich thuoc nguoi (~40 px crop 256)')
 parser.add_argument('--vis_k', type=int, default=30)
 parser.add_argument('--max_samples', type=int, default=0, help='0 = toan bo tap')
+parser.add_argument('--halpe_new_suffix', type=str, default='',
+                    help="them nguon 'halpe_new' doc 3DPW_<tag>_halpe26<suffix>.json (vd _opbox) -> dem sua / lam hong theo GT")
 args = parser.parse_args()
 
 import numpy as np
@@ -38,11 +40,12 @@ cfg.DATASET.pw3d_ocpc_test_only = False
 import __init_path  # noqa: F401
 from utils.jotr_dataset import get_test_dataset
 from utils.transforms import cam2pixel
+from utils.h36m_adapter import halpe26_to_human36m
 
 LIMB = ('L_Shoulder', 'R_Shoulder', 'L_Elbow', 'R_Elbow', 'L_Wrist', 'R_Wrist',
         'L_Hip', 'R_Hip', 'L_Knee', 'R_Knee', 'L_Ankle', 'R_Ankle')
 PAIRS = ((0, 2), (2, 4), (1, 3), (3, 5), (6, 8), (8, 10), (7, 9), (9, 11), (0, 1), (6, 7), (0, 6), (1, 7))
-SOURCES = ('halpe', 'openpose', 'hhrnet')
+SOURCES = ('halpe', 'halpe_new', 'openpose', 'hhrnet')
 
 
 def collect(name):
@@ -50,7 +53,18 @@ def collect(name):
     h_idx = [ds.h36m_joints_name.index(n) for n in LIMB]
     o_idx = [ds.openpose_joints_name.index(n) for n in LIMB]
     c_idx = [ds.coco_joints_name.index(n) for n in LIMB]
-    thr = {'halpe': float(cfg.DATASET.halpe26_conf_thr), 'openpose': float(ds.conf_thr), 'hhrnet': float(ds.conf_thr)}
+    thr = {'halpe': float(cfg.DATASET.halpe26_conf_thr), 'halpe_new': float(cfg.DATASET.halpe26_conf_thr),
+           'openpose': float(ds.conf_thr), 'hhrnet': float(ds.conf_thr)}
+    new = None
+    if args.halpe_new_suffix:
+        tag = {'3dpw-oc': 'oc', '3dpw-pc': 'pc'}.get(name, ds.data_split)
+        p = os.path.join(cfg.DATASET.jotr_data_root, 'PW3D', f'3DPW_{tag}_halpe26{args.halpe_new_suffix}.json')
+        if os.path.isfile(p):
+            with open(p) as f:
+                new = json.load(f)
+            print(f'halpe_new: {p} ({len(new)} nguoi)')
+        else:
+            print(f'[CANH BAO] khong thay {p} -> bo qua halpe_new')
     hh = None
     if name == '3dpw-crowd':
         p = os.path.join(cfg.DATASET.jotr_data_root, 'PW3D', '3DPW_validation_crowd_hhrnet_result.json')
@@ -68,10 +82,13 @@ def collect(name):
         gt12 = gt[h_idx]
         src = {'halpe': np.asarray(it['halpe_h36m'])[h_idx] if it['halpe_h36m'] is not None else None,
                'openpose': np.asarray(it['openpose'])[o_idx]}
+        if new is not None and str(it['ann_id']) in new:
+            src['halpe_new'] = halpe26_to_human36m(new[str(it['ann_id'])])[h_idx]
         if hh is not None:
             r = hh.get(str(it['ann_id']))
             src['hhrnet'] = np.asarray(r['coco_joints'], dtype=np.float32)[c_idx] if r is not None else None
-        out = {'img_path': it['img_path'], 'gt12': gt12, 'size': size}
+        out = {'img_path': it['img_path'], 'gt12': gt12, 'size': size,
+               'gt_bbox': np.asarray(it['tight_bbox'], dtype=np.float32)}   # ann['bbox'] xywh (bbox trich Halpe cu)
         for s, k in src.items():
             if k is None:
                 continue
@@ -96,8 +113,13 @@ def summarize(rec):
                   'far_pct': 100 * float(far.sum() / max(det.sum(), 1)), 'miss_pct': 100 * float(1 - det.mean()),
                   'samples_far_pct': 100 * float(far.any(1).mean()),
                   'per_joint_far_pct': {LIMB[j]: 100 * float(far[:, j].sum() / max(det[:, j].sum(), 1)) for j in range(len(LIMB))}}
+    both = [r for r in rec if 'halpe' in r and 'halpe_new' in r]
+    if both:
+        ob = np.array([r['halpe']['far'].any() for r in both]); nb = np.array([r['halpe_new']['far'].any() for r in both])
+        res['new_vs_old'] = {'n': len(both), 'old_bad': int(ob.sum()), 'new_bad': int(nb.sum()),
+                             'fixed': int((ob & ~nb).sum()), 'broke': int((~ob & nb).sum())}
     bad = [r for r in rec if 'halpe' in r and r['halpe']['far'].any()]
-    for s in ('openpose', 'hhrnet'):
+    for s in ('halpe_new', 'openpose', 'hhrnet'):
         both = [r for r in bad if s in r]
         if both:
             ok = [(not r[s]['far'].any()) and r[s]['det'].sum() >= 8 for r in both]
@@ -115,6 +137,10 @@ def show(name, res):
                   f'{m["miss_pct"]:>6.1f} | {m["samples_far_pct"]:>16.1f}')
             top = sorted(m['per_joint_far_pct'].items(), key=lambda x: -x[1])[:4]
             print('             khop xa nhieu: ' + ', '.join(f'{k} {v:.1f}%' for k, v in top))
+    if 'new_vs_old' in res:
+        m = res['new_vs_old']
+        print(f'   THEO GT: mau co khop xa  Halpe cu {m["old_bad"]} -> Halpe moi {m["new_bad"]} (n = {m["n"]}) | '
+              f'sua duoc {m["fixed"]} | LAM HONG {m["broke"]}')
     for s, m in res.get('rescue', {}).items():
         print(f'   Mau Halpe XAU ({m["halpe_bad"]}): {s} TOT (khong khop xa, >= 8/12 khop) o {m["pct_ok"]:.1f}%')
 
@@ -130,7 +156,8 @@ def vis(name, rec):
         if im is None:
             continue
         g = r['gt12']
-        c, half = g.mean(0), 0.9 * r['size']
+        bx, by, bw, bh = r['gt_bbox']
+        c, half = g.mean(0), max(0.9 * r['size'], 0.75 * max(bw, bh))
         x0, y0 = int(max(c[0] - half, 0)), int(max(c[1] - half, 0))
         x1, y1 = int(min(c[0] + half, im.shape[1])), int(min(c[1] + half, im.shape[0]))
         panels = []
@@ -138,6 +165,12 @@ def vis(name, rec):
             if s not in r:
                 continue
             p = im.copy()
+            bx, by, bw, bh = r['gt_bbox']
+            cv2.rectangle(p, (int(bx), int(by)), (int(bx + bw), int(by + bh)), (255, 0, 255), 2)   # bbox annotation
+            # vung RTMPose thuc su nhin (bbox annotation noi ~1.25 quanh tam, giong tien xu ly top-down)
+            cx, cy, ex = bx + bw / 2, by + bh / 2, 1.25
+            cv2.rectangle(p, (int(cx - bw * ex / 2), int(cy - bh * ex / 2)), (int(cx + bw * ex / 2), int(cy + bh * ex / 2)),
+                          (200, 0, 200), 1)
             for a, b in PAIRS:
                 cv2.line(p, tuple(g[a].astype(int)), tuple(g[b].astype(int)), (0, 0, 255), 2)
             d, xy = r[s]['det'], r[s]['xy']
@@ -163,7 +196,7 @@ def vis(name, rec):
             cv2.imwrite(os.path.join(out_dir, f'{rank:02d}_{os.path.basename(os.path.dirname(r["img_path"]))}_'
                                               f'{os.path.basename(r["img_path"])}'),
                         cv2.hconcat([q[:h] for q in panels]))
-    print(f'   hinh {min(args.vis_k, len(bad))} mau Halpe te nhat: {out_dir}  (do = GT, xanh = nguon 2D, vang = lech xa)')
+    print(f'   hinh {min(args.vis_k, len(bad))} mau Halpe te nhat: {out_dir}  (do = GT, xanh = nguon 2D, vang = lech xa, tim = bbox annotation, tim manh = vung RTMPose nhin ~x1.25)')
 
 
 def main():

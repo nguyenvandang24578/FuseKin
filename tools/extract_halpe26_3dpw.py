@@ -22,6 +22,9 @@ Thu tu 26 khop Halpe:
                   noi --op_expand; < --op_min_joints khop OpenPose -> quay ve bbox GT
   openpose_best : chay RTMPose tren nhieu bbox ung vien (OpenPose x op_expand, OpenPose x 1.1, GT) roi chon ket qua
                   KHOP OpenPose nhat (ti le khop lech > 0.2 x kich thuoc nguoi tren 13 khop chung)
+  combo         : cung ung vien nhu openpose_best, chon theo (lech OpenPose) + (1 - IoU(bbox bo xuong Halpe, bbox GT))
+                  -> OpenPose cung CO KHI gan nham nguoi (thay o 3DPW-Crowd), bbox GT keo lai
+  LUU Y: thong ke "lech OP" chi la dau hieu; danh gia that bang GT 2D: main/compare_2d_sources.py --halpe_new_suffix
   Ket qua ghi 3DPW_{split}_halpe26{--out_suffix}.json (mac dinh '_opbox' khi khong phai gt) -> KHONG ghi de file cu.
 Thu nghiem it mau truoc khi chay het:
   --seqs courtyard_hug_00 courtyard_dancing_00 : chi xu ly cac sequence nay
@@ -67,7 +70,7 @@ def parse_args():
     p.add_argument('--device', default='cuda', choices=['cuda', 'cpu'])
     p.add_argument('--vis_num', type=int, default=0, help='So anh ve kiem tra moi split (0 = tat)')
     p.add_argument('--vis_dir', default='debug_halpe26')
-    p.add_argument('--bbox_source', default='gt', choices=['gt', 'openpose', 'openpose_best'])
+    p.add_argument('--bbox_source', default='gt', choices=['gt', 'openpose', 'openpose_best', 'combo'])
     p.add_argument('--op_expand', type=float, default=1.25, help='he so noi bbox tu khop OpenPose')
     p.add_argument('--op_min_joints', type=int, default=6, help='it hon so khop OpenPose nay -> dung bbox GT')
     p.add_argument('--out_suffix', default=None, help="hau to file ra; mac dinh '' (gt) | '_opbox' (openpose*)")
@@ -182,6 +185,19 @@ def mismatch_op(k, s, ann):
     return far / n if n >= 4 else float('nan')
 
 
+def skel_iou(k, s, box):
+    """IoU giua bbox om khop Halpe (score > HALPE_THR) va box xyxy."""
+    v = k[s > HALPE_THR]
+    if len(v) < 2:
+        return 0.0
+    a = [v[:, 0].min(), v[:, 1].min(), v[:, 0].max(), v[:, 1].max()]
+    ix = max(0.0, min(a[2], box[2]) - max(a[0], box[0]))
+    iy = max(0.0, min(a[3], box[3]) - max(a[1], box[1]))
+    inter = ix * iy
+    ua = (a[2] - a[0]) * (a[3] - a[1]) + (box[2] - box[0]) * (box[3] - box[1]) - inter
+    return float(inter / ua) if ua > 0 else 0.0
+
+
 def gt_box(ann):
     x, y, w, h = [float(v) for v in ann['bbox']]
     return [x, y, x + w, y + h]
@@ -212,6 +228,8 @@ def infer(model, img, anns, args):
         for j in range(len(c)):
             m = mismatch_op(k[i + j], s[i + j], a)
             m = 1.0 if np.isnan(m) else m
+            if args.bbox_source == 'combo':
+                m = m + (1.0 - skel_iou(k[i + j], s[i + j], gt_box(a)))
             if best_m is None or m < best_m - 1e-6:   # hoa -> giu ung vien dau (bbox OpenPose)
                 best, best_m = j, m
         out_k.append(k[i + best]); out_s.append(s[i + best]); out_b.append(c[best])
