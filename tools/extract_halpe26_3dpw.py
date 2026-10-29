@@ -16,6 +16,20 @@ Thu tu 26 khop Halpe:
 --vis_num N : ve N anh moi split vao --vis_dir, moi anh 3 o:
               [Halpe-26 goc] | [OpenPose cu cua FuseKin] | [H36M-17 sau khi doi (halpe2h36m)]
 
+--bbox_source (2026-10-29, chan doan: o canh 2 nguoi chong nhau RTMPose tren bbox GT rong bam NHAM sang nguoi ro hon):
+  gt            : bbox GT (cu)
+  openpose      : bbox om sat khop OpenPose cua CHINH nguoi do (trong annotation, giao thuc JOTR / 3DCrowdNet dung),
+                  noi --op_expand; < --op_min_joints khop OpenPose -> quay ve bbox GT
+  openpose_best : chay RTMPose tren nhieu bbox ung vien (OpenPose x op_expand, OpenPose x 1.1, GT) roi chon ket qua
+                  KHOP OpenPose nhat (ti le khop lech > 0.2 x kich thuoc nguoi tren 13 khop chung)
+  Ket qua ghi 3DPW_{split}_halpe26{--out_suffix}.json (mac dinh '_opbox' khi khong phai gt) -> KHONG ghi de file cu.
+Thu nghiem it mau truoc khi chay het:
+  --seqs courtyard_hug_00 courtyard_dancing_00 : chi xu ly cac sequence nay
+  --max_images N : dung sau N anh;  --dry_run : khong ghi json
+  --vis_compare K : ve K nguoi ma Halpe CU lech OpenPose (nghi bat nham nguoi): [Halpe cu] | [Halpe moi + bbox] | [OpenPose]
+  vd: python tools/extract_halpe26_3dpw.py --data_root data_final/PW3D --splits validation --bbox_source openpose_best \
+          --seqs courtyard_hug_00 courtyard_dancing_00 --max_images 300 --dry_run --vis_compare 20 --vis_dir debug_opbox
+
 Vi du (chay tu thu muc goc FuseKin):
   conda activate pose2d
   python tools/extract_halpe26_3dpw.py --data_root data_final/PW3D --splits validation --vis_num 5
@@ -53,6 +67,15 @@ def parse_args():
     p.add_argument('--device', default='cuda', choices=['cuda', 'cpu'])
     p.add_argument('--vis_num', type=int, default=0, help='So anh ve kiem tra moi split (0 = tat)')
     p.add_argument('--vis_dir', default='debug_halpe26')
+    p.add_argument('--bbox_source', default='gt', choices=['gt', 'openpose', 'openpose_best'])
+    p.add_argument('--op_expand', type=float, default=1.25, help='he so noi bbox tu khop OpenPose')
+    p.add_argument('--op_min_joints', type=int, default=6, help='it hon so khop OpenPose nay -> dung bbox GT')
+    p.add_argument('--out_suffix', default=None, help="hau to file ra; mac dinh '' (gt) | '_opbox' (openpose*)")
+    p.add_argument('--seqs', nargs='*', default=[], help='chi xu ly cac sequence nay (thu nghiem)')
+    p.add_argument('--max_images', type=int, default=0, help='dung sau N anh (0 = het)')
+    p.add_argument('--dry_run', action='store_true', help='khong ghi json')
+    p.add_argument('--vis_compare', type=int, default=0,
+                   help='ve K nguoi ma Halpe CU (file 3DPW_{split}_halpe26.json) lech OpenPose: cu | moi | OpenPose')
     return p.parse_args()
 
 
@@ -117,6 +140,107 @@ def halpe2h36m(k):
     return y
 
 
+# Khop chung Halpe-26 -> OpenPose-18: Nose, vai, khuyu, co tay, hong, goi, co chan
+HALPE_OP_PAIRS = ((0, 0), (5, 5), (6, 2), (7, 6), (8, 3), (9, 7), (10, 4),
+                  (11, 11), (12, 8), (13, 12), (14, 9), (15, 13), (16, 10))
+HALPE_THR = 0.3
+
+
+def op_joints(ann):
+    op = np.asarray(ann.get('openpose_result', []), dtype=np.float32).reshape(-1, 3)
+    return op[:18] if len(op) >= 18 else None
+
+
+def op_bbox(ann, expand, min_joints):
+    """bbox xyxy om sat khop OpenPose (score > OPENPOSE_THR) noi expand; None neu qua it khop."""
+    op = op_joints(ann)
+    if op is None:
+        return None
+    v = op[op[:, 2] > OPENPOSE_THR]
+    if len(v) < min_joints:
+        return None
+    x0, y0 = v[:, 0].min(), v[:, 1].min()
+    x1, y1 = v[:, 0].max(), v[:, 1].max()
+    cx, cy, w, h = (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) * expand, (y1 - y0) * expand
+    return [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2]
+
+
+def mismatch_op(k, s, ann):
+    """Ti le khop chung (ca 2 nguon phat hien) lech > 0.2 x kich thuoc nguoi (theo OpenPose). nan neu < 4 khop."""
+    op = op_joints(ann)
+    if op is None:
+        return float('nan')
+    v = op[op[:, 2] > OPENPOSE_THR]
+    if len(v) < 2:
+        return float('nan')
+    size = max(np.ptp(v[:, 0]), np.ptp(v[:, 1]), 1.0)
+    far, n = 0, 0
+    for h, o in HALPE_OP_PAIRS:
+        if s[h] > HALPE_THR and op[o, 2] > OPENPOSE_THR:
+            n += 1
+            far += np.linalg.norm(k[h] - op[o, :2]) > 0.2 * size
+    return far / n if n >= 4 else float('nan')
+
+
+def gt_box(ann):
+    x, y, w, h = [float(v) for v in ann['bbox']]
+    return [x, y, x + w, y + h]
+
+
+def infer(model, img, anns, args):
+    """Tra (kpts (N,26,2), scores (N,26), boxes dung (N, 4)) theo args.bbox_source."""
+    if args.bbox_source == 'gt':
+        boxes = [gt_box(a) for a in anns]
+        k, s = model(img, bboxes=boxes)
+        return np.asarray(k), np.asarray(s), boxes
+    cands = []                                     # moi nguoi: danh sach bbox ung vien
+    for a in anns:
+        ob = op_bbox(a, args.op_expand, args.op_min_joints)
+        if args.bbox_source == 'openpose':
+            cands.append([ob if ob is not None else gt_box(a)])
+        else:
+            c = [gt_box(a)]
+            if ob is not None:
+                c = [ob, op_bbox(a, 1.1, args.op_min_joints), gt_box(a)]
+            cands.append(c)
+    flat = [b for c in cands for b in c]
+    k, s = model(img, bboxes=flat)
+    k, s = np.asarray(k), np.asarray(s)
+    out_k, out_s, out_b, i = [], [], [], 0
+    for a, c in zip(anns, cands):
+        best, best_m = 0, None
+        for j in range(len(c)):
+            m = mismatch_op(k[i + j], s[i + j], a)
+            m = 1.0 if np.isnan(m) else m
+            if best_m is None or m < best_m - 1e-6:   # hoa -> giu ung vien dau (bbox OpenPose)
+                best, best_m = j, m
+        out_k.append(k[i + best]); out_s.append(s[i + best]); out_b.append(c[best])
+        i += len(c)
+    return np.stack(out_k), np.stack(out_s), out_b
+
+
+def save_compare(img, ann, old, new_k, new_s, box, m_old, m_new, out_path):
+    """3 o cho 1 nguoi: [Halpe cu (bbox GT tim)] | [Halpe moi (bbox dung xanh duong)] | [OpenPose]."""
+    a, b, c = img.copy(), img.copy(), img.copy()
+    g = [int(v) for v in gt_box(ann)]
+    for im in (a, b, c):
+        cv2.rectangle(im, (g[0], g[1]), (g[2], g[3]), (255, 0, 255), 2)
+    cv2.rectangle(b, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (255, 128, 0), 2)
+    if old is not None:
+        draw(a, old[:, :2], old[:, 2], HALPE26_SKELETON, HALPE_THR)
+    draw(b, new_k, new_s, HALPE26_SKELETON, HALPE_THR)
+    op = op_joints(ann)
+    if op is not None:
+        draw(c, op[:, :2], op[:, 2], OPENPOSE18_SKELETON, OPENPOSE_THR)
+    H, W = img.shape[:2]
+    x0, y0 = max(0, g[0] - int(0.6 * (g[2] - g[0]))), max(0, g[1] - 40)
+    x1, y1 = min(W, g[2] + int(0.6 * (g[2] - g[0]))), min(H, g[3] + 40)
+    titles = [f'Halpe cu (bbox GT) lech OP {m_old:.0%}', f'Halpe moi lech OP {m_new:.0%}', 'OpenPose (danh tinh)']
+    crops = [np.ascontiguousarray(p[y0:y1, x0:x1]) for p in (a, b, c)]
+    crops = [draw(cr, [], [], [], HALPE_THR, title=t) for cr, t in zip(crops, titles)]
+    cv2.imwrite(out_path, np.concatenate(crops, axis=1))
+
+
 def draw(img, kpts, scores, skeleton, thr, highlight=(), title=''):
     for a, b in skeleton:
         if scores[a] > thr and scores[b] > thr:
@@ -172,6 +296,20 @@ def run_split(model, args, split, out_dir):
     print(f'[{split}] {len(db["annotations"])} nguoi / {len(by_img)} anh')
 
     results, n_missing_img = {}, 0
+    old = None   # Halpe cu (bbox GT) de thong ke / ve so sanh
+    p_old = osp.join(args.data_root, f'3DPW_{split}_halpe26.json')
+    if args.bbox_source != 'gt' and osp.isfile(p_old):
+        with open(p_old) as f:
+            old = json.load(f)
+    elif args.bbox_source != 'gt':
+        print(f'[canh bao] khong thay {p_old} -> khong so sanh duoc voi Halpe cu')
+    if args.seqs:
+        by_img = {k: v for k, v in by_img.items() if imgs[k]['sequence'] in set(args.seqs)}
+        print(f'[{split}] loc sequence {args.seqs}: {sum(len(v) for v in by_img.values())} nguoi / {len(by_img)} anh')
+    if args.max_images:
+        by_img = dict(list(by_img.items())[:args.max_images])
+    stat = {'n': 0, 'old_bad': 0, 'new_bad': 0, 'fixed': 0, 'broke': 0}
+    n_vis = 0
     vis_ids = set(list(by_img.keys())[::max(1, len(by_img) // max(1, args.vis_num))][:args.vis_num]) if args.vis_num else set()
     for image_id, anns in tqdm(by_img.items(), desc=split):
         im = imgs[image_id]
@@ -180,22 +318,39 @@ def run_split(model, args, split, out_dir):
         if img is None:
             n_missing_img += 1
             continue
-        bboxes = []
-        for ann in anns:
-            x, y, w, h = [float(v) for v in ann['bbox']]
-            bboxes.append([x, y, x + w, y + h])   # xywh -> xyxy
-        kpts, scores = model(img, bboxes=bboxes)  # (N, 26, 2), (N, 26)
-        kpts, scores = np.asarray(kpts), np.asarray(scores)
+        kpts, scores, used = infer(model, img, anns, args)   # (N, 26, 2), (N, 26), bbox dung
         assert kpts.shape[1] == 26, f'Model khong phai Halpe26: {kpts.shape}'
-        for ann, k, s in zip(anns, kpts, scores):
+        for ann, k, s, box in zip(anns, kpts, scores, used):
             results[str(ann['id'])] = np.concatenate([k, s[:, None]], axis=1).round(3).tolist()
+            m_new = mismatch_op(k, s, ann)
+            o = np.asarray(old[str(ann['id'])], dtype=np.float32) if old is not None and str(ann['id']) in old else None
+            m_old = mismatch_op(o[:, :2], o[:, 2], ann) if o is not None else float('nan')
+            if not (np.isnan(m_new) or np.isnan(m_old)):
+                stat['n'] += 1
+                ob, nb = m_old > 0.5, m_new > 0.5
+                stat['old_bad'] += ob; stat['new_bad'] += nb
+                stat['fixed'] += ob and not nb; stat['broke'] += nb and not ob
+                if args.vis_compare and ob and n_vis < args.vis_compare:
+                    os.makedirs(args.vis_dir, exist_ok=True)
+                    save_compare(img, ann, o, k, s, box, m_old, m_new,
+                                 osp.join(args.vis_dir, f'{split}_{im["sequence"]}_{ann["id"]}_{im["file_name"]}'))
+                    n_vis += 1
 
         if image_id in vis_ids:
             os.makedirs(args.vis_dir, exist_ok=True)
             save_vis(img, anns, kpts, scores,
                      osp.join(args.vis_dir, f'{split}_{im["sequence"]}_{im["file_name"]}'))
 
-    out_path = osp.join(out_dir, f'3DPW_{split}_halpe26.json')
+    if stat['n']:
+        print(f'[{split}] so voi OpenPose (lech > 50% khop chung = nghi nham nguoi), n = {stat["n"]}: '
+              f'Halpe cu {stat["old_bad"]} ({100 * stat["old_bad"] / stat["n"]:.1f}%) -> moi {stat["new_bad"]} '
+              f'({100 * stat["new_bad"] / stat["n"]:.1f}%) | sua duoc {stat["fixed"]} | lam hong {stat["broke"]}'
+              + (f' | hinh: {args.vis_dir}' if args.vis_compare else ''))
+    if args.dry_run:
+        print(f'[{split}] --dry_run: khong ghi json ({len(results)} nguoi)')
+        return
+    suffix = args.out_suffix if args.out_suffix is not None else ('' if args.bbox_source == 'gt' else '_opbox')
+    out_path = osp.join(out_dir, f'3DPW_{split}_halpe26{suffix}.json')
     with open(out_path, 'w') as f:
         json.dump(results, f)
     print(f'[{split}] luu {len(results)} nguoi -> {out_path} | anh khong doc duoc: {n_missing_img}')

@@ -118,6 +118,9 @@ cfg.DATASET.no_rot_aug = False
 # GT 2D > nguong (ty le canh crop, vd 0.1) -> mask = 0 (toa do ve 0). Khop khong co GT tuong ung (vd Torso cua COCO)
 # khong kiem tra. Ap dung ca lifter (lift_only) va Student (fusekin_unified). 0 = TAT (hanh vi cu).
 cfg.DATASET.halpe_gt_mask_thr = 0.0
+# Hau to file Halpe-26 cua 3DPW (test / OC / PC / Crowd): '' = 3DPW_{tag}_halpe26.json (trich bang bbox GT, cu);
+# '_opbox' = trich bang bbox tu khop OpenPose cua dung nguoi (tools/extract_halpe26_3dpw.py --bbox_source openpose_best)
+cfg.DATASET.pw3d_halpe_suffix = ''
 # Nguon 2D dau vao cua Human36M (train + test):
 #   'gt_posefix' (mac dinh, giong JOTR): train = GT 2D + nhieu PoseFix, test = GT 2D sach
 #   'halpe26'   : Human36M_{split}_halpe26.npz tu tools/extract_halpe26_h36m.py (nguong = halpe26_conf_thr)
