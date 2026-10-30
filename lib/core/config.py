@@ -125,6 +125,17 @@ cfg.DATASET.pw3d_halpe_suffix = ''
 # mask = khop GT trong khung crop (conf 1). Dung cho ca lifter (lift_only) va Student. Tu bat pw3d_test_gt2d.
 # GT 2D: H36M / MuCo = khop mocap chieu; MSCOCO / CrowdPose / 3DPW = H36M-17 hoi quy tu mesh SMPL chieu. Crop van tu Halpe.
 cfg.DATASET.input_2d_gt = False
+# Kieu JOTR (2026-10-30): 'all' = oracle (moi tap GT 2D); 'train' = CHI tap train GT 2D (+ nhieu duoi), tap test
+# dung detector theo pw3d_2d_source ('openpose' -> 3DPW / OC / PC OpenPose, Crowd Higher-HRNet, nhu JOTR / 3DCrowdNet).
+cfg.DATASET.input_2d_gt_split = 'all'
+# Chi giu cac khop GT 2D nay o dau vao train (khop detector test khong co -> mask 0, vd Head_top voi OpenPose). [] = het.
+cfg.DATASET.gt2d_input_joints = []
+# Nhieu tren GT 2D (chi tap train): rung (toa do [-1, 1]; 0.03 ~ 4 px crop 256), mat khop, dao trai / phai tung cap
+cfg.DATASET.gt2d_jitter_std = 0.0
+cfg.DATASET.gt2d_drop_prob = 0.0
+cfg.DATASET.gt2d_lr_swap_prob = 0.0
+# Torso dau vao = trung diem Neck-Pelvis (mask = Neck * Pelvis) cho MOI tap (train GT + test detector) -> 2 ben cung cach
+cfg.DATASET.input_torso_mid = False
 # Nguon 2D dau vao cua Human36M (train + test):
 #   'gt_posefix' (mac dinh, giong JOTR): train = GT 2D + nhieu PoseFix, test = GT 2D sach
 #   'halpe26'   : Human36M_{split}_halpe26.npz tu tools/extract_halpe26_h36m.py (nguong = halpe26_conf_thr)

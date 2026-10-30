@@ -840,3 +840,8 @@ da co, cung giao thuc). Ket qua: chua co.
   CHUA co doi khop voi nguoi gan (synthesize_pose / near_joints cua JOTR) -> buoc sau.
 - YAML: config/finetune_difflifter_d512_e40_gt2dnoise.yaml, config/train_student_v3_scratch_jotr_gt2dnoise.yml (pw3d_2d_source 'openpose', lift_soft_conf False).
 - 2026-10-30: DA HOAN TAC muc 45 theo yeu cau nguoi dung (code truoc khi duoc xac nhan): bo cac khoa input_2d_gt_split / gt2d_input_joints / gt2d_jitter_std / gt2d_drop_prob / gt2d_lr_swap_prob (config.py, jotr_dataset.py tro ve ban muc 44); 2 YAML chuyen vao _to_delete/config/. Them quy tac vao AGENTS.md muc 3: khong code khi chua duoc xac nhan.
+
+## 46. Kieu JOTR (nguoi dung xac nhan 2026-10-30): train GT 2D + nhieu, test OpenPose / Higher-HRNet (da code, chua chay)
+- Code: config.py them input_2d_gt_split ('all' | 'train'), gt2d_input_joints, gt2d_jitter_std, gt2d_drop_prob, gt2d_lr_swap_prob, input_torso_mid (mac dinh tat); jotr_dataset.Human36M17Dataset ap dung; bo dong in min / max GT 2D. main/finetune_difflifter.py: bo log 'xy_conf range' (nguoi dung yeu cau).
+- Head_top: cach A (mask o train; OpenPose / HHRNet test khong co). Torso = trung diem Neck-Pelvis ca 2 ben. Mask nhi phan (lift_soft_conf False).
+- YAML: config/finetune_difflifter_d512_e40_gt2dnoise.yaml -> config/train_student_v3_scratch_jotr_gt2dnoise.yml (lifter latest). Chua co doi khop nguoi gan.

@@ -331,12 +331,6 @@ def train_epoch(model, loader, optimizer, device, dl_cfg, epoch, ema=None, step0
                     post[SHORT_NAMES.get(nm, nm[:5])] = f'{ds_sum[k] / ds_cnt[k] * 1000:.1f}'
             pbar.set_postfix(post)
 
-        if i == 0 and epoch <= 2:
-            print(f'\n[Epoch {epoch} batch 0] xy_conf range: '
-                  f'{xy_conf.min().item():.3f}..{xy_conf.max().item():.3f} | '
-                  f'gt_3d range: {gt_3d.min().item():.3f}..{gt_3d.max().item():.3f} | '
-                  f'pred_x0 range: {pred_x0.min().item():.3f}..{pred_x0.max().item():.3f}')
-
     ds_avg = {nm: ds_sum[k] / ds_cnt[k] * 1000 for k, nm in enumerate(ds_names) if ds_cnt[k] > 0}
     return total_loss / max(n, 1), n, ds_avg
 
