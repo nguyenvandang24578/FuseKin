@@ -11,6 +11,9 @@ Moi nguoi (annotation 3DPW) ve 1 hinh, cac o:
   box_op_neg : nhu tren + diem AM = khop OpenPose cua NGUOI KHAC trong anh (de SAM tach 2 nguoi)
 SAM: --sam sam2 (pip install sam2; tai 'facebook/sam2.1-hiera-large' tu HuggingFace)
      --sam sam1 --sam_ckpt sam_vit_h_4b8939.pth (pip install segment-anything)
+Neu torch / SAM khong chay duoc trong `pose2d` (segfault): tach 2 buoc
+  1) moi truong FuseKin (co torch):  python tools/sam_masks_3dpw.py <cung tham so chon mau> --mask_dir debug_sam_masks
+  2) moi truong pose2d:              python tools/vis_sam_rtmpose_3dpw.py <cung tham so> --mask_dir debug_sam_masks
 Vi du:
   python tools/vis_sam_rtmpose_3dpw.py --data_root data_final/PW3D --split validation \\
       --seqs courtyard_hug_00 courtyard_dancing_00 --only_multi --max_people 20 --stride 50 --flip --out_dir debug_sam
@@ -25,7 +28,6 @@ from collections import defaultdict
 
 import cv2
 import numpy as np
-import torch  # noqa: F401  nap torch (CUDA / cuDNN cua torch) TRUOC onnxruntime -> tranh xung dot thu vien (free(): invalid pointer)
 
 sys.path.insert(0, osp.dirname(osp.abspath(__file__)))
 from extract_halpe26_3dpw import (build_model, draw, HALPE26_SKELETON, OPENPOSE18_SKELETON, OPENPOSE_THR,  # noqa: E402
@@ -53,6 +55,8 @@ def parse_args():
     p.add_argument('--fill', default='gray', choices=['gray', 'blur'], help='to phan ngoai mask')
     p.add_argument('--flip', action='store_true', help='TTA: trung binh voi anh lat ngang')
     p.add_argument('--out_dir', default='debug_sam')
+    p.add_argument('--mask_dir', default='',
+                   help='doc mask da tinh san (tools/sam_masks_3dpw.py, moi truong co torch) -> KHONG nap torch / SAM o day')
     # cho build_model cua extract_halpe26_3dpw
     p.add_argument('--mode', default='performance', choices=['performance', 'balanced', 'lightweight'])
     p.add_argument('--onnx', default='')
@@ -61,8 +65,42 @@ def parse_args():
     return p.parse_args()
 
 
+def select(args):
+    """Chon anh / nguoi giong nhau cho ca tools/sam_masks_3dpw.py va script nay."""
+    ann_file = osp.join(args.data_root, f'3DPW_latest_{args.split}.json')
+    if not osp.exists(ann_file):
+        ann_file = osp.join(args.data_root, f'3DPW_{args.split}.json')
+    with open(ann_file) as f:
+        db = json.load(f)
+    imgs = {im['id']: im for im in db['images']}
+    by_img = defaultdict(list)
+    for a in db['annotations']:
+        by_img[a['image_id']].append(a)
+    keys = [k for k in by_img if (not args.seqs or imgs[k]['sequence'] in set(args.seqs))
+            and (not args.only_multi or len(by_img[k]) >= 2)
+            and (not args.ann_ids or any(a['id'] in set(args.ann_ids) for a in by_img[k]))]
+    keys = keys[::max(1, args.stride)]
+    people = []
+    for k in keys:
+        for a in by_img[k]:
+            if args.ann_ids and a['id'] not in set(args.ann_ids):
+                continue
+            people.append((k, a))
+            if len(people) >= args.max_people:
+                return imgs, by_img, people
+    return imgs, by_img, people
+
+
+def load_mask(mask_dir, ann_id, prompt):
+    d = np.load(osp.join(mask_dir, f'{ann_id}.npz'))
+    shape = tuple(d['shape'])
+    m = np.unpackbits(d[f'm_{prompt}'])[:shape[0] * shape[1]].reshape(shape).astype(bool)
+    return m, float(d[f's_{prompt}'])
+
+
 class Sam:
     def __init__(self, args):
+        import torch  # noqa: F401  nap torch truoc onnxruntime (tranh xung dot cuDNN)
         self.kind = args.sam
         if self.kind == 'sam2':
             from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -136,75 +174,62 @@ def panel(img, title, box, kpts=None, scores=None, skel=None, thr=0.3, mask=None
 
 def main():
     args = parse_args()
-    ann_file = osp.join(args.data_root, f'3DPW_latest_{args.split}.json')
-    if not osp.exists(ann_file):
-        ann_file = osp.join(args.data_root, f'3DPW_{args.split}.json')
-    with open(ann_file) as f:
-        db = json.load(f)
-    imgs = {im['id']: im for im in db['images']}
-    by_img = defaultdict(list)
-    for a in db['annotations']:
-        by_img[a['image_id']].append(a)
+    imgs, by_img, people = select(args)
     old = {}
     p_old = osp.join(args.data_root, f'3DPW_{args.split}_halpe26.json')
     if osp.isfile(p_old):
         with open(p_old) as f:
             old = json.load(f)
-    keys = [k for k in by_img if (not args.seqs or imgs[k]['sequence'] in set(args.seqs))
-            and (not args.only_multi or len(by_img[k]) >= 2)
-            and (not args.ann_ids or any(a['id'] in set(args.ann_ids) for a in by_img[k]))]
-    keys = keys[::max(1, args.stride)]
-    print(f'{len(keys)} anh duoc chon | prompts {args.prompts} | flip {args.flip}')
-    # SAM (torch) tao TRUOC, roi RTMPose (onnxruntime) KHONG preload_dlls: tranh nap 2 ban cuDNN cung luc
-    sam = Sam(args)
-    args.skip_preload = True
+    print(f'{len(people)} nguoi duoc chon | prompts {args.prompts} | flip {args.flip} | '
+          f'mask {"doc tu " + args.mask_dir if args.mask_dir else "SAM tai cho"}')
+    sam = None
+    if not args.mask_dir:
+        sam = Sam(args)            # SAM (torch) tao TRUOC, roi RTMPose khong preload_dlls
+        args.skip_preload = True
     model = build_model(args)
     os.makedirs(args.out_dir, exist_ok=True)
-    n = 0
-    for k in keys:
-        if n >= args.max_people:
-            break
+    cur_img, img, n = None, None, 0
+    for k, a in people:
         im = imgs[k]
-        img = cv2.imread(osp.join(args.data_root, 'imageFiles', im['sequence'], im['file_name']))
+        if k != cur_img:
+            img = cv2.imread(osp.join(args.data_root, 'imageFiles', im['sequence'], im['file_name']))
+            cur_img = k
+            if img is not None and sam is not None:
+                sam.set_image(img)
         if img is None:
             continue
-        sam.set_image(img)
         anns = by_img[k]
-        for a in anns:
-            if args.ann_ids and a['id'] not in set(args.ann_ids):
-                continue
-            if n >= args.max_people:
-                break
-            box = gt_box(a)
-            panels = []
-            o = old.get(str(a['id']))
-            if o is not None:
-                o = np.asarray(o, dtype=np.float32)
-                panels.append(panel(img, 'Halpe cu (bbox GT)', box, o[:, :2], o[:, 2], HALPE26_SKELETON, HALPE_THR))
-            pos = op_points(a)
-            neg = [pt for b in anns if b is not a for pt in op_points(b)]
-            for pr in args.prompts:
+        box = gt_box(a)
+        panels = []
+        o = old.get(str(a['id']))
+        if o is not None:
+            o = np.asarray(o, dtype=np.float32)
+            panels.append(panel(img, 'Halpe cu (bbox GT)', box, o[:, :2], o[:, 2], HALPE26_SKELETON, HALPE_THR))
+        pos = op_points(a)
+        neg = [pt for b in anns if b is not a for pt in op_points(b)]
+        for pr in args.prompts:
+            if args.mask_dir:
+                m, sc = load_mask(args.mask_dir, a['id'], pr)
+            else:
                 m, sc = sam.mask(box, pos if pr != 'box' else None, neg if pr == 'box_op_neg' else None)
-                kp, s = rtm(model, masked_image(img, m, box, args), box, args.flip)
-                panels.append(panel(img, f'SAM {pr} ({sc:.2f}) + RTMPose', box, kp, s, HALPE26_SKELETON, HALPE_THR,
-                                    mask=m))
-            op = op_joints(a)
-            panels.append(panel(img, 'OpenPose', box, op=op))
-            # cat quanh bbox (noi 60% ngang) de de nhin
-            H, W = img.shape[:2]
-            bw = box[2] - box[0]
-            x0, x1 = int(max(0, box[0] - 0.6 * bw)), int(min(W, box[2] + 0.6 * bw))
-            y0, y1 = int(max(0, box[1] - 40)), int(min(H, box[3] + 40))
-            crops = []
-            for p, t in panels:
-                c = np.ascontiguousarray(p[y0:y1, x0:x1])
-                f = 480.0 / max(c.shape[0], 1)
-                c = cv2.resize(c, None, fx=f, fy=f)
-                draw(c, [], [], [], 0.3, title=t)
-                crops.append(c)
-            out = osp.join(args.out_dir, f'{args.split}_{im["sequence"]}_{a["id"]}_{im["file_name"]}')
-            cv2.imwrite(out, np.concatenate(crops, axis=1))
-            n += 1
+            kp, sco = rtm(model, masked_image(img, m, box, args), box, args.flip)
+            panels.append(panel(img, f'SAM {pr} ({sc:.2f}) + RTMPose', box, kp, sco, HALPE26_SKELETON, HALPE_THR,
+                                mask=m))
+        panels.append(panel(img, 'OpenPose', box, op=op_joints(a)))
+        H, W = img.shape[:2]
+        bw = box[2] - box[0]
+        x0, x1 = int(max(0, box[0] - 0.6 * bw)), int(min(W, box[2] + 0.6 * bw))
+        y0, y1 = int(max(0, box[1] - 40)), int(min(H, box[3] + 40))
+        crops = []
+        for p, t in panels:
+            c = np.ascontiguousarray(p[y0:y1, x0:x1])
+            f = 480.0 / max(c.shape[0], 1)
+            c = cv2.resize(c, None, fx=f, fy=f)
+            draw(c, [], [], [], 0.3, title=t)
+            crops.append(c)
+        cv2.imwrite(osp.join(args.out_dir, f'{args.split}_{im["sequence"]}_{a["id"]}_{im["file_name"]}'),
+                    np.concatenate(crops, axis=1))
+        n += 1
     print(f'Da ve {n} nguoi -> {args.out_dir}')
 
 
