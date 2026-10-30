@@ -26,6 +26,9 @@ parser.add_argument('--sets', type=str, default='3dpw-pc,3dpw-crowd')
 parser.add_argument('--far', type=float, default=0.2, help='nguong khop xa, ti le kich thuoc nguoi (~40 px crop 256)')
 parser.add_argument('--vis_k', type=int, default=30)
 parser.add_argument('--max_samples', type=int, default=0, help='0 = toan bo tap')
+parser.add_argument('--dump_bad', type=str, default='',
+                    help='ghi ann_id cac mau Halpe CU xau (theo GT) ra <dump_bad>_<split>.txt, xau nhat truoc '
+                         '(dung cho tools/sam_masks_3dpw.py / vis_sam_rtmpose_3dpw.py --ann_ids_file)')
 parser.add_argument('--halpe_new_suffix', type=str, default='',
                     help="them nguon 'halpe_new' doc 3DPW_<tag>_halpe26<suffix>.json (vd _opbox) -> dem sua / lam hong theo GT")
 args = parser.parse_args()
@@ -87,7 +90,7 @@ def collect(name):
         if hh is not None:
             r = hh.get(str(it['ann_id']))
             src['hhrnet'] = np.asarray(r['coco_joints'], dtype=np.float32)[c_idx] if r is not None else None
-        out = {'img_path': it['img_path'], 'gt12': gt12, 'size': size,
+        out = {'img_path': it['img_path'], 'gt12': gt12, 'size': size, 'ann_id': int(it['ann_id']),
                'gt_bbox': np.asarray(it['tight_bbox'], dtype=np.float32)}   # ann['bbox'] xywh (bbox trich Halpe cu)
         for s, k in src.items():
             if k is None:
@@ -208,6 +211,15 @@ def main():
         if args.vis_k > 0:
             vis(name, rec)
         summary[name] = res
+        if args.dump_bad:
+            bad = [r for r in rec if 'halpe' in r and r['halpe']['far'].any()]
+            bad.sort(key=lambda r: (-int(r['halpe']['far'].sum()), -float(r['halpe']['e'][r['halpe']['det']].max())))
+            split = {'3dpw': 'test', '3dpw-oc': 'oc', '3dpw-pc': 'pc', '3dpw-crowd': 'validation'}.get(name, name)
+            path = f'{args.dump_bad}_{split}.txt'
+            os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+            with open(path, 'w') as f:
+                f.write('\n'.join(str(r['ann_id']) for r in bad) + '\n')
+            print(f'   {len(bad)} ann_id Halpe xau -> {path} (dung --split {split} --ann_ids_file {path})')
     os.makedirs(cfg.output_dir, exist_ok=True)
     out = os.path.join(cfg.output_dir, 'compare_2d_sources.json')
     with open(out, 'w', encoding='utf-8') as f:

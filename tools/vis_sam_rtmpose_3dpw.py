@@ -42,6 +42,7 @@ def parse_args():
     p.add_argument('--split', default='validation', help='test | validation | train | oc | pc')
     p.add_argument('--seqs', nargs='*', default=[])
     p.add_argument('--ann_ids', nargs='*', type=int, default=[], help='chi cac annotation nay')
+    p.add_argument('--ann_ids_file', default='', help='file txt, moi dong 1 ann_id (vd tu compare_2d_sources --dump_bad)')
     p.add_argument('--only_multi', action='store_true', help='chi anh co >= 2 nguoi (cho de nham)')
     p.add_argument('--stride', type=int, default=1, help='lay 1 anh moi N anh')
     p.add_argument('--max_people', type=int, default=20)
@@ -62,7 +63,11 @@ def parse_args():
     p.add_argument('--onnx', default='')
     p.add_argument('--input_size', type=int, nargs=2, default=None)
     p.add_argument('--device', default='cuda', choices=['cuda', 'cpu'])
-    return p.parse_args()
+    a = p.parse_args()
+    if a.ann_ids_file:
+        with open(a.ann_ids_file) as f:
+            a.ann_ids = list(a.ann_ids) + [int(x) for x in f.read().split() if x.strip()]
+    return a
 
 
 def select(args):
@@ -81,6 +86,15 @@ def select(args):
             and (not args.ann_ids or any(a['id'] in set(args.ann_ids) for a in by_img[k]))]
     keys = keys[::max(1, args.stride)]
     people = []
+    if args.ann_ids:
+        # theo thu tu danh sach (xau nhat truoc), bo qua stride / only_multi
+        where = {a['id']: (k, a) for k, lst in by_img.items() for a in lst}
+        for i in args.ann_ids:
+            if i in where and (not args.seqs or imgs[where[i][0]]['sequence'] in set(args.seqs)):
+                people.append(where[i])
+            if len(people) >= args.max_people:
+                break
+        return imgs, by_img, people
     for k in keys:
         for a in by_img[k]:
             if args.ann_ids and a['id'] not in set(args.ann_ids):
