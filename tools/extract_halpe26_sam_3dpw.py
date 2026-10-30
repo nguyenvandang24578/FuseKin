@@ -1,7 +1,8 @@
 """
 tools/extract_halpe26_sam_3dpw.py -- BUOC 2/2 (moi truong `pose2d`): trich Halpe-26 bang RTMPose tren anh da CHE
-phan ngoai mask SAM cua dung nguoi (mask tu tools/sam_pointer_masks_3dpw.py). bbox dua vao RTMPose = bbox annotation
-(nhu ban cu); --flip: trung binh voi anh lat ngang.
+phan ngoai mask SAM cua dung nguoi (mask tu tools/sam_pointer_masks_3dpw.py). CHI TRICH TRONG MASK: bbox dua vao
+RTMPose = bbox om mask (noi --box_expand; mask rong -> bbox annotation); khop roi NGOAI mask (da no) -> score 0 (coi
+nhu mat, tranh khop cua nguoi khac). --flip: trung binh voi anh lat ngang.
   --vis N > 0 : ve N nguoi (mask cua buoc 1 chay voi --vis N) -> <vis_dir>/<split>/: [Halpe cu] | [mask + Halpe moi]
                 | [con tro OpenPose / Higher-HRNet]; ghi 3DPW_<split>_halpe26_samvis.json (chi cac nguoi do) de cham
                 theo GT: main/compare_2d_sources.py --halpe_new_suffix _samvis
@@ -38,6 +39,7 @@ def parse_args():
     p.add_argument('--vis_dir', default='debug_sam_vis/img')
     p.add_argument('--flip', action='store_true')
     p.add_argument('--dilate', type=float, default=0.04, help='no mask theo ti le canh lon bbox')
+    p.add_argument('--box_expand', type=float, default=1.1, help='noi bbox om mask')
     p.add_argument('--out_dir', default='', help='mac dinh = data_root')
     p.add_argument('--mode', default='performance', choices=['performance', 'balanced', 'lightweight'])
     p.add_argument('--onnx', default='')
@@ -57,9 +59,21 @@ def get_mask(d, k):
     return np.repeat(vals, r).astype(bool).reshape(int(d['H'][k]), int(d['W'][k]))
 
 
-def masked(img, m, box, dil):
+def dilated(m, box, dil):
     s = max(3, int(dil * max(box[2] - box[0], box[3] - box[1])) | 1)
-    md = cv2.dilate(m.astype(np.uint8), np.ones((s, s), np.uint8)).astype(bool)
+    return cv2.dilate(m.astype(np.uint8), np.ones((s, s), np.uint8)).astype(bool)
+
+
+def mask_box(m, expand, fallback):
+    ys, xs = np.nonzero(m)
+    if len(xs) < 10:
+        return fallback
+    x0, x1, y0, y1 = xs.min(), xs.max(), ys.min(), ys.max()
+    cx, cy, w, h = (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) * expand, (y1 - y0) * expand
+    return [float(cx - w / 2), float(cy - h / 2), float(cx + w / 2), float(cy + h / 2)]
+
+
+def masked(img, md):
     out = img.copy()
     out[~md] = 114
     return out
@@ -143,8 +157,14 @@ def main():
                     continue
                 m = get_mask(d, idx[a['id']])
                 x, y, w, h = [float(v) for v in a['bbox']]
-                box = [x, y, x + w, y + h]
-                kp, sc = rtm(model, masked(img, m, box, args.dilate), box, args.flip)
+                gbox = [x, y, x + w, y + h]
+                md = dilated(m, gbox, args.dilate)
+                box = mask_box(m, args.box_expand, gbox)
+                kp, sc = rtm(model, masked(img, md), box, args.flip)
+                Hh, Ww = md.shape
+                xi = np.clip(kp[:, 0].astype(int), 0, Ww - 1)
+                yi = np.clip(kp[:, 1].astype(int), 0, Hh - 1)
+                sc = np.where(md[yi, xi], sc, 0.0)          # khop ngoai mask -> mat
                 res[str(a['id'])] = np.concatenate([kp, sc[:, None]], axis=1).round(3).tolist()
                 if args.vis > 0:
                     o = old.get(str(a['id']))
