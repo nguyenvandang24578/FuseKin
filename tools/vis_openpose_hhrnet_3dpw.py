@@ -12,6 +12,7 @@ Khong can GPU / model. Chay trong moi truong FuseKin:
 import os, sys
 sys.path.append('./lib')
 sys.path.append('./')
+sys.path.append('./main')   # __init_path nam trong main/
 os.environ["OMP_NUM_THREADS"] = "1"
 import argparse
 import json
