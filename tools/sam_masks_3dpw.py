@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, osp.dirname(osp.abspath(__file__)))
-from vis_sam_rtmpose_3dpw import parse_args, select, Sam, op_points, gt_box   # noqa: E402
+from vis_sam_rtmpose_3dpw import parse_args, select, Sam, gt_box, load_gt2d, prompt_points   # noqa: E402
 
 
 def main():
@@ -28,6 +28,7 @@ def main():
     imgs, by_img, people = select(args)
     print(f'{len(people)} nguoi | prompts {args.prompts} | SAM {args.sam} -> {out}')
     sam = Sam(args)
+    gt2d = load_gt2d(args)
     cur = None
     for k, a in people:
         im = imgs[k]
@@ -38,11 +39,10 @@ def main():
                 continue
             sam.set_image(img)
         box = gt_box(a)
-        pos = op_points(a)
-        neg = [pt for b in by_img[k] if b is not a for pt in op_points(b)]
         save = {'shape': np.asarray(img.shape[:2])}
         for pr in args.prompts:
-            m, sc = sam.mask(box, pos if pr != 'box' else None, neg if pr == 'box_op_neg' else None)
+            pos, neg = prompt_points(pr, a, by_img[k], gt2d, img.shape)
+            m, sc = sam.mask(box, pos, neg)
             save[f'm_{pr}'] = np.packbits(m.reshape(-1))
             save[f's_{pr}'] = np.float32(sc)
         np.savez_compressed(osp.join(out, f'{a["id"]}.npz'), **save)

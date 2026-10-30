@@ -31,7 +31,29 @@ import numpy as np
 
 sys.path.insert(0, osp.dirname(osp.abspath(__file__)))
 from extract_halpe26_3dpw import (build_model, draw, HALPE26_SKELETON, OPENPOSE18_SKELETON, OPENPOSE_THR,  # noqa: E402
-                                  HALPE_THR, op_joints, gt_box)
+                                  HALPE_THR, op_joints, gt_box, H36M_SKELETON)
+
+
+def load_gt2d(args):
+    if not args.gt2d_json:
+        return {}
+    with open(args.gt2d_json) as f:
+        return {int(k): np.asarray(v, dtype=np.float32) for k, v in json.load(f).items()}
+
+
+def prompt_points(pr, a, anns, gt2d, img_shape):
+    """(pos, neg) cho SAM theo che do prompt."""
+    if pr == 'box':
+        return None, None
+    if pr == 'box_gt':
+        g = gt2d.get(a['id'])
+        if g is None:
+            return None, None
+        H, W = img_shape[:2]
+        return [tuple(p) for p in g if 0 <= p[0] < W and 0 <= p[1] < H], None
+    pos = op_points(a)
+    neg = [pt for b in anns if b is not a for pt in op_points(b)] if pr == 'box_op_neg' else None
+    return pos, neg
 
 HALPE_FLIP = ((1, 2), (3, 4), (5, 6), (7, 8), (9, 10), (11, 12), (13, 14), (15, 16), (20, 21), (22, 23), (24, 25))
 
@@ -47,7 +69,10 @@ def parse_args():
     p.add_argument('--stride', type=int, default=1, help='lay 1 anh moi N anh')
     p.add_argument('--max_people', type=int, default=20)
     p.add_argument('--prompts', nargs='+', default=['box', 'box_op', 'box_op_neg'],
-                   choices=['box', 'box_op', 'box_op_neg'])
+                   choices=['box', 'box_op', 'box_op_neg', 'box_gt'])
+    p.add_argument('--gt2d_json', default='',
+                   help="GT 2D (compare_2d_sources --dump_bad): ve xuong GT mau do o moi o + prompt 'box_gt' "
+                        "(diem duong = GT 2D; CHI THU NGHIEM, khong dung duoc khi test that)")
     p.add_argument('--sam', default='sam2', choices=['sam2', 'sam1'])
     p.add_argument('--sam_model', default='facebook/sam2.1-hiera-large', help='sam2: ten HuggingFace')
     p.add_argument('--sam_ckpt', default='', help='sam1: file checkpoint')
@@ -172,13 +197,16 @@ def rtm(model, img, box, flip):
     return (k + kf) / 2, (s + sf) / 2
 
 
-def panel(img, title, box, kpts=None, scores=None, skel=None, thr=0.3, mask=None, op=None):
+def panel(img, title, box, kpts=None, scores=None, skel=None, thr=0.3, mask=None, op=None, gt=None):
     p = img.copy()
     if mask is not None:
         ov = p.copy()
         ov[mask] = (0.5 * ov[mask] + 0.5 * np.array([255, 128, 0])).astype(np.uint8)
         p = ov
     cv2.rectangle(p, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (255, 0, 255), 2)
+    if gt is not None:                       # xuong GT mau do
+        for i, j in H36M_SKELETON:
+            cv2.line(p, tuple(int(v) for v in gt[i]), tuple(int(v) for v in gt[j]), (0, 0, 255), 2)
     if op is not None:
         draw(p, op[:, :2], op[:, 2], OPENPOSE18_SKELETON, OPENPOSE_THR)
     if kpts is not None:
@@ -196,6 +224,7 @@ def main():
             old = json.load(f)
     print(f'{len(people)} nguoi duoc chon | prompts {args.prompts} | flip {args.flip} | '
           f'mask {"doc tu " + args.mask_dir if args.mask_dir else "SAM tai cho"}')
+    gt2d = load_gt2d(args)
     sam = None
     if not args.mask_dir:
         sam = Sam(args)            # SAM (torch) tao TRUOC, roi RTMPose khong preload_dlls
@@ -214,22 +243,22 @@ def main():
             continue
         anns = by_img[k]
         box = gt_box(a)
+        g = gt2d.get(a['id'])
         panels = []
         o = old.get(str(a['id']))
         if o is not None:
             o = np.asarray(o, dtype=np.float32)
-            panels.append(panel(img, 'Halpe cu (bbox GT)', box, o[:, :2], o[:, 2], HALPE26_SKELETON, HALPE_THR))
-        pos = op_points(a)
-        neg = [pt for b in anns if b is not a for pt in op_points(b)]
+            panels.append(panel(img, 'Halpe cu (bbox GT)', box, o[:, :2], o[:, 2], HALPE26_SKELETON, HALPE_THR, gt=g))
         for pr in args.prompts:
             if args.mask_dir:
                 m, sc = load_mask(args.mask_dir, a['id'], pr)
             else:
-                m, sc = sam.mask(box, pos if pr != 'box' else None, neg if pr == 'box_op_neg' else None)
+                pos, neg = prompt_points(pr, a, anns, gt2d, img.shape)
+                m, sc = sam.mask(box, pos, neg)
             kp, sco = rtm(model, masked_image(img, m, box, args), box, args.flip)
             panels.append(panel(img, f'SAM {pr} ({sc:.2f}) + RTMPose', box, kp, sco, HALPE26_SKELETON, HALPE_THR,
-                                mask=m))
-        panels.append(panel(img, 'OpenPose', box, op=op_joints(a)))
+                                mask=m, gt=g))
+        panels.append(panel(img, 'OpenPose', box, op=op_joints(a), gt=g))
         H, W = img.shape[:2]
         bw = box[2] - box[0]
         x0, x1 = int(max(0, box[0] - 0.6 * bw)), int(min(W, box[2] + 0.6 * bw))

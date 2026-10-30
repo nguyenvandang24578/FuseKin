@@ -90,7 +90,7 @@ def collect(name):
         if hh is not None:
             r = hh.get(str(it['ann_id']))
             src['hhrnet'] = np.asarray(r['coco_joints'], dtype=np.float32)[c_idx] if r is not None else None
-        out = {'img_path': it['img_path'], 'gt12': gt12, 'size': size, 'ann_id': int(it['ann_id']),
+        out = {'img_path': it['img_path'], 'gt12': gt12, 'size': size, 'ann_id': int(it['ann_id']), 'gt17': gt,
                'gt_bbox': np.asarray(it['tight_bbox'], dtype=np.float32)}   # ann['bbox'] xywh (bbox trich Halpe cu)
         for s, k in src.items():
             if k is None:
@@ -219,7 +219,11 @@ def main():
             os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
             with open(path, 'w') as f:
                 f.write('\n'.join(str(r['ann_id']) for r in bad) + '\n')
+            gpath = f'{args.dump_bad}_{split}_gt2d.json'
+            with open(gpath, 'w') as f:
+                json.dump({str(r['ann_id']): np.round(r['gt17'], 1).tolist() for r in bad}, f)
             print(f'   {len(bad)} ann_id Halpe xau -> {path} (dung --split {split} --ann_ids_file {path})')
+            print(f'   GT 2D H36M-17 (pixel anh goc) cua cac mau do -> {gpath} (--gt2d_json, CHI DE THU)')
     os.makedirs(cfg.output_dir, exist_ok=True)
     out = os.path.join(cfg.output_dir, 'compare_2d_sources.json')
     with open(out, 'w', encoding='utf-8') as f:
