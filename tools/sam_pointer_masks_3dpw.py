@@ -7,6 +7,9 @@ chon mask chua nhieu diem duong / it diem am nhat, roi CHI GIU vung lien thong c
 Khong co con tro (< 3 khop) -> chi bbox. Y tuong: BUCTD (pose bottom-up lam con tro) + PromptHMR (mask).
 Ghi <out_dir>/sam_masks_<split>.npz: ann_ids, score, n_ptr (so diem con tro), H, W, runs + off (mask nen run-length,
 hang truoc, bat dau bang so diem 0).
+  --prompt center : CHI 1-2 diem giua than (co = giua 2 vai, pelvis = giua 2 hong cua con tro), KHONG diem am,
+      lay mask LON NHAT trong 3 mask (muc "ca nguoi"), khong loc lien thong. Thieu ca 2 diem -> chi bbox.
+      --clip_box: cat mask trong bbox GT noi 10% (chi dung voi --prompt center).
   --vis N : chi N nguoi NGAU NHIEN moi split (seed co dinh) -> de buoc 2 ve hinh; 0 = TAT CA nguoi.
 Buoc 2 (moi truong pose2d): tools/extract_halpe26_sam_3dpw.py --mask_dir <out_dir> (cung --splits, cung --vis).
 SAM2 (mac dinh, can Python >= 3.10, moi truong rieng co torch chay duoc): pip install sam2 (tai
@@ -41,6 +44,9 @@ def parse_args():
     p.add_argument('--sam_type', default='vit_h')
     p.add_argument('--sam_ckpt', default='')
     p.add_argument('--use_box', action='store_true', help='dua them bbox annotation vao prompt (mac dinh tat)')
+    p.add_argument('--prompt', default='skeleton', choices=['skeleton', 'center'],
+                   help='skeleton: ca bo khop + diem am (cu); center: 1-2 diem giua than + mask lon nhat')
+    p.add_argument('--clip_box', action='store_true', help='--prompt center: cat mask trong bbox GT noi 10%%')
     p.add_argument('--device', default='cuda')
     p.add_argument('--out_dir', default='data_final/PW3D/sam_masks')
     return p.parse_args()
@@ -66,6 +72,23 @@ def pointer_points(ann, hh):
         return [tuple(p[:2]) for p in k if p[2] > HHRNET_THR]
     op = np.asarray(ann.get('openpose_result', []), dtype=np.float32).reshape(-1, 3)
     return [tuple(p[:2]) for p in op[:18] if p[2] > OPENPOSE_THR] if len(op) >= 18 else []
+
+
+def center_points(ann, hh):
+    """1-2 diem giua than tu con tro: co = giua 2 vai, pelvis = giua 2 hong (ca 2 khop phai co)."""
+    if hh is not None and str(ann['id']) in hh:
+        k = np.asarray(hh[str(ann['id'])]['coco_joints'], dtype=np.float32).reshape(-1, 3)
+        pairs, thr = [(5, 6), (11, 12)], HHRNET_THR          # COCO-17: vai L/R, hong L/R
+    else:
+        k = np.asarray(ann.get('openpose_result', []), dtype=np.float32).reshape(-1, 3)
+        if len(k) < 18:
+            return []
+        pairs, thr = [(2, 5), (8, 11)], OPENPOSE_THR         # OpenPose-18: vai R/L, hong R/L
+    out = []
+    for i, j in pairs:
+        if k[i, 2] > thr and k[j, 2] > thr:
+            out.append(tuple(((k[i, :2] + k[j, :2]) / 2).tolist()))
+    return out
 
 
 def choose_mask(masks, scores, pos, neg):
@@ -140,6 +163,29 @@ def main():
                     continue
                 x, y, w, h = [float(v) for v in a['bbox']]
                 box = np.array([x, y, x + w, y + h], dtype=np.float32)
+                if args.prompt == 'center':
+                    cp = center_points(a, hh)
+                    kw = {'multimask_output': True}
+                    if cp:
+                        kw['point_coords'] = np.asarray(cp, dtype=np.float32)
+                        kw['point_labels'] = np.ones(len(cp), dtype=np.int32)
+                    else:
+                        kw['box'] = box
+                    masks, sc, _ = pred.predict(**kw)
+                    masks, sc = np.asarray(masks).astype(bool), np.asarray(sc).reshape(-1)
+                    i = int(np.argmax(masks.reshape(len(masks), -1).sum(1))) if cp else int(np.argmax(sc))
+                    m, s_best = masks[i], float(sc[i])
+                    if args.clip_box:
+                        H, W = m.shape
+                        x0, y0 = int(max(x - 0.05 * w, 0)), int(max(y - 0.05 * h, 0))
+                        x1, y1 = int(min(x + 1.05 * w, W)), int(min(y + 1.05 * h, H))
+                        c = np.zeros_like(m); c[y0:y1, x0:x1] = True
+                        m = m & c
+                    r = rle_encode(m)
+                    ids.append(a['id']); scores.append(s_best)
+                    nptr.append(len(cp)); hs.append(img.shape[0]); ws.append(img.shape[1])
+                    runs.append(r); off.append(off[-1] + len(r))
+                    continue
                 pts = pointer_points(a, hh)
                 neg = [q for b in lst if b is not a for q in pointer_points(b, hh)] if len(pts) >= 3 else []
                 kw = {'multimask_output': True}
