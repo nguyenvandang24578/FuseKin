@@ -27,6 +27,9 @@ class PW3D(torch.utils.data.Dataset):
         if self.no_aug:
             data_name = '3dpw-train'
         self.data_name = data_name
+        # Co crowd RIENG cua tung dataset: cfg.crowd la bien TOAN CUC, bi dataset tao sau (vd 3dpw-crowd) ghi de
+        # -> __getitem__ cua 3dpw-val doc nham nhanh Higher-HRNet (hhrnetpose None) khi pw3d_2d_source = 'openpose'.
+        self.is_crowd = (data_name == '3dpw-crowd')
         if self.data_name in ['3dpw', '3dpw-pc', '3dpw-oc']:
             self.data_split = 'test'
             cfg.crowd = False
@@ -132,7 +135,7 @@ class PW3D(torch.utils.data.Dataset):
             for i in range(len(annot)):
                 ann_id = str(annot[i]['ann_id'])
                 bbox_root_result[ann_id] = {'bbox': np.array(annot[i]['bbox']), 'root': np.array(annot[i]['root_cam'])}
-        elif cfg.crowd and not self.use_halpe26:
+        elif self.is_crowd and not self.use_halpe26:
             with open(osp.join(self.data_path, f'3DPW_{self.data_split}_crowd_hhrnet_result.json')) as f:
                 hhrnet_result = json.load(f)
             print("Load Higher-HRNet input")
@@ -174,7 +177,7 @@ class PW3D(torch.utils.data.Dataset):
             if test_seqs is not None and sequence_name not in test_seqs:
                 continue
 
-            if cfg.crowd and self.data_split=='validation':
+            if self.is_crowd and self.data_split=='validation':
                 if 'courtyard_hug_00' not in sequence_name and 'courtyard_dancing_00' not in sequence_name:
                     continue
 
@@ -196,7 +199,7 @@ class PW3D(torch.utils.data.Dataset):
             pose_score_thr = self.conf_thr
 
             hhrnetpose = None
-            if cfg.crowd and self.data_split=='validation' and not self.use_halpe26:
+            if self.is_crowd and self.data_split=='validation' and not self.use_halpe26:
                 try:
                     hhrnetpose = np.array(hhrnet_result[str(aid)]['coco_joints'])
                     hhrnetpose = self.add_pelvis(hhrnetpose, self.coco_joints_name)
@@ -294,7 +297,7 @@ class PW3D(torch.utils.data.Dataset):
             joint_coord_img = data['halpe_h36m'].copy()
             joint_valid = np.ones((len(joint_coord_img), 1), dtype=np.float32)
             pose_thr = cfg.DATASET.halpe26_conf_thr
-        elif cfg.crowd and self.data_split == 'validation':
+        elif self.is_crowd and self.data_split == 'validation':
             # get input joint img from higher hrnet
             joint_coord_img = data['hhrnetpose']
             joint_coord_img = transform_joint_to_other_db(joint_coord_img, self.coco_joints_name, self.joints_name)
