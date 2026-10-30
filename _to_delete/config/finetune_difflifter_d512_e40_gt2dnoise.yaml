@@ -1,0 +1,69 @@
+# =====================================================================
+# finetune_difflifter_d512_e40_gt2dnoise (KIEU JOTR, 2026-10-30): giong gtmask_d512_e40, DOI dau vao 2D:
+#   train = GT 2D (15 khop OpenPose co) + nhieu (rung 0.03, mat 5%, dao trai/phai 2%) + aug cu cua lifter;
+#   test  = detector giong JOTR / 3DCrowdNet: OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd); conf nhi phan.
+# Chay: python main/finetune_difflifter.py --cfg config/finetune_difflifter_d512_e40_gt2dnoise.yaml --gpu 0
+# =====================================================================
+
+DATASET:
+  lift_only: True
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']
+  test_list: ['3dpw', 'Human36M', '3dpw-oc', '3dpw-pc', '3dpw-crowd']
+  pw3d_2d_source: 'openpose'   # test 3DPW: OpenPose, Crowd: Higher-HRNet (nhu JOTR)
+  h36m_2d_source: 'halpe26'
+  muco_2d_source: 'halpe26'
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: False        # mask nhi phan (train GT khong co conf that)
+  workers: 8
+  no_rot_aug: False
+  halpe_gt_mask_thr: 0.0
+  # ---- Kieu JOTR (MOI): train = GT 2D + nhieu, test = detector nhu JOTR (OpenPose; Crowd Higher-HRNet) ----
+  input_2d_gt: True
+  input_2d_gt_split: 'train'
+  gt2d_input_joints: ['Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Neck', 'Nose', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist']   # 15 khop OpenPose / HHRNet co (bo Torso, Head_top)
+  gt2d_jitter_std: 0.03      # ~4 px crop 256
+  gt2d_drop_prob: 0.05
+  gt2d_lr_swap_prob: 0.02
+
+DIFFLIFT:
+  embed_dim: 512
+  depth: 8
+  num_heads: 8
+  drop_rate: 0.1
+  drop_path_rate: 0.1
+
+  timesteps: 1000
+  sampling_timesteps: 1
+  num_proposals: 1
+  scale: 3.0
+
+  # Training
+  val_set: '3dpw-val'
+  select_metric: 'pa_mpjpe'
+  save_dir: 'experiment/finetune_difflifter_d512_e40_gt2dnoise'
+  epochs: 40
+  lr: 0.0003
+  lr_decay: 0.99
+  weight_decay: 0.01
+  batch_size: 512
+  save_freq: 5
+  iters_per_epoch: 0
+  print_freq: 50
+  balance_datasets: False
+  dataset_ratio: [0.25, 0.25, 0.25, 0.25]   # Human36M, MuCo, MSCOCO, CrowdPose
+  samples_per_epoch: 512000
+  resume: ''
+  ema_decay: 0.999
+  train_eval_samples: 2000
+
+  # Danh gia them trong luc train (chi log)
+  epoch_eval_sets: ['3dpw']
+  full_eval_sets: ['Human36M', '3dpw-oc', '3dpw-pc', '3dpw-crowd']
+  full_eval_freq: 5
+
+  # Augmentation 2D giu nhu r25_cam
+  joint_drop_prob: 0.05
+  limb_drop_prob: 0.05
+  jitter_std: 0.02
+  occ_aug_prob: 0.15
+  occ_shift_std: 0.15

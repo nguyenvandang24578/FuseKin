@@ -833,3 +833,10 @@ da co, cung giao thuc). Ket qua: chua co.
 - YAML: config/finetune_difflifter_d512_e40_gt2d.yaml (= gtmask_d512_e40 + input_2d_gt); config/train_student_v3_scratch_jotr_gt2d.yml (= v3 scratch + input_2d_gt + lifter gt2d latest; 4 tap moi epoch + best tung tap).
 - KET QUA ORACLE GT 2D (nguoi dung 2026-10-30, Student v3 scratch + lifter GT 2D): 3DPW 58.96 / - / 71.88 (best ep17); Crowd 56.74 / 36.56 / 71.31 (Halpe: 75.53 / 90.22; Crowd 97.54 / 56.24 / 121.39). -> 2D la nut that CHUNG (khong chi crowd); tran tren lac quan (GT 2D con biet vi tri khop bi che + dung dinh nghia khop H36M).
 - Quyet dinh (nguoi dung): khong danh gia them, sua 2D. Buoc dau: SAM tach mask dung nguoi -> che ngoai mask -> RTMPose Halpe-26 (+ TTA lat). Script thu nhanh tools/vis_sam_rtmpose_3dpw.py (chi ve hinh; prompts box | box_op | box_op_neg; --flip).
+
+## 45. Kieu JOTR: train GT 2D + nhieu, test detector nhu baseline (2026-10-30, da code, chua chay)
+- Nguoi dung chot: thu cach JOTR / 3DCrowdNet (train GT 2D + loi tong hop, test OpenPose cho 3DPW / OC / PC, Higher-HRNet cho Crowd).
+- Code: cfg.DATASET.input_2d_gt_split ('all' oracle | 'train' chi tap train), gt2d_input_joints (giu 15 khop OpenPose co; Torso / Head_top mask 0), gt2d_jitter_std / gt2d_drop_prob / gt2d_lr_swap_prob (nhieu chi tap train) trong Human36M17Dataset.
+  CHUA co doi khop voi nguoi gan (synthesize_pose / near_joints cua JOTR) -> buoc sau.
+- YAML: config/finetune_difflifter_d512_e40_gt2dnoise.yaml, config/train_student_v3_scratch_jotr_gt2dnoise.yml (pw3d_2d_source 'openpose', lift_soft_conf False).
+- 2026-10-30: DA HOAN TAC muc 45 theo yeu cau nguoi dung (code truoc khi duoc xac nhan): bo cac khoa input_2d_gt_split / gt2d_input_joints / gt2d_jitter_std / gt2d_drop_prob / gt2d_lr_swap_prob (config.py, jotr_dataset.py tro ve ban muc 44); 2 YAML chuyen vao _to_delete/config/. Them quy tac vao AGENTS.md muc 3: khong code khi chua duoc xac nhan.

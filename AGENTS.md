@@ -14,7 +14,7 @@ Không tạo thêm file kế hoạch MD cho từng ý tưởng nhỏ. Cập nh�
 
 1. Trả lời **tiếng Việt, ngắn gọn, dễ hiểu**. Comment mới trong code viết tiếng Việt **không dấu**.
 2. **Không chạy code dự án, không cài thư viện, không train/test**, kể cả import model hoặc kiểm cú pháp bằng Python. Chỉ đọc/sửa file; người dùng chạy trên server GPU. Sau khi sửa, đọc lại code/diff và đưa lệnh chạy chính xác.
-3. Việc lớn (nhiều file, đổi kiến trúc, thí nghiệm mới): nêu kế hoạch ngắn và chờ duyệt trước khi sửa. Khi đã được duyệt thì hoàn tất phạm vi đó, không hỏi lại cho từng bước.
+3. **KHÔNG viết/sửa code khi chưa có xác nhận rõ ràng của người dùng** (áp dụng cho MỌI yêu cầu, kể cả việc nhỏ hay khi người dùng chỉ đang bàn ý tưởng). Trước tiên nêu kế hoạch ngắn (file/hàm sẽ đổi, YAML mới, cách chạy) rồi chờ người dùng đồng ý; chỉ sửa sau khi được duyệt, và chỉ trong phạm vi đã duyệt. Khi đã được duyệt thì hoàn tất phạm vi đó, không hỏi lại cho từng bước. (Quy tắc người dùng đặt 2026-10-30.)
 4. Đọc file thật trước khi sửa; không đoán tên hàm, key, checkpoint hoặc đường dẫn. Nêu rõ file/hàm đã đổi. Không ghi đè thay đổi sẵn có của người dùng.
 5. Tính năng mới phải có key trong `lib/core/config.py`, mặc định **tắt** để giữ hành vi cũ. YAML chỉ dùng key đã khai báo. Giữ tương thích đường xử lý/checkpoint đang được hỗ trợ.
 6. Mỗi thí nghiệm chỉ đổi **một yếu tố**. Tạo YAML và thư mục kết quả mới; không sửa YAML cũ hoặc thay run đang train trên server.
