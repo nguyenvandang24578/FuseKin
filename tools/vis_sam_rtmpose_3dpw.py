@@ -25,6 +25,7 @@ from collections import defaultdict
 
 import cv2
 import numpy as np
+import torch  # noqa: F401  nap torch (CUDA / cuDNN cua torch) TRUOC onnxruntime -> tranh xung dot thu vien (free(): invalid pointer)
 
 sys.path.insert(0, osp.dirname(osp.abspath(__file__)))
 from extract_halpe26_3dpw import (build_model, draw, HALPE26_SKELETON, OPENPOSE18_SKELETON, OPENPOSE_THR,  # noqa: E402
@@ -154,7 +155,10 @@ def main():
             and (not args.ann_ids or any(a['id'] in set(args.ann_ids) for a in by_img[k]))]
     keys = keys[::max(1, args.stride)]
     print(f'{len(keys)} anh duoc chon | prompts {args.prompts} | flip {args.flip}')
-    model, sam = build_model(args), Sam(args)
+    # SAM (torch) tao TRUOC, roi RTMPose (onnxruntime) KHONG preload_dlls: tranh nap 2 ban cuDNN cung luc
+    sam = Sam(args)
+    args.skip_preload = True
+    model = build_model(args)
     os.makedirs(args.out_dir, exist_ok=True)
     n = 0
     for k in keys:

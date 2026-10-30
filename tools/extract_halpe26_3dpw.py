@@ -86,7 +86,7 @@ def build_model(args):
     if args.device == 'cuda':
         # Nap thu vien CUDA/cuDNN cai qua pip (nvidia-*-cu12) truoc khi tao session (onnxruntime >= 1.21)
         import onnxruntime as ort
-        if hasattr(ort, 'preload_dlls'):
+        if hasattr(ort, 'preload_dlls') and not getattr(args, 'skip_preload', False):
             try:
                 ort.preload_dlls()
             except Exception as e:
