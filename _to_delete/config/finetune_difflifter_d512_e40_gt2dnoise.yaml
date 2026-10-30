@@ -1,7 +1,7 @@
 # =====================================================================
 # finetune_difflifter_d512_e40_gt2dnoise (KIEU JOTR, 2026-10-30): giong gtmask_d512_e40, DOI dau vao 2D:
-#   train = GT 2D (15 khop OpenPose co) + nhieu (rung 0.03, mat 5%, dao trai/phai 2%) + aug cu cua lifter;
-#   test  = detector giong JOTR / 3DCrowdNet: OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd); conf nhi phan.
+#   train = GT 2D (bo Head_top, Torso = trung diem Neck-Pelvis) + nhieu (rung 0.03, mat 5%, dao trai/phai 2%) + aug cu;
+#   test  = OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd) nhu JOTR / 3DCrowdNet; mask nhi phan.
 # Chay: python main/finetune_difflifter.py --cfg config/finetune_difflifter_d512_e40_gt2dnoise.yaml --gpu 0
 # =====================================================================
 
@@ -9,21 +9,22 @@ DATASET:
   lift_only: True
   train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']
   test_list: ['3dpw', 'Human36M', '3dpw-oc', '3dpw-pc', '3dpw-crowd']
-  pw3d_2d_source: 'openpose'   # test 3DPW: OpenPose, Crowd: Higher-HRNet (nhu JOTR)
+  pw3d_2d_source: 'openpose'   # test 3DPW / OC / PC: OpenPose, Crowd: Higher-HRNet (nhu JOTR)
   h36m_2d_source: 'halpe26'
   muco_2d_source: 'halpe26'
   halpe26_conf_thr: 0.3
-  lift_soft_conf: False        # mask nhi phan (train GT khong co conf that)
+  lift_soft_conf: False        # mask nhi phan (GT train khong co conf that)
   workers: 8
   no_rot_aug: False
   halpe_gt_mask_thr: 0.0
   # ---- Kieu JOTR (MOI): train = GT 2D + nhieu, test = detector nhu JOTR (OpenPose; Crowd Higher-HRNet) ----
   input_2d_gt: True
   input_2d_gt_split: 'train'
-  gt2d_input_joints: ['Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Neck', 'Nose', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist']   # 15 khop OpenPose / HHRNet co (bo Torso, Head_top)
+  gt2d_input_joints: ['Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck', 'Nose', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist']   # bo Head_top (OpenPose / HHRNet khong co)
   gt2d_jitter_std: 0.03      # ~4 px crop 256
   gt2d_drop_prob: 0.05
   gt2d_lr_swap_prob: 0.02
+  input_torso_mid: True      # Torso = trung diem Neck-Pelvis o ca train lan test
 
 DIFFLIFT:
   embed_dim: 512

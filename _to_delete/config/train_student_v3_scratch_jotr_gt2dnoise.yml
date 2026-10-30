@@ -15,10 +15,11 @@ DATASET:
   # ---- Kieu JOTR (MOI): train = GT 2D + nhieu, test = detector nhu JOTR (OpenPose; Crowd Higher-HRNet) ----
   input_2d_gt: True
   input_2d_gt_split: 'train'
-  gt2d_input_joints: ['Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Neck', 'Nose', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist']   # 15 khop OpenPose / HHRNet co (bo Torso, Head_top)
+  gt2d_input_joints: ['Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck', 'Nose', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist']   # bo Head_top (OpenPose / HHRNet khong co)
   gt2d_jitter_std: 0.03      # ~4 px crop 256
   gt2d_drop_prob: 0.05
   gt2d_lr_swap_prob: 0.02
+  input_torso_mid: True      # Torso = trung diem Neck-Pelvis o ca train lan test
 
 MODEL:
   name: 'student'

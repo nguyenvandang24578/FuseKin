@@ -846,3 +846,9 @@ da co, cung giao thuc). Ket qua: chua co.
 - Head_top: cach A (mask o train; OpenPose / HHRNet test khong co). Torso = trung diem Neck-Pelvis ca 2 ben. Mask nhi phan (lift_soft_conf False).
 - YAML: config/finetune_difflifter_d512_e40_gt2dnoise.yaml -> config/train_student_v3_scratch_jotr_gt2dnoise.yml (lifter latest). Chua co doi khop nguoi gan.
 - Sua loi (2026-10-30): PW3D dung cfg.crowd TOAN CUC trong __getitem__ -> sau khi tao 3dpw-crowd, mau cua 3dpw-val (pw3d_2d_source openpose) vao nham nhanh Higher-HRNet (hhrnetpose None) -> AttributeError. Thay bang self.is_crowd rieng tung dataset (data_final/PW3D/dataset.py). Run Halpe cu khong bi anh huong (nhanh Halpe dung truoc).
+- 2026-10-30 (nguoi dung yeu cau): XOA co thu nghiem khong hieu qua: DIFFLIFT.wp_aug_prob / wp_shift_min / wp_shift_max / wp_arm_prob + wrong_person_corrupt, WP_CHAINS (finetune_difflifter.py); DATASET.input_2d_gt_split / gt2d_input_joints / gt2d_jitter_std / gt2d_drop_prob / gt2d_lr_swap_prob / input_torso_mid (config.py, jotr_dataset.py). Giu input_2d_gt (oracle), occ_aug, sua is_crowd. YAML finetune_difflifter_d512_e40_wp, *_gt2dnoise -> _to_delete/config/.
+
+## 47. Trich Halpe co con tro danh tinh (SAM + RTMPose), nguoi dung xac nhan 2026-10-30 (da code, chua chay)
+- Buoc 1 tools/sam_pointer_masks_3dpw.py (arts): SAM1 prompt = bbox annotation + khop bottom-up da gan san (HHRNet o validation neu co, nguoc lai OpenPose; < 3 khop -> chi bbox) -> sam_masks_<split>.npz (RLE). --vis N = N nguoi ngau nhien / split.
+- Buoc 2 tools/extract_halpe26_sam_3dpw.py (pose2d): RTMPose (bbox annotation, --flip) tren anh che ngoai mask -> 3DPW_<split>_halpe26_sam.json (dung DATASET.pw3d_halpe_suffix '_sam'); --vis N: ve hinh + 3DPW_<split>_halpe26_samvis.json de cham theo GT (compare_2d_sources --halpe_new_suffix _samvis).
+- Muc dich: test lai checkpoint v3 KD (khong train lai) tren PC / Crowd.

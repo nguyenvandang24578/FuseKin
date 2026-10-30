@@ -148,40 +148,6 @@ def occ_corrupt(xy, conf, dl_cfg):
     return xy, conf
 
 
-# Doan dau chi cho nhieu "bat nham nguoi" (H36M-17): 4 doan tay roi 4 doan chan
-WP_CHAINS = ([13], [12, 13], [16], [15, 16],      # L_Wrist | L_Elbow+L_Wrist | R_Wrist | R_Elbow+R_Wrist
-             [6], [5, 6], [3], [2, 3])            # L_Ankle | L_Knee+L_Ankle | R_Ankle | R_Knee+R_Ankle
-
-
-def wrong_person_corrupt(xy, conf, dl_cfg):
-    """
-    Nhieu "bat nham nguoi" (chan doan 2026-10-28: o 3DPW-PC / Crowd ~3% khop Halpe nam tren NGUOI KHAC voi conf cao,
-    lifter tin theo -> pose 3D hong ca nguoi). Voi xac suat wp_aug_prob moi mau: chon 1 doan dau chi (tay voi xac suat
-    wp_arm_prob), doi CA doan theo 1 vec-to huong ngau nhien, do dai U(wp_shift_min, wp_shift_max) (toa do [-1,1]);
-    GIU NGUYEN conf (khac occ_corrupt ha conf ve gan nguong). Chi ap dung khi ca doan dang nhin thay (conf > 0).
-    xy, conf: (B, 17, 2), (B, 17, 1) -> sua tai cho va tra ve.
-    """
-    p = float(getattr(dl_cfg, 'wp_aug_prob', 0.0))
-    if p <= 0:
-        return xy, conf
-    B, dev = xy.shape[0], xy.device
-    arm = float(getattr(dl_cfg, 'wp_arm_prob', 0.7))
-    w = torch.tensor([arm / 4] * 4 + [(1 - arm) / 4] * 4, device=dev)
-    choice = torch.multinomial(w, B, replacement=True)                              # (B,) doan nao
-    apply = torch.rand(B, device=dev) < p
-    ang = torch.rand(B, device=dev) * 2 * np.pi
-    lo, hi = float(dl_cfg.wp_shift_min), float(dl_cfg.wp_shift_max)
-    mag = lo + (hi - lo) * torch.rand(B, device=dev)
-    shift = torch.stack([ang.cos(), ang.sin()], -1) * mag[:, None]                 # (B, 2)
-    for c, idx in enumerate(WP_CHAINS):
-        sel = apply & (choice == c) & (conf[:, idx, 0].min(1).values > 0)
-        if not sel.any():
-            continue
-        m = sel[:, None, None]
-        xy[:, idx] = torch.where(m, (xy[:, idx] + shift[:, None, :]).clamp(-1, 1), xy[:, idx])
-    return xy, conf
-
-
 def cat_cam(xy_conf, inputs_b):
     """Noi cam_bbox (B, 3) vao moi khop -> dieu kien (B, 17, 6) = [x, y, conf, cam_bbox]."""
     cam = inputs_b['cam_bbox'].to(xy_conf.device).float()
@@ -220,8 +186,6 @@ def make_xy_conf(inputs_b, device, dl_cfg):
 
     # 2b. Che khuat giong that (2D sai cho + score thap), mac dinh TAT (occ_aug_prob = 0)
     xy, conf = occ_corrupt(xy, conf, dl_cfg)
-    # 2c. Bat nham nguoi (khop sai xa, conf GIU CAO), mac dinh TAT (wp_aug_prob = 0)
-    xy, conf = wrong_person_corrupt(xy, conf, dl_cfg)
 
     # 3. Jitter nho tren toa do 2D
     jitter_std = getattr(dl_cfg, 'jitter_std', 0.0)
@@ -521,8 +485,6 @@ def main():
         ema = copy.deepcopy(model).eval()
         for q in ema.parameters():
             q.requires_grad_(False)
-    log(f'wp_aug_prob={getattr(dl_cfg, "wp_aug_prob", 0.0)} (shift {getattr(dl_cfg, "wp_shift_min", 0)}..'
-        f'{getattr(dl_cfg, "wp_shift_max", 0)}, tay {getattr(dl_cfg, "wp_arm_prob", 0)})')
     log(f'ema_decay={getattr(dl_cfg, "ema_decay", 0.0)} | occ_aug_prob={getattr(dl_cfg, "occ_aug_prob", 0.0)} | '
         f'soft_conf={cfg.DATASET.lift_soft_conf} | drop_rate={getattr(dl_cfg, "drop_rate", 0.0)} | '
         f'dataset_ratio={list(getattr(dl_cfg, "dataset_ratio", []))} | balance_datasets={getattr(dl_cfg, "balance_datasets", True)}')

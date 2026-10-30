@@ -125,17 +125,6 @@ cfg.DATASET.pw3d_halpe_suffix = ''
 # mask = khop GT trong khung crop (conf 1). Dung cho ca lifter (lift_only) va Student. Tu bat pw3d_test_gt2d.
 # GT 2D: H36M / MuCo = khop mocap chieu; MSCOCO / CrowdPose / 3DPW = H36M-17 hoi quy tu mesh SMPL chieu. Crop van tu Halpe.
 cfg.DATASET.input_2d_gt = False
-# Kieu JOTR (2026-10-30): 'all' = oracle (moi tap GT 2D); 'train' = CHI tap train GT 2D (+ nhieu duoi), tap test
-# dung detector theo pw3d_2d_source ('openpose' -> 3DPW / OC / PC OpenPose, Crowd Higher-HRNet, nhu JOTR / 3DCrowdNet).
-cfg.DATASET.input_2d_gt_split = 'all'
-# Chi giu cac khop GT 2D nay o dau vao train (khop detector test khong co -> mask 0, vd Head_top voi OpenPose). [] = het.
-cfg.DATASET.gt2d_input_joints = []
-# Nhieu tren GT 2D (chi tap train): rung (toa do [-1, 1]; 0.03 ~ 4 px crop 256), mat khop, dao trai / phai tung cap
-cfg.DATASET.gt2d_jitter_std = 0.0
-cfg.DATASET.gt2d_drop_prob = 0.0
-cfg.DATASET.gt2d_lr_swap_prob = 0.0
-# Torso dau vao = trung diem Neck-Pelvis (mask = Neck * Pelvis) cho MOI tap (train GT + test detector) -> 2 ben cung cach
-cfg.DATASET.input_torso_mid = False
 # Nguon 2D dau vao cua Human36M (train + test):
 #   'gt_posefix' (mac dinh, giong JOTR): train = GT 2D + nhieu PoseFix, test = GT 2D sach
 #   'halpe26'   : Human36M_{split}_halpe26.npz tu tools/extract_halpe26_h36m.py (nguong = halpe26_conf_thr)
@@ -309,13 +298,6 @@ cfg.DIFFLIFT.jitter_std = 0.02        # std nhieu 2D (toa do chuan hoa [-1,1])
 # 2D bi dat SAI CHO (dich ca doan / lay vi tri chi doi xung / dinh vao khop goc) hoac xoa, score bi ha ve gan nguong.
 cfg.DIFFLIFT.occ_aug_prob = 0.0
 cfg.DIFFLIFT.occ_shift_std = 0.15     # do lech 2D (toa do [-1,1]) khi dat sai cho
-# Nhieu "bat nham nguoi" (mac dinh TAT): voi xac suat wp_aug_prob moi mau, 1 doan dau chi (co tay | khuyu+co tay |
-# co chan | goi+co chan; tay chiem wp_arm_prob) bi DOI ca doan di wp_shift_min..wp_shift_max (toa do [-1,1], 1 = 128 px
-# crop 256) theo huong ngau nhien, GIU NGUYEN conf -> giong loi that cua Halpe o canh dong nguoi (khop sai, conf cao).
-cfg.DIFFLIFT.wp_aug_prob = 0.0
-cfg.DIFFLIFT.wp_shift_min = 0.3125     # 40 px
-cfg.DIFFLIFT.wp_shift_max = 0.9375     # 120 px
-cfg.DIFFLIFT.wp_arm_prob = 0.7
 # EMA trong so (mac dinh TAT = 0). Bat (vd 0.999) -> eval/luu bang trong so EMA, on dinh hon cho diffusion.
 cfg.DIFFLIFT.ema_decay = 0.0
 # Danh gia them trong luc train (khong anh huong chon best, best van theo val_set)
