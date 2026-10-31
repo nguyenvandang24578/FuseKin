@@ -856,3 +856,8 @@ da co, cung giao thuc). Ket qua: chua co.
 - 2026-10-31 (nguoi dung xac nhan): mask che thieu (vd thieu chan sau) do prompt ca bo khop + diem am + chon mask nho. Them `--prompt center` (mac dinh van `skeleton`): chi 1-2 diem giua than (giua 2 vai, giua 2 hong cua con tro), khong diem am, lay mask LON NHAT trong 3 mask, khong loc lien thong; `--clip_box` cat trong bbox GT noi 10%. Ban cu backup o _to_delete/tools/.
 - 2026-10-31 (nguoi dung xac nhan): main/compare_2d_sources.py them `--vis_by union` (mac dinh `halpe` = cu): ve TAT CA mau Halpe cu HOAC Halpe moi (_sam) co khop xa, 4 o Halpe cu | Halpe moi | OpenPose | HHRNet, chia thu muc sua_duoc / lam_hong / ca_hai_xau. Ket qua cham Crowd (_sam): mau co khop xa 20.9% -> 18.0%, sua 113 / hong 58; OpenPose 2.9% (bo 13.9%), HHRNet 5.1% (bo 5.9%).
 - 2026-10-31: compare_2d_sources to mask SAM (xanh duong) len o halpe_new khi ve (--mask_dir, mac dinh <jotr_data_root>/PW3D/sam_masks).
+
+## 48. ORACLE chon nguon 2D theo GT (CHI DO MUC TRAN, nguoi dung xac nhan 2026-10-31)
+- KHONG dung lam ket qua chinh (dung GT 2D tap test = ro ri nhan). Muc dich: biet neu chon dung nguon 2D thi MPJPE xuong toi dau.
+- tools/oracle_2d_select_3dpw.py: moi nguoi so Halpe cu / Halpe _sam / OpenPose / HHRNet (Crowd) voi GT tren 12 khop tay chan; diem = so khop xa (> 0.2 x kich thuoc nguoi) + 0.5 x so khop bo, hoa -> loi TB; OpenPose / HHRNet doi sang Halpe-26 (Head, ban chan = 0; score khop phat hien nang >= 0.31). Ghi 3DPW_<split>_halpe26_oracle.json.
+- config/test_student_v3_kd_jotr_oracle.yml = v3 KD + pw3d_halpe_suffix '_oracle'; test checkpoint v3 KD co san.
