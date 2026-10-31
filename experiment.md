@@ -866,3 +866,9 @@ da co, cung giao thuc). Ket qua: chua co.
 - Code cac co muc 46 da bi XOA 2026-10-30 (khong con backup) -> VIET LAI theo mo ta muc 46, mac dinh TAT: DATASET.input_2d_gt_split ('all' | 'train'), gt2d_input_joints, gt2d_jitter_std, gt2d_drop_prob, gt2d_lr_swap_prob (dao tung cap trai / phai), input_torso_mid (lib/core/config.py, lib/utils/jotr_dataset.py). Co the lech nho so voi code luc train -> doi chieu voi log train.
 - YAML config/finetune_difflifter_d512_e40_gt2dnoise.yaml dua ve tu _to_delete/config/.
 - Lenh: main/eval_difflifter_3dpw.py --train_sets config --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd (test: OpenPose 3DPW / OC / PC, HHRNet Crowd); so voi lifter Halpe gtmask_d512_e40 cung script.
+
+## 48. Thay ca pose RTMPose nham nguoi bang OpenPose (nguoi dung xac nhan 2026-10-31, da code, chua chay)
+- Script `tools/fuse_halpe_openpose_3dpw.py` (khong can GPU): mismatch_op (lech > 0.2 x kich thuoc nguoi tren khop chung voi OpenPose) > `--thr` 0.5 -> thay CA pose Halpe bang OpenPose cua chinh nguoi do (doi sang Halpe-26; Hip = trung diem 2 hong; Head_top / ban chan score 0; khop OpenPose hop le score `--op_score` 1.0). Khong co OpenPose / < 6 khop / < 4 khop chung -> giu RTMPose.
+- Ra `3DPW_<split>_halpe26_opfix.json` -> `DATASET.pw3d_halpe_suffix: '_opfix'` (chi split khong phai train; validation dung chung 3dpw-val / Crowd). In so nguoi bi thay o nguong 0.3 / 0.5 / 0.7.
+- Visual TAT CA nguoi bi thay: `debug_opfix_vis/<split>/` 3 o [Halpe goc (vang = khop lech) | OpenPose goc | Selected]; ten file bat dau bang % lech.
+- Do: compare_2d_sources --halpe_new_suffix _opfix; test lai checkpoint v3 KD tren PC / Crowd, so Halpe 93.04 / 97.54 va fixfar 80.75 / 83.55. Ket qua: chua co.
