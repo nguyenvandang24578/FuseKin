@@ -872,3 +872,4 @@ da co, cung giao thuc). Ket qua: chua co.
 - Ra `3DPW_<split>_halpe26_sam_opfix.json` (dau vao Halpe SAM `_sam`) -> `DATASET.pw3d_halpe_suffix: '_sam_opfix'` (chi split khong phai train; validation dung chung 3dpw-val / Crowd). In so nguoi bi thay o nguong 0.3 / 0.5 / 0.7.
 - Visual TAT CA nguoi bi thay: `debug_opfix_vis/<split>/` 3 o [Halpe goc (vang = khop lech) | OpenPose goc | Selected]; ten file bat dau bang % lech.
 - Do: compare_2d_sources --halpe_new_suffix _sam_opfix; test lai checkpoint v3 KD tren PC / Crowd, so Halpe 93.04 / 97.54 va fixfar 80.75 / 83.55. Ket qua: chua co.
+- 2026-10-31: compare_2d_sources them --halpe_base_suffix (nguon 'halpe' doc file khac, vd _sam; mac dinh '' = Halpe cu); to mask SAM len o co suffix '_sam'; ten o / bang = ten file that (halpe_sam, halpe_oracle). Dung de ve mau Halpe SAM xau vs oracle.

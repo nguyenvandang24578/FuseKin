@@ -34,6 +34,8 @@ parser.add_argument('--max_samples', type=int, default=0, help='0 = toan bo tap'
 parser.add_argument('--dump_bad', type=str, default='',
                     help='ghi ann_id cac mau Halpe CU xau (theo GT) ra <dump_bad>_<split>.txt, xau nhat truoc '
                          '(dung cho tools/sam_masks_3dpw.py / vis_sam_rtmpose_3dpw.py --ann_ids_file)')
+parser.add_argument('--halpe_base_suffix', type=str, default='',
+                    help="nguon 'halpe' (base) doc 3DPW_<tag>_halpe26<suffix>.json ('' = Halpe cu; vd _sam)")
 parser.add_argument('--halpe_new_suffix', type=str, default='',
                     help="them nguon 'halpe_new' doc 3DPW_<tag>_halpe26<suffix>.json (vd _opbox) -> dem sua / lam hong theo GT")
 args = parser.parse_args()
@@ -43,6 +45,7 @@ from tqdm import tqdm
 from core.config import cfg, update_config
 update_config(args.cfg)
 cfg.DATASET.pw3d_2d_source = 'halpe26'
+cfg.DATASET.pw3d_halpe_suffix = args.halpe_base_suffix     # nguon 'halpe' (base)
 cfg.DATASET.pw3d_ocpc_test_only = False
 
 import __init_path  # noqa: F401
@@ -54,6 +57,15 @@ LIMB = ('L_Shoulder', 'R_Shoulder', 'L_Elbow', 'R_Elbow', 'L_Wrist', 'R_Wrist',
         'L_Hip', 'R_Hip', 'L_Knee', 'R_Knee', 'L_Ankle', 'R_Ankle')
 PAIRS = ((0, 2), (2, 4), (1, 3), (3, 5), (6, 8), (8, 10), (7, 9), (9, 11), (0, 1), (6, 7), (0, 6), (1, 7))
 SOURCES = ('halpe', 'halpe_new', 'openpose', 'hhrnet')
+
+
+def label(s):
+    """Ten hien thi: halpe -> halpe<base_suffix> (cu = halpe_cu), halpe_new -> halpe<new_suffix>."""
+    if s == 'halpe':
+        return 'halpe' + args.halpe_base_suffix if args.halpe_base_suffix else 'halpe_cu'
+    if s == 'halpe_new':
+        return 'halpe' + args.halpe_new_suffix if args.halpe_new_suffix else 'halpe_new'
+    return s
 
 
 def collect(name):
@@ -137,20 +149,20 @@ def summarize(rec):
 
 def show(name, res):
     print(f'\n===== [{name}] khop xa = loi > {args.far:.2f} x kich thuoc nguoi | 12 khop chi =====')
-    print(f'   {"nguon":<9} | {"n":>6} | {"loi TB %":>8} | {"trung vi %":>10} | {"xa %":>6} | {"bo %":>6} | {"mau co khop xa %":>16}')
+    print(f'   {"nguon":<13} | {"n":>6} | {"loi TB %":>8} | {"trung vi %":>10} | {"xa %":>6} | {"bo %":>6} | {"mau co khop xa %":>16}')
     for s in SOURCES:
         if s in res:
             m = res[s]
-            print(f'   {s:<9} | {m["n"]:>6} | {m["err_mean_pct"]:>8.1f} | {m["err_median_pct"]:>10.1f} | {m["far_pct"]:>6.2f} | '
+            print(f'   {label(s):<13} | {m["n"]:>6} | {m["err_mean_pct"]:>8.1f} | {m["err_median_pct"]:>10.1f} | {m["far_pct"]:>6.2f} | '
                   f'{m["miss_pct"]:>6.1f} | {m["samples_far_pct"]:>16.1f}')
             top = sorted(m['per_joint_far_pct'].items(), key=lambda x: -x[1])[:4]
             print('             khop xa nhieu: ' + ', '.join(f'{k} {v:.1f}%' for k, v in top))
     if 'new_vs_old' in res:
         m = res['new_vs_old']
-        print(f'   THEO GT: mau co khop xa  Halpe cu {m["old_bad"]} -> Halpe moi {m["new_bad"]} (n = {m["n"]}) | '
+        print(f'   THEO GT: mau co khop xa  {label("halpe")} {m["old_bad"]} -> {label("halpe_new")} {m["new_bad"]} (n = {m["n"]}) | '
               f'sua duoc {m["fixed"]} | LAM HONG {m["broke"]}')
     for s, m in res.get('rescue', {}).items():
-        print(f'   Mau Halpe XAU ({m["halpe_bad"]}): {s} TOT (khong khop xa, >= 8/12 khop) o {m["pct_ok"]:.1f}%')
+        print(f'   Mau {label("halpe")} XAU ({m["halpe_bad"]}): {label(s)} TOT (khong khop xa, >= 8/12 khop) o {m["pct_ok"]:.1f}%')
 
 
 def vis(name, rec):
@@ -166,10 +178,13 @@ def vis(name, rec):
     split = {'3dpw': 'test', '3dpw-oc': 'oc', '3dpw-pc': 'pc', '3dpw-crowd': 'validation'}.get(name, name)
     mpath = os.path.join(args.mask_dir or os.path.join(cfg.DATASET.jotr_data_root, 'PW3D', 'sam_masks'),
                          f'sam_masks_{split}.npz')
-    if args.halpe_new_suffix and os.path.isfile(mpath):
+    # to mask len o nao dang la ban SAM (suffix bat dau '_sam')
+    mask_src = 'halpe' if args.halpe_base_suffix.startswith('_sam') else (
+        'halpe_new' if args.halpe_new_suffix.startswith('_sam') else None)
+    if mask_src and os.path.isfile(mpath):
         md = dict(np.load(mpath))
         msk = (md, {int(a): k for k, a in enumerate(md['ann_ids'])})
-    elif args.halpe_new_suffix:
+    elif mask_src:
         print(f'[CANH BAO] khong thay {mpath} -> khong to mask')
 
     def get_mask(aid):
@@ -210,7 +225,7 @@ def vis(name, rec):
             if s not in r:
                 continue
             p = im.copy()
-            if s == 'halpe_new':
+            if s == mask_src:
                 m = get_mask(r['ann_id'])
                 if m is not None and m.shape == p.shape[:2]:
                     p[m] = (0.5 * p[m] + 0.5 * np.array([255, 128, 0])).astype(np.uint8)   # mask SAM (xanh duong)
@@ -236,7 +251,7 @@ def vis(name, rec):
                 continue
             f = 384.0 / p.shape[0]
             p = cv2.resize(p, None, fx=f, fy=f)
-            txt = f'{s}: xa {int(r[s]["far"].sum())} | bo {int((~d).sum())}'
+            txt = f'{label(s)}: xa {int(r[s]["far"].sum())} | bo {int((~d).sum())}'
             cv2.putText(p, txt, (6, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
             cv2.putText(p, txt, (6, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
             panels.append(p)
