@@ -869,6 +869,6 @@ da co, cung giao thuc). Ket qua: chua co.
 
 ## 48. Thay ca pose RTMPose nham nguoi bang OpenPose (nguoi dung xac nhan 2026-10-31, da code, chua chay)
 - Script `tools/fuse_halpe_openpose_3dpw.py` (khong can GPU): mismatch_op (lech > 0.2 x kich thuoc nguoi tren khop chung voi OpenPose) > `--thr` 0.5 -> thay CA pose Halpe bang OpenPose cua chinh nguoi do (doi sang Halpe-26; Hip = trung diem 2 hong; Head_top / ban chan score 0; khop OpenPose hop le score `--op_score` 1.0). Khong co OpenPose / < 6 khop / < 4 khop chung -> giu RTMPose.
-- Ra `3DPW_<split>_halpe26_opfix.json` -> `DATASET.pw3d_halpe_suffix: '_opfix'` (chi split khong phai train; validation dung chung 3dpw-val / Crowd). In so nguoi bi thay o nguong 0.3 / 0.5 / 0.7.
+- Ra `3DPW_<split>_halpe26_sam_opfix.json` (dau vao Halpe SAM `_sam`) -> `DATASET.pw3d_halpe_suffix: '_sam_opfix'` (chi split khong phai train; validation dung chung 3dpw-val / Crowd). In so nguoi bi thay o nguong 0.3 / 0.5 / 0.7.
 - Visual TAT CA nguoi bi thay: `debug_opfix_vis/<split>/` 3 o [Halpe goc (vang = khop lech) | OpenPose goc | Selected]; ten file bat dau bang % lech.
-- Do: compare_2d_sources --halpe_new_suffix _opfix; test lai checkpoint v3 KD tren PC / Crowd, so Halpe 93.04 / 97.54 va fixfar 80.75 / 83.55. Ket qua: chua co.
+- Do: compare_2d_sources --halpe_new_suffix _sam_opfix; test lai checkpoint v3 KD tren PC / Crowd, so Halpe 93.04 / 97.54 va fixfar 80.75 / 83.55. Ket qua: chua co.

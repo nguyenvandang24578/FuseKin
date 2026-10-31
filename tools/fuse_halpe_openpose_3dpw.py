@@ -8,15 +8,15 @@ Nhan dien nham nguoi: mismatch_op (tools/extract_halpe26_3dpw.py) = ti le khop c
 OpenPose-18 -> Halpe-26: map thang 17 khop co ten trung (mui, mat, tai, vai, khuyu, co tay, hong, goi, co chan) + Neck (18);
   Hip (19) = trung diem 2 hong; Head (17) va ban chan (20-25) = score 0 (OpenPose khong co).
   Score: khop OpenPose > OPENPOSE_THR -> --op_score (mac dinh 1.0), con lai 0 va toa do 0.
-Dau vao : <data_root>/3DPW_<split>_halpe26<in_suffix>.json + annotation (3DPW_latest_<split>.json | 3DPW_<split>.json)
-Dau ra  : <data_root>/3DPW_<split>_halpe26<out_suffix>.json (mac dinh _opfix) -> DATASET.pw3d_halpe_suffix: '_opfix'
+Dau vao : <data_root>/3DPW_<split>_halpe26<in_suffix>.json (mac dinh _sam = Halpe SAM) + annotation (3DPW_latest_<split>.json | 3DPW_<split>.json)
+Dau ra  : <data_root>/3DPW_<split>_halpe26<out_suffix>.json (mac dinh _sam_opfix) -> DATASET.pw3d_halpe_suffix: '_sam_opfix'
           (chi ap dung split khong phai train). validation dung chung cho 3dpw-val va 3dpw-crowd.
 Visual  : <vis_dir>/<split>/ TAT CA nguoi bi thay, 3 o: [Halpe goc] | [OpenPose goc] | [Selected (sau thay)]
           (vang = khop Halpe lech xa OpenPose; tim = bbox GT). --no_vis de tat.
 Vi du:
   python tools/fuse_halpe_openpose_3dpw.py --data_root data_final/PW3D --splits test oc pc validation
   python main/compare_2d_sources.py --cfg ./config/train_student_v3_kd_jotr.yml --sets 3dpw-pc,3dpw-crowd \\
-      --halpe_new_suffix _opfix
+      --halpe_new_suffix _sam_opfix
 """
 import argparse
 import json
@@ -43,8 +43,8 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--data_root', default='data_final/PW3D')
     p.add_argument('--splits', nargs='+', default=['test', 'oc', 'pc', 'validation'])
-    p.add_argument('--in_suffix', default='', help="Halpe dau vao: 3DPW_<split>_halpe26<in_suffix>.json ('' = Halpe cu)")
-    p.add_argument('--out_suffix', default='_opfix')
+    p.add_argument('--in_suffix', default='_sam', help="Halpe dau vao: 3DPW_<split>_halpe26<in_suffix>.json (mac dinh _sam; '' = Halpe cu)")
+    p.add_argument('--out_suffix', default='_sam_opfix')
     p.add_argument('--thr', type=float, default=0.5, help='mismatch > thr -> thay bang OpenPose')
     p.add_argument('--op_min_joints', type=int, default=6, help='OpenPose it hon so khop nay -> giu RTMPose')
     p.add_argument('--op_score', type=float, default=1.0, help='score gan cho khop OpenPose hop le')
@@ -72,7 +72,7 @@ def far_joints(k, s, op):
             if s[h] > HALPE_THR and op[o, 2] > OPENPOSE_THR and np.linalg.norm(k[h] - op[o, :2]) > 0.2 * size]
 
 
-def save_vis(img, ann, old, op, new, m, out_path):
+def save_vis(img, ann, old, op, new, m, out_path, args_in=''):
     a, b, c = img.copy(), img.copy(), img.copy()
     g = [int(v) for v in gt_box(ann)]
     for im in (a, b, c):
@@ -86,7 +86,7 @@ def save_vis(img, ann, old, op, new, m, out_path):
     H, W = img.shape[:2]
     x0, y0 = max(0, int(pts[:, 0].min()) - 40), max(0, int(pts[:, 1].min()) - 50)
     x1, y1 = min(W, int(pts[:, 0].max()) + 40), min(H, int(pts[:, 1].max()) + 40)
-    titles = [f'Halpe goc (lech OP {m:.0%})', 'OpenPose goc', 'Selected = OpenPose']
+    titles = [f'Halpe{args_in} (lech OP {m:.0%})', 'OpenPose goc', 'Selected = OpenPose']
     crops = [np.ascontiguousarray(p[y0:y1, x0:x1]) for p in (a, b, c)]
     crops = [draw(cr, [], [], [], HALPE_THR, title=t) for cr, t in zip(crops, titles)]
     cv2.imwrite(out_path, np.concatenate(crops, axis=1))
@@ -139,7 +139,7 @@ def run_split(args, split):
                     os.makedirs(vis_dir, exist_ok=True)
                     im = imgs[image_id]
                     name = f'{m * 100:03.0f}_{im["sequence"]}_{key}_{osp.splitext(im["file_name"])[0]}.jpg'
-                    save_vis(img, ann, old, op, new, m, osp.join(vis_dir, name))
+                    save_vis(img, ann, old, op, new, m, osp.join(vis_dir, name), args.in_suffix)
 
     n = max(st['n'], 1)
     print(f'[{split}] n={st["n"]} | thay {st["replaced"]} ({100 * st["replaced"] / n:.2f}%, thr={args.thr}) | '
