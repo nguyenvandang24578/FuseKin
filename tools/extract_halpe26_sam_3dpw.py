@@ -49,7 +49,7 @@ def parse_args():
 
 
 def load_masks(path):
-    d = np.load(path)
+    d = dict(np.load(path)) 
     return {int(i): k for k, i in enumerate(d['ann_ids'])}, d
 
 
