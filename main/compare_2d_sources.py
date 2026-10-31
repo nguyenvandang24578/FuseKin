@@ -25,6 +25,11 @@ parser.add_argument('--cfg', type=str, required=True, help='yml bat ky co duong 
 parser.add_argument('--sets', type=str, default='3dpw-pc,3dpw-crowd')
 parser.add_argument('--far', type=float, default=0.2, help='nguong khop xa, ti le kich thuoc nguoi (~40 px crop 256)')
 parser.add_argument('--vis_k', type=int, default=30)
+parser.add_argument('--vis_by', type=str, default='halpe', choices=['halpe', 'union'],
+                    help="halpe: ve mau Halpe CU xau (cu); union: ve TAT CA mau Halpe cu HOAC Halpe moi xau, chia thu muc "
+                         "sua_duoc / lam_hong / ca_hai_xau (can --halpe_new_suffix)")
+parser.add_argument('--mask_dir', type=str, default='',
+                    help='thu muc sam_masks_<split>.npz -> to mask SAM len o halpe_new (mac dinh <jotr_data_root>/PW3D/sam_masks)')
 parser.add_argument('--max_samples', type=int, default=0, help='0 = toan bo tap')
 parser.add_argument('--dump_bad', type=str, default='',
                     help='ghi ann_id cac mau Halpe CU xau (theo GT) ra <dump_bad>_<split>.txt, xau nhat truoc '
@@ -150,10 +155,47 @@ def show(name, res):
 
 def vis(name, rec):
     import cv2
-    bad = [r for r in rec if 'halpe' in r and r['halpe']['far'].any()]
-    bad.sort(key=lambda r: (-int(r['halpe']['far'].sum()), -float(r['halpe']['e'][r['halpe']['det']].max())))
+    def is_bad(r, s):
+        return s in r and bool(r[s]['far'].any())
+
+    def nfar(r, s):
+        return int(r[s]['far'].sum()) if s in r else 0
     out_dir = os.path.join(cfg.output_dir, 'vis', name)
-    os.makedirs(out_dir, exist_ok=True)
+    # mask SAM cua dung nguoi (de to len o halpe_new); doc 1 lan vao RAM
+    msk = None
+    split = {'3dpw': 'test', '3dpw-oc': 'oc', '3dpw-pc': 'pc', '3dpw-crowd': 'validation'}.get(name, name)
+    mpath = os.path.join(args.mask_dir or os.path.join(cfg.DATASET.jotr_data_root, 'PW3D', 'sam_masks'),
+                         f'sam_masks_{split}.npz')
+    if args.halpe_new_suffix and os.path.isfile(mpath):
+        md = dict(np.load(mpath))
+        msk = (md, {int(a): k for k, a in enumerate(md['ann_ids'])})
+    elif args.halpe_new_suffix:
+        print(f'[CANH BAO] khong thay {mpath} -> khong to mask')
+
+    def get_mask(aid):
+        if msk is None or aid not in msk[1]:
+            return None
+        md, k = msk[0], msk[1][aid]
+        rr = md['runs'][md['off'][k]:md['off'][k + 1]]
+        return np.repeat(np.arange(len(rr)) % 2, rr).astype(bool).reshape(int(md['H'][k]), int(md['W'][k]))
+    if args.vis_by == 'union':
+        # mau xau o Halpe cu HOAC Halpe moi; nhom theo ket qua cua Halpe moi so voi Halpe cu
+        bad = [r for r in rec if is_bad(r, 'halpe') or is_bad(r, 'halpe_new')]
+        bad.sort(key=lambda r: -max(nfar(r, 'halpe'), nfar(r, 'halpe_new')))
+
+        def group(r):
+            if is_bad(r, 'halpe') and is_bad(r, 'halpe_new'):
+                return 'ca_hai_xau'
+            return 'sua_duoc' if is_bad(r, 'halpe') else 'lam_hong'
+        for g in ('sua_duoc', 'lam_hong', 'ca_hai_xau'):
+            os.makedirs(os.path.join(out_dir, g), exist_ok=True)
+    else:
+        bad = [r for r in rec if is_bad(r, 'halpe')]
+        bad.sort(key=lambda r: (-int(r['halpe']['far'].sum()), -float(r['halpe']['e'][r['halpe']['det']].max())))
+        os.makedirs(out_dir, exist_ok=True)
+
+        def group(r):
+            return ''
     for rank, r in enumerate(bad[:args.vis_k]):
         im = cv2.imread(r['img_path'])
         if im is None:
@@ -168,6 +210,10 @@ def vis(name, rec):
             if s not in r:
                 continue
             p = im.copy()
+            if s == 'halpe_new':
+                m = get_mask(r['ann_id'])
+                if m is not None and m.shape == p.shape[:2]:
+                    p[m] = (0.5 * p[m] + 0.5 * np.array([255, 128, 0])).astype(np.uint8)   # mask SAM (xanh duong)
             bx, by, bw, bh = r['gt_bbox']
             cv2.rectangle(p, (int(bx), int(by)), (int(bx + bw), int(by + bh)), (255, 0, 255), 2)   # bbox annotation
             # vung RTMPose thuc su nhin (bbox annotation noi ~1.25 quanh tam, giong tien xu ly top-down)
@@ -196,10 +242,13 @@ def vis(name, rec):
             panels.append(p)
         if panels:
             h = min(q.shape[0] for q in panels)
-            cv2.imwrite(os.path.join(out_dir, f'{rank:02d}_{os.path.basename(os.path.dirname(r["img_path"]))}_'
+            cv2.imwrite(os.path.join(out_dir, group(r), f'{rank:04d}_{os.path.basename(os.path.dirname(r["img_path"]))}_'
                                               f'{os.path.basename(r["img_path"])}'),
                         cv2.hconcat([q[:h] for q in panels]))
-    print(f'   hinh {min(args.vis_k, len(bad))} mau Halpe te nhat: {out_dir}  (do = GT, xanh = nguon 2D, vang = lech xa, tim = bbox annotation, tim manh = vung RTMPose nhin ~x1.25)')
+    if args.vis_by == 'union':
+        cnt = {g: sum(group(r) == g for r in bad[:args.vis_k]) for g in ('sua_duoc', 'lam_hong', 'ca_hai_xau')}
+        print(f'   union: {cnt}')
+    print(f'   hinh {min(args.vis_k, len(bad))} mau ({args.vis_by}): {out_dir}  (do = GT, xanh = nguon 2D, vang = lech xa, tim = bbox annotation, tim manh = vung RTMPose nhin ~x1.25)')
 
 
 def main():
