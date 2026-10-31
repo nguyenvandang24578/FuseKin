@@ -873,3 +873,17 @@ da co, cung giao thuc). Ket qua: chua co.
 - Visual TAT CA nguoi bi thay: `debug_opfix_vis/<split>/` 3 o [Halpe goc (vang = khop lech) | OpenPose goc | Selected]; ten file bat dau bang % lech.
 - Do: compare_2d_sources --halpe_new_suffix _sam_opfix; test lai checkpoint v3 KD tren PC / Crowd, so Halpe 93.04 / 97.54 va fixfar 80.75 / 83.55. Ket qua: chua co.
 - 2026-10-31: compare_2d_sources them --halpe_base_suffix (nguon 'halpe' doc file khac, vd _sam; mac dinh '' = Halpe cu); to mask SAM len o co suffix '_sam'; ten o / bang = ten file that (halpe_sam, halpe_oracle). Dung de ve mau Halpe SAM xau vs oracle.
+
+## 50. Lifter KIEU JOTR: dong bo du lieu 2D voi JOTR (nguoi dung xac nhan 2026-10-31, da code, chua chay)
+- Tham chieu: repo JOTR goc o JOTR/ (git: chi common/model.py bi sua; dataloader/*.py + common/utils/* la ban goc). JOTR train dung dataloader/*.py (common/base.py), KHONG phai data/*/*.py.
+- Doi chieu: posefix.py GIONG HET; preprocessing.py giong (chi them no_rot_aug, augmentation_noimg cung thu tu random); Human36M nhanh gt_posefix giong tung dong; PW3D nhanh OpenPose / HHRNet giong; SMPL-30 cua JOTR chua du 17 ten H36M.
+- Lech da tim + xu ly (sau co, mac dinh TAT):
+  (1) MSCOCO / CrowdPose lifter ep Halpe -> them DATASET.coco_2d_source / crowdpose_2d_source = 'gt_posefix' (_jotr_posefix_input chep nhanh train JOTR: lat, affine, near_joints score 1 khong lat, trunc, PoseFix, doi H36M-17 theo ten); chi giu nguoi co NeuralAnnot (keep_neuralannot). Nhan 3D giu nhu cu.
+  (2) MuCo lifter doi ten alias (Thorax->Neck, Spine->Torso, Head->Nose) -> DATASET.jotr_strict: dau vao theo ten goc (Neck / Torso / Nose mask 0 nhu JOTR).
+  (3) CrowdPose bo loc fit_err -> jotr_strict: loc nhu JOTR (fit_err < 5 -> bo).
+  (4) JOTR yml update_bbox True (process_bbox scale ngau nhien moi lan lay mau); FuseKin mac dinh False -> YAML moi dat update_bbox: True.
+  (5) Tron du lieu: JOTR 50% 3D (H36M + MuCo) / 50% 2D (COCO + CrowdPose), trong nhom theo so mau -> DIFFLIFT.mix_mode 'jotr'.
+- Khac khong tranh duoc (ngoai dataset): lifter H36M-17 (mat mat / tai cua JOTR SMPL-30); JOTR model tu che 10% khop luc train, lifter co joint_drop / limb_drop / jitter / occ_aug rieng (giu nhu gtmask_d512_e40 - mot yeu to).
+- YAML: config/finetune_difflifter_d512_e40_jotr.yaml (= gtmask_d512_e40, chi doi nguon 2D + update_bbox + jotr_strict + mix_mode, lift_soft_conf False).
+- Kiem tra: tools/check_jotr_equivalence.py (2 tien trinh, cung mau + seed, so joints / mask 17 khop; yeu cau lech = 0) -> CHI train khi report KHOP 100%.
+- Backup file truoc khi sua: _to_delete/bak_jotrmode/.
