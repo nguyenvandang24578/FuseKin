@@ -861,3 +861,8 @@ da co, cung giao thuc). Ket qua: chua co.
 - KHONG dung lam ket qua chinh (dung GT 2D tap test = ro ri nhan). Muc dich: biet neu chon dung nguon 2D thi MPJPE xuong toi dau.
 - tools/oracle_2d_select_3dpw.py: moi nguoi so Halpe cu / Halpe _sam / OpenPose / HHRNet (Crowd) voi GT tren 12 khop tay chan; diem = so khop xa (> 0.2 x kich thuoc nguoi) + 0.5 x so khop bo, hoa -> loi TB; OpenPose / HHRNet doi sang Halpe-26 (Head, ban chan = 0; score khop phat hien nang >= 0.31). Ghi 3DPW_<split>_halpe26_oracle.json.
 - config/test_student_v3_kd_jotr_oracle.yml = v3 KD + pw3d_halpe_suffix '_oracle'; test checkpoint v3 KD co san.
+
+## 49. Test lai lifter gt2dnoise (kieu JOTR) tren 4 bo train + 4 tap 3DPW (nguoi dung xac nhan 2026-10-31)
+- Code cac co muc 46 da bi XOA 2026-10-30 (khong con backup) -> VIET LAI theo mo ta muc 46, mac dinh TAT: DATASET.input_2d_gt_split ('all' | 'train'), gt2d_input_joints, gt2d_jitter_std, gt2d_drop_prob, gt2d_lr_swap_prob (dao tung cap trai / phai), input_torso_mid (lib/core/config.py, lib/utils/jotr_dataset.py). Co the lech nho so voi code luc train -> doi chieu voi log train.
+- YAML config/finetune_difflifter_d512_e40_gt2dnoise.yaml dua ve tu _to_delete/config/.
+- Lenh: main/eval_difflifter_3dpw.py --train_sets config --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd (test: OpenPose 3DPW / OC / PC, HHRNet Crowd); so voi lifter Halpe gtmask_d512_e40 cung script.

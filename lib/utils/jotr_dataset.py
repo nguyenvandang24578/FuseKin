@@ -11,6 +11,9 @@ from data_final.PW3D.dataset import PW3D
 from utils.h36m_adapter import HUMAN36M_JOINTS, convert_smpl_to_human36m
 
 
+# Cap trai / phai H36M-17 (hong, goi, co chan, vai, khuyu, co tay) cho gt2d_lr_swap_prob
+LR_PAIRS = ((1, 4), (2, 5), (3, 6), (14, 11), (15, 12), (16, 13))
+
 TRAIN_DATASETS = {
     'Human36M': Human36M,
     'MuCo': MuCo,
@@ -40,7 +43,7 @@ class Human36M17Dataset(Dataset):
 
     def __init__(self, dataset):
         self.dataset = dataset
-        if cfg.DATASET.get('input_2d_gt', False):
+        if cfg.DATASET.get('input_2d_gt', False) and cfg.DATASET.get('input_2d_gt_split', 'all') == 'all':
             cfg.DATASET.pw3d_test_gt2d = True     # oracle: 3DPW test can tra GT 2D
         self.keep_vis_info = False
         self.joint_num = len(HUMAN36M_JOINTS)
@@ -115,7 +118,10 @@ class Human36M17Dataset(Dataset):
         for key in self.MASK_KEYS:
             if key in meta:
                 meta[key] = self._convert_mask(meta[key])
-        if cfg.DATASET.get('input_2d_gt', False):
+        is_train_split = getattr(self.dataset, 'data_split', '') == 'train'
+        use_gt = cfg.DATASET.get('input_2d_gt', False) and (
+            cfg.DATASET.get('input_2d_gt_split', 'all') == 'all' or is_train_split)
+        if use_gt:
             # ORACLE: thay 2D dau vao bang GT 2D (khung hm -> [-1, 1]); mask = khop GT hop le & trong khung (conf 1)
             assert 'orig_joint_img' in targets, 'input_2d_gt can targets orig_joint_img'
             g = np.asarray(targets['orig_joint_img'], dtype=np.float32)
@@ -124,8 +130,36 @@ class Human36M17Dataset(Dataset):
             tr = (tr > 0).astype(np.float32)
             xy = np.stack([g[:, 0] / cfg.output_hm_shape[2] * 2 - 1, g[:, 1] / cfg.output_hm_shape[1] * 2 - 1], -1)
             xy = (xy * tr).astype(np.float32)
+            keep = list(cfg.DATASET.get('gt2d_input_joints', []) or [])
+            if keep:                                        # khop khong co trong danh sach -> mask 0
+                km = np.array([n in keep for n in HUMAN36M_JOINTS], dtype=np.float32).reshape(-1, 1)
+                tr = tr * km
+            if is_train_split:                              # nhieu kieu detector, chi bo train
+                swap_p = float(cfg.DATASET.get('gt2d_lr_swap_prob', 0.0))
+                if swap_p > 0:
+                    for a, b in LR_PAIRS:
+                        if np.random.rand() < swap_p:
+                            xy[[a, b]] = xy[[b, a]]
+                            tr[[a, b]] = tr[[b, a]]
+                std = float(cfg.DATASET.get('gt2d_jitter_std', 0.0))
+                if std > 0:
+                    xy = xy + np.random.randn(*xy.shape).astype(np.float32) * std
+                dp = float(cfg.DATASET.get('gt2d_drop_prob', 0.0))
+                if dp > 0:
+                    tr = tr * (np.random.rand(len(tr), 1) >= dp).astype(np.float32)
+            xy = (xy * tr).astype(np.float32)
             inputs['joints'] = np.concatenate([xy, tr], -1).astype(np.float32)
             inputs['joints_mask'] = tr
+        if cfg.DATASET.get('input_torso_mid', False):
+            # Torso = trung diem Neck-Pelvis (giong khi detector khong co Torso); mask = ca 2 khop
+            j = np.asarray(inputs['joints'], dtype=np.float32).copy()
+            m = np.asarray(inputs['joints_mask'], dtype=np.float32).reshape(-1, 1).copy()
+            ok = float(m[8, 0] > 0 and m[0, 0] > 0)
+            j[7, :2] = (j[8, :2] + j[0, :2]) / 2 * ok
+            m[7, 0] = min(m[8, 0], m[0, 0]) if ok else 0.0
+            if j.shape[-1] >= 3:
+                j[7, 2] = m[7, 0]
+            inputs['joints'], inputs['joints_mask'] = j, m
         if cfg.DATASET.lift_only:
             # Giu dung mot bo key chung cho moi dataset de collate duoc khi tron (PW3D tra nhieu key hon H36M/MuCo).
             is_train = getattr(self.dataset, 'data_split', '') == 'train'
