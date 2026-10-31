@@ -1,6 +1,7 @@
 """
 Mau cho LIFTER (cfg.DATASET.lift_only) tu bo 2D-only co pseudo-GT 3D NeuralAnnot (MSCOCO, CrowdPose).
-  2D dau vao : Halpe-26 (doi H36M-17), lat + affine giong Human36M._halpe_input
+  2D dau vao : Halpe-26 (doi H36M-17), lat + affine giong Human36M._halpe_input;
+               hoac (coco_2d_source / crowdpose_2d_source = 'gt_posefix') ds._jotr_posefix_input giong JOTR
   GT 3D      : SMPL NeuralAnnot -> mesh (met, he camera) -> H36M regressor -> root-relative
                -> view_rot (camera AO tai tam bbox -> camera uoc luong est_cam) -> xoay aug
   cam_bbox   : tinh theo est_cam (f = duong cheo anh, princpt = tam anh), KHONG dung cam_param NeuralAnnot
@@ -103,8 +104,12 @@ def lift_pseudo3d_sample(ds, data, smpl_param, cam_param):
     img_shape, bbox = data['img_shape'], data['bbox']
     img2bb_trans, _, rot, do_flip = augmentation_noimg(bbox, ds.data_split, img_shape)
 
-    xy, mask = halpe_to_crop(data['halpe_h36m'], do_flip, img_shape, img2bb_trans, ds.halpe26_conf_thr)
-    mask = gt_mask_halpe(ds, data, xy, mask, do_flip, img_shape, img2bb_trans)
+    if getattr(ds, 'jotr_posefix', False):
+        # Kieu JOTR: keypoint annotation + PoseFix (cung thu tu goi random: process_bbox -> aug -> PoseFix)
+        xy, mask = ds._jotr_posefix_input(data, do_flip, img_shape, img2bb_trans)
+    else:
+        xy, mask = halpe_to_crop(data['halpe_h36m'], do_flip, img_shape, img2bb_trans, ds.halpe26_conf_thr)
+        mask = gt_mask_halpe(ds, data, xy, mask, do_flip, img_shape, img2bb_trans)
 
     # Pseudo-GT 3D: get_smpl_coord da xu ly lat (pose + tinh tien) -> mesh khop anh da lat
     mesh, _, _, _ = ds.get_smpl_coord(smpl_param, cam_param, do_flip, img_shape)    # (6890, 3) met
@@ -134,6 +139,13 @@ def lift_pseudo3d_sample(ds, data, smpl_param, cam_param):
             'orig_joint_trunc': j2d_trunc,
             'is_3D': float(True)}
     return inputs, targets, meta
+
+
+def keep_neuralannot(name, datalist, param_key):
+    """Che do lifter 'gt_posefix': chi giu nguoi co NeuralAnnot (can nhan 3D), khong can Halpe."""
+    out = [d for d in datalist if d.get(param_key) is not None]
+    print(f'[{name} lift_only gt_posefix] giu {len(out)} / {len(datalist)} nguoi co NeuralAnnot')
+    return out
 
 
 def load_halpe_into_datalist(ds, name, datalist, param_key, data_root):

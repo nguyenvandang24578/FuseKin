@@ -382,6 +382,10 @@ class MuCo(torch.utils.data.Dataset):
             src_names = self.muco_joints_name_h36m_alias
             if halpe_in is not None:
                 h36m_input, h36m_in_mask = halpe_in, halpe_in[:, 2:3]
+            elif cfg.DATASET.get('jotr_strict', False):
+                # GIONG JOTR: dau vao MuCo -> SMPL-30 -> H36M-17 theo TEN GOC (khong alias) -> Neck / Torso / Nose mask 0
+                h36m_input = transform_joint_to_other_db(input_muco_joint_img, self.muco_joints_name, self.h36m_joints_name)
+                h36m_in_mask = transform_joint_to_other_db(muco_joint_trunc, self.muco_joints_name, self.h36m_joints_name)
             else:
                 h36m_input = transform_joint_to_other_db(input_muco_joint_img, src_names, self.h36m_joints_name)
                 h36m_in_mask = None   # = h36m_trunc (GT) ben duoi

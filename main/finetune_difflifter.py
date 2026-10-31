@@ -544,6 +544,16 @@ def main():
 
     balance = getattr(dl_cfg, 'balance_datasets', True)
     ratio = list(getattr(dl_cfg, 'dataset_ratio', []))
+    if getattr(dl_cfg, 'mix_mode', 'ratio') == 'jotr':
+        # Giong JOTR MultipleDatasets([3D, 2D], make_same_len=True): 50% nhom 3D (Human36M + MuCo), 50% nhom 2D
+        # (con lai); trong nhom ti le theo so mau (= noi cac bo, lay deu).
+        g3 = [k for k, n in enumerate(train_names) if n in ('Human36M', 'MuCo')]
+        g2 = [k for k, n in enumerate(train_names) if n not in ('Human36M', 'MuCo')]
+        assert g3 and g2, f"mix_mode 'jotr' can ca bo 3D (Human36M / MuCo) lan bo 2D: {train_names}"
+        n3 = float(sum(len(train_sets[k]) for k in g3))
+        n2 = float(sum(len(train_sets[k]) for k in g2))
+        ratio = [0.5 * len(ds) / (n3 if k in g3 else n2) for k, ds in enumerate(train_sets)]
+        log(f'# mix_mode jotr -> ti le: ' + ', '.join(f'{n} {r:.3f}' for n, r in zip(train_names, ratio)))
     sampler = None
     if ratio:
         # Tron theo ti le: noi cac tap (khong lap), moi mau co trong so = ti le tap / so mau tap

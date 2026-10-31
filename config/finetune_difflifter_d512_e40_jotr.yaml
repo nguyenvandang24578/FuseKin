@@ -1,0 +1,73 @@
+# =====================================================================
+# finetune_difflifter_d512_e40_jotr (2026-10-31, nguoi dung xac nhan): lifter KIEU JOTR, dong bo du lieu 2D voi JOTR.
+# GIONG HET finetune_difflifter_r25_cam_gtmask_d512_e40.yaml (kien truc, lich, aug 2D cua lifter), CHI DOI nguon 2D:
+#   train = GT 2D + PoseFix (replace_joint_img, near_joints) tren ca 4 bo (H36M, MuCo, COCO, CrowdPose), mask nhi phan
+#           = khop GT hop le & trong crop; update_bbox True (bbox crop ngau nhien lai moi lan lay mau, nhu JOTR yml);
+#           jotr_strict (MuCo dau vao theo ten goc, CrowdPose loc fit_err nhu JOTR); tron 50% 3D / 50% 2D nhu JOTR.
+#   test  = OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd, thieu -> OpenPose), nguong conf 0.05 (nhu JOTR).
+# Kiem tra tuong duong voi JOTR TRUOC khi train: tools/check_jotr_equivalence.py (lech phai = 0).
+# Chay:
+#   python main/finetune_difflifter.py --cfg config/finetune_difflifter_d512_e40_jotr.yaml --gpu 0
+# =====================================================================
+
+update_bbox: True          # giong JOTR assets/yaml (process_bbox scale ngau nhien 1.0-1.2 moi lan lay mau)
+
+DATASET:
+  lift_only: True
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']
+  test_list: ['3dpw', 'Human36M', '3dpw-oc', '3dpw-pc', '3dpw-crowd']
+  pw3d_2d_source: 'openpose'     # test: OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd)
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  halpe26_conf_thr: 0.3          # khong dung (khong co nguon Halpe)
+  lift_soft_conf: False          # mask nhi phan nhu JOTR
+  workers: 8
+  no_rot_aug: False
+  halpe_gt_mask_thr: 0.0
+
+DIFFLIFT:
+  embed_dim: 512
+  depth: 8
+  num_heads: 8
+  drop_rate: 0.1
+  drop_path_rate: 0.1
+
+  timesteps: 1000
+  sampling_timesteps: 1
+  num_proposals: 1
+  scale: 3.0
+
+  # Training
+  val_set: '3dpw-val'
+  select_metric: 'pa_mpjpe'
+  save_dir: 'experiment/finetune_difflifter_d512_e40_jotr'
+  epochs: 40
+  lr: 0.0003
+  lr_decay: 0.99
+  weight_decay: 0.01
+  batch_size: 512
+  save_freq: 5
+  iters_per_epoch: 0
+  print_freq: 50
+  balance_datasets: False
+  mix_mode: 'jotr'               # 50% (H36M + MuCo) / 50% (COCO + CrowdPose), trong nhom theo so mau
+  dataset_ratio: []
+  samples_per_epoch: 512000
+  resume: ''
+  ema_decay: 0.999
+  train_eval_samples: 2000
+
+  # Danh gia them trong luc train (chi log)
+  epoch_eval_sets: ['3dpw']
+  full_eval_sets: ['Human36M', '3dpw-oc', '3dpw-pc', '3dpw-crowd']
+  full_eval_freq: 5
+
+  # Augmentation 2D cua lifter giu nhu gtmask_d512_e40 (mot yeu to / thi nghiem)
+  joint_drop_prob: 0.05
+  limb_drop_prob: 0.05
+  jitter_std: 0.02
+  occ_aug_prob: 0.15
+  occ_shift_std: 0.15

@@ -17,7 +17,8 @@ from utils.smpl import SMPL
 from utils.preprocessing import load_img, process_bbox, augmentation, compute_iou, load_img_from_lmdb
 # from utils.vis import vis_keypoints, vis_mesh, save_obj, vis_keypoints_with_skeleton
 from utils.transforms import world2cam, cam2pixel, pixel2cam, transform_joint_to_other_db
-from utils.lift_pseudo3d import lift_pseudo3d_sample, load_halpe_into_datalist, halpe_to_crop, gt_mask_halpe
+from utils.lift_pseudo3d import lift_pseudo3d_sample, load_halpe_into_datalist, halpe_to_crop, gt_mask_halpe, keep_neuralannot
+from utils.h36m_adapter import HUMAN36M_JOINTS
 from utils.fusekin_sample import fusekin_train_sample
 from utils.cam_bbox import est_cam
 
@@ -61,11 +62,68 @@ class CrowdPose(torch.utils.data.Dataset):
         self.root_joint_idx = self.smpl.root_joint_idx
         self.face_kps_vertex = self.smpl.face_kps_vertex
 
+        # Nguon 2D cua nhanh lifter: 'halpe26' (cu) | 'gt_posefix' (giong JOTR)
+        self.crowdpose_2d_source = cfg.DATASET.get('crowdpose_2d_source', 'halpe26')
+        if self.crowdpose_2d_source not in ('halpe26', 'gt_posefix'):
+            raise ValueError(f"cfg.DATASET.crowdpose_2d_source khong hop le: {self.crowdpose_2d_source}")
+        self.jotr_posefix = (self.crowdpose_2d_source == 'gt_posefix' and cfg.DATASET.lift_only and self.data_split == 'train')
+        if self.crowdpose_2d_source == 'gt_posefix' and cfg.DATASET.fusekin_unified and not cfg.DATASET.lift_only:
+            raise NotImplementedError('crowdpose_2d_source gt_posefix chua ho tro fusekin_unified (Student) -> chi dung cho lifter')
+
         self.datalist = self.load_data()
         if (cfg.DATASET.lift_only or cfg.DATASET.fusekin_unified) and self.data_split == 'train':
-            # Lifter / FuseKin thong nhat: chi giu nguoi co NeuralAnnot + Halpe-26 (tools/extract_halpe26_coco.py --dataset crowdpose)
-            self.datalist = load_halpe_into_datalist(self, 'CrowdPose', self.datalist, 'neural_annot_result', cfg.DATASET.jotr_data_root)
+            if self.jotr_posefix:
+                self.datalist = keep_neuralannot('CrowdPose', self.datalist, 'neural_annot_result')
+            else:
+                # Lifter / FuseKin thong nhat: chi giu nguoi co NeuralAnnot + Halpe-26 (tools/extract_halpe26_coco.py --dataset crowdpose)
+                self.datalist = load_halpe_into_datalist(self, 'CrowdPose', self.datalist, 'neural_annot_result', cfg.DATASET.jotr_data_root)
         print("crowdpose data len: ", len(self.datalist))
+
+    def _jotr_posefix_input(self, data, do_flip, img_shape, img2bb_trans):
+        """2D dau vao + mask GIONG HET nhanh train cua JOTR (dataloader/CrowdPose.py __getitem__): lat, affine,
+        near_joints (dang COCO, score = 1, KHONG lat - giong JOTR), trunc tu GT, PoseFix tren 13 khop chung COCO,
+        chuan hoa khung hm. Doi sang H36M-17 theo TEN (= JOTR SMPL-30 -> H36M-17). Tra ve xy (17, 2), mask (17, 1)."""
+        crowdpose_joint_img = data['joint_img']
+        crowdpose_joint_valid = data['joint_valid']
+        if do_flip:
+            crowdpose_joint_img[:, 0] = img_shape[1] - 1 - crowdpose_joint_img[:, 0]
+            for pair in self.crowdpose_flip_pairs:
+                crowdpose_joint_img[pair[0], :], crowdpose_joint_img[pair[1], :] = crowdpose_joint_img[pair[1], :].copy(), crowdpose_joint_img[pair[0], :].copy()
+                crowdpose_joint_valid[pair[0], :], crowdpose_joint_valid[pair[1], :] = crowdpose_joint_valid[pair[1], :].copy(), crowdpose_joint_valid[pair[0], :].copy()
+
+        crowdpose_joint_img_xy1 = np.concatenate((crowdpose_joint_img[:, :2], np.ones_like(crowdpose_joint_img[:, :1])), 1)
+        crowdpose_joint_img[:, :2] = np.dot(img2bb_trans, crowdpose_joint_img_xy1.transpose(1, 0)).transpose(1, 0)
+        # for swap
+        if len(data['near_joints']) > 0:
+            near_joint_list = []
+            for nj in data['near_joints']:
+                near_joint = np.ones((self.coco_joint_num, 3), dtype=np.float32)
+                nj_xy1 = np.concatenate((nj[:, :2], np.ones_like(nj[:, :1])), axis=1)
+                near_joint[:, :2] = np.dot(img2bb_trans, nj_xy1.transpose(1, 0)).transpose(1, 0)
+                near_joint_list.append(near_joint)
+            near_joints = np.asarray(near_joint_list, dtype=np.float32)
+        else:
+            near_joints = np.zeros((1, self.coco_joint_num, 3), dtype=np.float32)
+
+        input_crowdpose_joint_img = crowdpose_joint_img.copy()
+        crowdpose_joint_img[:, 0] = crowdpose_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+        crowdpose_joint_img[:, 1] = crowdpose_joint_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+
+        # check truncation
+        crowdpose_joint_trunc = crowdpose_joint_valid * ((crowdpose_joint_img[:, 0] >= 0) * (crowdpose_joint_img[:, 0] < cfg.output_hm_shape[2]) * (crowdpose_joint_img[:, 1] >= 0) * (crowdpose_joint_img[:, 1] < cfg.output_hm_shape[1])).reshape(
+            -1, 1).astype(np.float32)
+
+        # apply PoseFix
+        tmp_joint_img = transform_joint_to_other_db(input_crowdpose_joint_img, self.crowdpose_joints_name, self.coco_joints_name)
+        tmp_joint_img = replace_joint_img(tmp_joint_img, data['tight_bbox'], near_joints, data['num_overlap'], img2bb_trans)
+        tmp_joint_img = transform_joint_to_other_db(tmp_joint_img, self.coco_joints_name, self.crowdpose_joints_name)
+        input_crowdpose_joint_img[self.crowdpose_coco_common_jidx, :2] = tmp_joint_img[self.crowdpose_coco_common_jidx, :2]
+        input_crowdpose_joint_img[:, 0] = input_crowdpose_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+        input_crowdpose_joint_img[:, 1] = input_crowdpose_joint_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+
+        xy = transform_joint_to_other_db(input_crowdpose_joint_img, self.crowdpose_joints_name, HUMAN36M_JOINTS)[:, :2]
+        mask = transform_joint_to_other_db(crowdpose_joint_trunc, self.crowdpose_joints_name, HUMAN36M_JOINTS)
+        return xy.astype(np.float32), mask.astype(np.float32)
 
     def add_pelvis(self, joint_coord):
         lhip_idx = self.crowdpose_joints_name.index('L_Hip')
@@ -122,6 +180,9 @@ class CrowdPose(torch.utils.data.Dataset):
                         # JOTR goc ('< 5 -> bo') cung giu ~99% nguoi.
                         if str(aid) in smpl_params:
                             smpl_param = smpl_params[str(aid)]
+                            # jotr_strict: loc GIONG JOTR (dataloader/CrowdPose.py: fit_err < fitting_thr -> bo)
+                            if cfg.DATASET.get('jotr_strict', False) and smpl_param['fit_err'] < self.fitting_thr:
+                                smpl_param = None
                         else:
                             smpl_param = None
 

@@ -147,6 +147,17 @@ cfg.DATASET.h36m_halpe26_dir = ''
 cfg.DATASET.muco_2d_source = 'gt_posefix'
 # Thu muc chua MuCo_train_halpe26.npz ('' = <jotr_data_root>/MuCo)
 cfg.DATASET.muco_halpe26_dir = ''
+# Nguon 2D dau vao cua MSCOCO / CrowdPose o nhanh LIFTER (lift_only, train) (2026-10-31):
+#   'halpe26'    (mac dinh, hanh vi cu): Halpe-26 detect san (<name>_train_halpe26.npz)
+#   'gt_posefix' (giong JOTR dataloader/MSCOCO.py, CrowdPose.py): keypoint annotation + pelvis -> PoseFix
+#                (near_joints IoU >= 0.1), mask = khop GT hop le & trong crop. Chi giu nguoi co NeuralAnnot (nhan 3D).
+cfg.DATASET.coco_2d_source = 'halpe26'
+cfg.DATASET.crowdpose_2d_source = 'halpe26'
+# jotr_strict (mac dinh TAT): dong bo 100% voi JOTR o cac cho FuseKin da doi:
+#   - MuCo lifter: dau vao doi sang H36M-17 theo TEN GOC MuCo (khong alias Thorax->Neck, Spine->Torso, Head->Nose),
+#     giong JOTR MuCo -> SMPL-30 -> H36M-17 (Neck / Torso / Nose mask 0). Nhan 3D van dung alias.
+#   - CrowdPose: loc NeuralAnnot nhu JOTR (fit_err < fitting_thr -> bo).
+cfg.DATASET.jotr_strict = False
 cfg.DATASET.jotr_data_root = os.environ.get(
     'JOTR_DATA_ROOT',
     osp.abspath(osp.join(cfg.root_dir, 'data_final')),
@@ -318,7 +329,11 @@ cfg.DIFFLIFT.full_eval_freq = 5
 # Ti le tron dataset moi epoch (theo thu tu train_list), vd [0.4, 0.4, 0.2]. [] = TAT (dung balance_datasets).
 # Bat -> lay mau co hoan lai theo ti le, khong lap 3DPW-train ~14 lan/epoch nhu balance.
 cfg.DIFFLIFT.dataset_ratio = []
-cfg.DIFFLIFT.samples_per_epoch = 0    # so mau moi epoch khi dung dataset_ratio (0 = tong so mau cac tap)
+cfg.DIFFLIFT.samples_per_epoch = 0
+# Cach tron cac bo train cua lifter: 'ratio' (mac dinh: dataset_ratio / balance_datasets nhu cu) |
+# 'jotr': giong JOTR MultipleDatasets([3D (H36M + MuCo), 2D (COCO + CrowdPose)], make_same_len=True)
+#   -> 50% mau tu nhom 3D, 50% nhom 2D, trong nhom ti le theo so mau; lay mau co hoan lai, samples_per_epoch mau / epoch
+cfg.DIFFLIFT.mix_mode = 'ratio'    # so mau moi epoch khi dung dataset_ratio (0 = tong so mau cac tap)
 cfg.DIFFLIFT.drop_rate = 0.0          # dropout trong attention/MLP cua denoiser (chong overfit)
 cfg.DIFFLIFT.drop_path_rate = 0.1     # stochastic depth (truoc day co dinh 0.1)
 # Cuoi moi epoch: MPJPE S=1 tren N mau CO DINH cua tung bo train (giu augmentation train, seed co dinh

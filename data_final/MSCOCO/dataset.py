@@ -17,7 +17,8 @@ from utils.smpl import SMPL
 from utils.preprocessing import load_img, process_bbox, augmentation, compute_iou, load_img_from_lmdb
 # from utils.vis import vis_bbox, render_mesh
 from utils.transforms import world2cam, cam2pixel, pixel2cam, transform_joint_to_other_db
-from utils.lift_pseudo3d import lift_pseudo3d_sample, load_halpe_into_datalist, halpe_to_crop, gt_mask_halpe
+from utils.lift_pseudo3d import lift_pseudo3d_sample, load_halpe_into_datalist, halpe_to_crop, gt_mask_halpe, keep_neuralannot
+from utils.h36m_adapter import HUMAN36M_JOINTS
 from utils.fusekin_sample import fusekin_train_sample
 from utils.cam_bbox import est_cam
 
@@ -56,10 +57,21 @@ class MSCOCO(torch.utils.data.Dataset):
         self.root_joint_idx = self.smpl.root_joint_idx
         self.face_kps_vertex = self.smpl.face_kps_vertex
 
+        # Nguon 2D cua nhanh lifter: 'halpe26' (cu) | 'gt_posefix' (giong JOTR)
+        self.coco_2d_source = cfg.DATASET.get('coco_2d_source', 'halpe26')
+        if self.coco_2d_source not in ('halpe26', 'gt_posefix'):
+            raise ValueError(f"cfg.DATASET.coco_2d_source khong hop le: {self.coco_2d_source}")
+        self.jotr_posefix = (self.coco_2d_source == 'gt_posefix' and cfg.DATASET.lift_only and self.data_split == 'train')
+        if self.coco_2d_source == 'gt_posefix' and cfg.DATASET.fusekin_unified and not cfg.DATASET.lift_only:
+            raise NotImplementedError('coco_2d_source gt_posefix chua ho tro fusekin_unified (Student) -> chi dung cho lifter')
+
         self.datalist = self.load_data()
         if (cfg.DATASET.lift_only or cfg.DATASET.fusekin_unified) and self.data_split == 'train':
-            # Lifter / FuseKin thong nhat: chi giu nguoi co NeuralAnnot + Halpe-26 (tools/extract_halpe26_coco.py --dataset mscoco)
-            self.datalist = load_halpe_into_datalist(self, 'MSCOCO', self.datalist, 'smpl_param', cfg.DATASET.jotr_data_root)
+            if self.jotr_posefix:
+                self.datalist = keep_neuralannot('MSCOCO', self.datalist, 'smpl_param')
+            else:
+                # Lifter / FuseKin thong nhat: chi giu nguoi co NeuralAnnot + Halpe-26 (tools/extract_halpe26_coco.py --dataset mscoco)
+                self.datalist = load_halpe_into_datalist(self, 'MSCOCO', self.datalist, 'smpl_param', cfg.DATASET.jotr_data_root)
         print("coco data len: ", len(self.datalist))
 
     def add_pelvis(self, joint_coord):
@@ -170,6 +182,50 @@ class MSCOCO(torch.utils.data.Dataset):
                     break
 
         return datalist
+
+    def _jotr_posefix_input(self, data, do_flip, img_shape, img2bb_trans):
+        """2D dau vao + mask GIONG HET nhanh train cua JOTR (dataloader/MSCOCO.py __getitem__): lat, affine,
+        near_joints (score = 1, KHONG lat - giong JOTR), trunc tu GT, PoseFix (replace_joint_img) tren toa do crop,
+        chuan hoa khung hm. Doi sang H36M-17 theo TEN (= JOTR SMPL-30 -> H36M-17). Tra ve xy (17, 2), mask (17, 1).
+        Sua data['joint_img'] / data['joint_valid'] tai cho (data da deepcopy trong __getitem__)."""
+        coco_joint_img = data['joint_img']
+        coco_joint_valid = data['joint_valid']
+        if do_flip:
+            coco_joint_img[:,0] = img_shape[1] - 1 - coco_joint_img[:,0]
+            for pair in self.coco_flip_pairs:
+                coco_joint_img[pair[0],:], coco_joint_img[pair[1],:] = coco_joint_img[pair[1],:].copy(), coco_joint_img[pair[0],:].copy()
+                coco_joint_valid[pair[0],:], coco_joint_valid[pair[1],:] = coco_joint_valid[pair[1],:].copy(), coco_joint_valid[pair[0],:].copy()
+
+        coco_joint_img_xy1 = np.concatenate((coco_joint_img[:,:2], np.ones_like(coco_joint_img[:,:1])),1)
+        coco_joint_img[:,:2] = np.dot(img2bb_trans, coco_joint_img_xy1.transpose(1,0)).transpose(1,0)
+        # for swap
+        if len(data['near_joints']) > 0:
+            near_joint_list = []
+            for nj in data['near_joints']:
+                near_joint = np.ones((self.coco_joint_num, 3), dtype=np.float32)
+                nj_xy1 = np.concatenate((nj[:, :2], np.ones_like(nj[:, :1])), axis=1)
+                near_joint[:, :2] = np.dot(img2bb_trans, nj_xy1.transpose(1, 0)).transpose(1, 0)
+                near_joint_list.append(near_joint)
+            near_joints = np.asarray(near_joint_list, dtype=np.float32)
+        else:
+            near_joints = np.zeros((1, self.coco_joint_num, 3), dtype=np.float32)
+
+        input_coco_joint_img = coco_joint_img.copy()
+        coco_joint_img[:,0] = coco_joint_img[:,0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+        coco_joint_img[:,1] = coco_joint_img[:,1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+
+        # check truncation
+        coco_joint_trunc = coco_joint_valid * ((coco_joint_img[:,0] >= 0) * (coco_joint_img[:,0] < cfg.output_hm_shape[2]) * \
+                    (coco_joint_img[:,1] >= 0) * (coco_joint_img[:,1] < cfg.output_hm_shape[1])).reshape(-1,1).astype(np.float32)
+
+        # apply PoseFix
+        input_coco_joint_img = replace_joint_img(input_coco_joint_img, data['tight_bbox'], near_joints, data['num_overlap'], img2bb_trans)
+        input_coco_joint_img[:, 0] = input_coco_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+        input_coco_joint_img[:,1] = input_coco_joint_img[:,1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+
+        xy = transform_joint_to_other_db(input_coco_joint_img, self.coco_joints_name, HUMAN36M_JOINTS)[:, :2]
+        mask = transform_joint_to_other_db(coco_joint_trunc, self.coco_joints_name, HUMAN36M_JOINTS)
+        return xy.astype(np.float32), mask.astype(np.float32)
 
     def get_smpl_coord(self, smpl_param, cam_param, do_flip, img_shape):
         pose, shape, trans = smpl_param['pose'], smpl_param['shape'], smpl_param['trans']
