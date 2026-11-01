@@ -1,0 +1,71 @@
+# =====================================================================
+# finetune_difflifter_d512_e15_jotr_pf05_3dpw (2026-11-01, nguoi dung xac nhan, THU NGHIEM): GIONG HET
+# finetune_difflifter_d512_e15_jotr_pf05.yaml, CHI DOI: them '3dpw-train' (2D = OpenPose trong annotation, cung phan bo
+# voi test; nhan 3D = SMPL GT 3DPW), tron 20% moi bo (mix_mode ratio). save_freq 1 + select_metric mpjpe (chi doi luu /
+# chon checkpoint, khong doi train). LUU Y: dung 3DPW train -> KHONG con giao thuc JOTR (chi so voi PP co dung 3DPW train).
+# Chay: python main/finetune_difflifter.py --cfg config/finetune_difflifter_d512_e15_jotr_pf05_3dpw.yaml --gpu 0
+# =====================================================================
+
+update_bbox: True          # giong JOTR assets/yaml (process_bbox scale ngau nhien 1.0-1.2 moi lan lay mau)
+
+DATASET:
+  lift_only: True
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose', '3dpw-train']
+  test_list: ['3dpw', 'Human36M', '3dpw-oc', '3dpw-pc', '3dpw-crowd']
+  pw3d_2d_source: 'openpose'     # test: OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd)
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  posefix_scale: 0.5             # MOI: loi PoseFix nhe hon (x0.5)
+  posefix_fast: True             # PoseFix vector hoa, GIONG TUNG BIT ban goc (tools/check_posefix_fast.py), nhanh ~10%
+  halpe26_conf_thr: 0.3          # khong dung (khong co nguon Halpe)
+  lift_soft_conf: False          # mask nhi phan nhu JOTR
+  workers: 8
+  no_rot_aug: False
+  halpe_gt_mask_thr: 0.0
+
+DIFFLIFT:
+  embed_dim: 512
+  depth: 8
+  num_heads: 8
+  drop_rate: 0.1
+  drop_path_rate: 0.1
+
+  timesteps: 1000
+  sampling_timesteps: 1
+  num_proposals: 1
+  scale: 3.0
+
+  # Training
+  val_set: '3dpw-val'
+  select_metric: 'mpjpe'         # MOI: val MPJPE khop 3DPW hon PA (run pf05: best 3DPW ep7)
+  save_dir: 'experiment/finetune_difflifter_d512_e15_jotr_pf05_3dpw'
+  epochs: 15
+  lr: 0.0003
+  lr_decay: 0.99
+  weight_decay: 0.01
+  batch_size: 512
+  save_freq: 1                   # MOI: luu moi epoch
+  iters_per_epoch: 0
+  print_freq: 50
+  balance_datasets: False
+  mix_mode: 'ratio'              # MOI: tron theo dataset_ratio
+  dataset_ratio: [0.2, 0.2, 0.2, 0.2, 0.2]   # Human36M, MuCo, MSCOCO, CrowdPose, 3dpw-train
+  samples_per_epoch: 512000
+  resume: ''
+  ema_decay: 0.999
+  train_eval_samples: 2000
+
+  # Danh gia them trong luc train (chi log)
+  epoch_eval_sets: ['3dpw']
+  full_eval_sets: ['Human36M', '3dpw-oc', '3dpw-pc', '3dpw-crowd']
+  full_eval_freq: 5
+
+  # Augmentation 2D cua lifter giu nhu gtmask_d512_e40 (mot yeu to / thi nghiem)
+  joint_drop_prob: 0.05
+  limb_drop_prob: 0.05
+  jitter_std: 0.02
+  occ_aug_prob: 0.15
+  occ_shift_std: 0.15
