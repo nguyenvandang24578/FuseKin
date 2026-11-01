@@ -2,6 +2,7 @@ import math
 import random
 import numpy as np
 from easydict import EasyDict as edict
+from core.config import cfg
 
 # coco joints
 kps_sigmas = np.array([
@@ -242,6 +243,13 @@ def synthesize_pose(joints, near_joints, area, num_overlap):
 
         # TEMP
         # jitter_prob, miss_prob, inv_prob, swap_prob = jitter_prob * 0.5, miss_prob * 0.5, inv_prob * 0.5, swap_prob
+        # DATASET.posefix_scale (FuseKin, 2026-10-31; mac dinh 1.0 = GIONG JOTR): nhan xac suat 4 loai loi, phan con lai
+        # don vao 'good'. Chi doi xac suat, KHONG doi so lan goi random -> scale 1.0 van khop JOTR tung mau.
+        pf_scale = float(cfg.DATASET.get('posefix_scale', 1.0))
+        if pf_scale != 1.0:
+            assert 0.0 <= pf_scale <= 1.0, f'DATASET.posefix_scale phai trong [0, 1]: {pf_scale}'
+            jitter_prob, miss_prob, inv_prob, swap_prob = (jitter_prob * pf_scale, miss_prob * pf_scale,
+                                                           inv_prob * pf_scale, swap_prob * pf_scale)
 
         # good prob
         synth_good = np.zeros(3)

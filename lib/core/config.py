@@ -158,6 +158,9 @@ cfg.DATASET.crowdpose_2d_source = 'halpe26'
 #     giong JOTR MuCo -> SMPL-30 -> H36M-17 (Neck / Torso / Nose mask 0). Nhan 3D van dung alias.
 #   - CrowdPose: loc NeuralAnnot nhu JOTR (fit_err < fitting_thr -> bo).
 cfg.DATASET.jotr_strict = False
+# Nhan xac suat 4 loai loi PoseFix (jitter, miss, inversion, swap) cua utils/posefix.synthesize_pose (mac dinh 1.0 = JOTR).
+# Vd 0.5: loi nhe hon cho lifter (lifter khong co anh de sua loi). Ap dung cho moi bo dung gt_posefix.
+cfg.DATASET.posefix_scale = 1.0
 cfg.DATASET.jotr_data_root = os.environ.get(
     'JOTR_DATA_ROOT',
     osp.abspath(osp.join(cfg.root_dir, 'data_final')),

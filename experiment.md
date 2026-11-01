@@ -887,3 +887,11 @@ da co, cung giao thuc). Ket qua: chua co.
 - YAML: config/finetune_difflifter_d512_e40_jotr.yaml (= gtmask_d512_e40, chi doi nguon 2D + update_bbox + jotr_strict + mix_mode, lift_soft_conf False).
 - Kiem tra: tools/check_jotr_equivalence.py (2 tien trinh, cung mau + seed, so joints / mask 17 khop; yeu cau lech = 0) -> CHI train khi report KHOP 100%.
 - Backup file truoc khi sua: _to_delete/bak_jotrmode/.
+- KET QUA check_jotr_equivalence (nguoi dung chay 2026-10-31, 200 mau / bo, seed 0): KHOP 100% ca 8 bo (H36M, MuCo, MSCOCO, CrowdPose, 3dpw, oc, pc, crowd): mask lech 0, lech toa do max 0.0000.
+  So mau: giong JOTR tru CrowdPose 35379 vs 40504 (lifter chi giu nguoi co NeuralAnnot - can nhan 3D; JOTR giu ca nguoi khong co SMPL, is_valid_fit = 0, chi dung loss 2D) -> mix_mode jotr: ti le CrowdPose trong nhom 2D thap hon JOTR chut (35379 / 185192 vs 40504 / 190317).
+- KET QUA lifter jotr (finetune_difflifter_d512_e40_jotr, nguoi dung gui 2026-11-01, DUNG o ep15, ~42 phut / epoch), test OpenPose / HHRNet, MPJPE17 / PA mm:
+  3dpw 85.56 / 53.72 | H36M 57.41 / 44.90 | OC 93.20 / 62.93 | PC 100.40 / 73.91 | Crowd 88.79 / 61.14 | val 88.56 / 60.14.
+  So lifter Halpe gtmask_d512_e40 best ep11 (muc 482): 3dpw +12.5 / +4.5, H36M +2.0 / +2.0, OC +12.8 / +10.1, PC +4.5 / +13.6, Crowd -11.2 / +5.3.
+  -> chi Crowd MPJPE tot hon; PA kem o moi tap. Nguoi dung ket luan: PoseFix qua nang cho lifter (lifter khong co anh de sua). CHUA tach rieng (2 yeu to cung doi: nhieu train PoseFix + nguon 2D test OpenPose) - gia thuyet, khong kiem bang 2x2 (nguoi dung bo qua de tiet kiem thoi gian).
+- 2026-11-01 (nguoi dung xac nhan): them DATASET.posefix_scale (mac dinh 1.0 = JOTR) trong lib/utils/posefix.synthesize_pose: nhan xac suat jitter / miss / inversion / swap, phan con lai vao 'good'; khong doi so lan goi random. (Dong '# TEMP' trong posefix goc cua JOTR tung thu x0.5 cho jitter / miss / inv, KHONG swap; FuseKin nhan ca 4.)
+  YAML config/finetune_difflifter_d512_e15_jotr_pf05.yaml = jotr + posefix_scale 0.5 + epochs 15 (lr_decay theo epoch giong -> so tung epoch voi run e40_jotr duoc).
