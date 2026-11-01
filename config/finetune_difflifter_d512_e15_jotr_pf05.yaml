@@ -18,6 +18,7 @@ DATASET:
   crowdpose_2d_source: 'gt_posefix'
   jotr_strict: True
   posefix_scale: 0.5             # MOI: loi PoseFix nhe hon (x0.5)
+  posefix_fast: True             # PoseFix vector hoa, GIONG TUNG BIT ban goc (tools/check_posefix_fast.py), nhanh ~10%
   halpe26_conf_thr: 0.3          # khong dung (khong co nguon Halpe)
   lift_soft_conf: False          # mask nhi phan nhu JOTR
   workers: 8
