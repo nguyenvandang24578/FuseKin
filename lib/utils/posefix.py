@@ -25,7 +25,9 @@ def replace_joint_img(joint_img_coco, bbox, near_joints, num_overlap, trans):
     pt3 = affine_transform(np.array([xmax, ymax]), trans)
     area = math.sqrt(pow(pt2[0] - pt1[0], 2) + pow(pt2[1] - pt1[1], 2)) * math.sqrt(
         pow(pt3[0] - pt2[0], 2) + pow(pt3[1] - pt2[1], 2))
-    joint_img_coco[:17, :] = synthesize_pose(joint_img_coco[:17, :], near_joints[:, :17, :], area, num_overlap)
+    # DATASET.posefix_fast (mac dinh False): ban vector hoa, GIONG TUNG BIT ban goc (tools/check_posefix_fast.py)
+    fn = synthesize_pose_fast if cfg.DATASET.get('posefix_fast', False) else synthesize_pose
+    joint_img_coco[:17, :] = fn(joint_img_coco[:17, :], near_joints[:, :17, :], area, num_overlap)
     return joint_img_coco
 
 
@@ -268,6 +270,262 @@ def synthesize_pose(joints, near_joints, area, num_overlap):
                                        np.sqrt((tot_coord_list[i][0] - x) ** 2 + (tot_coord_list[i][1] - y) ** 2) > r)
         x = x[dist_mask].reshape(-1)
         y = y[dist_mask].reshape(-1)
+        if len(x) > 0:
+            rand_idx = random.randrange(0, len(x))
+            synth_good[0] = x[rand_idx]
+            synth_good[1] = y[rand_idx]
+            synth_good[2] = 1
+
+        if synth_jitter[2] == 0:
+            jitter_prob = 0
+        if synth_inv[2] == 0:
+            inv_prob = 0
+        if synth_swap[2] == 0:
+            swap_prob = 0
+        if synth_miss[2] == 0:
+            miss_prob = 0
+        if synth_good[2] == 0:
+            good_prob = 0
+
+        normalizer = jitter_prob + miss_prob + inv_prob + swap_prob + good_prob
+        if normalizer == 0:
+            synth_joints[j] = 0
+            continue
+
+        jitter_prob = jitter_prob / normalizer
+        miss_prob = miss_prob / normalizer
+        inv_prob = inv_prob / normalizer
+        swap_prob = swap_prob / normalizer
+        good_prob = good_prob / normalizer
+
+        prob_list = [jitter_prob, miss_prob, inv_prob, swap_prob, good_prob]
+        synth_list = [synth_jitter, synth_miss, synth_inv, synth_swap, synth_good]
+        sampled_idx = np.random.choice(5, 1, p=prob_list)[0]
+        synth_joints[j] = synth_list[sampled_idx]
+
+        assert synth_joints[j, 2] != 0
+
+    return synth_joints
+
+
+def _far_mask(T, x, y, thr, rows):
+    """Vector hoa vong lap khoang cach cua synthesize_pose: True khi diem (x, y) cach MOI nguon T[rows] > thr.
+    Cung phep tinh tung phan tu (hieu^2 + hieu^2 -> sqrt -> so sanh) nhu ban goc -> ket qua giong tung bit.
+    rows rong -> tat ca True (giong dist_mask = True cua ban goc)."""
+    if len(rows) == 0:
+        return np.ones(x.shape, dtype=bool)
+    S = T[rows]
+    d = np.sqrt((S[:, 0:1] - x[None, :]) ** 2 + (S[:, 1:2] - y[None, :]) ** 2)
+    return (d > thr).all(axis=0)
+
+
+def synthesize_pose_fast(joints, near_joints, area, num_overlap):
+    """GIONG HET synthesize_pose (cung thu tu + so lan goi np.random / random -> cung ket qua tung bit), chi:
+    (1) vector hoa vong lap khoang cach toi cac nguon (_far_mask), (2) np.random.choice(len(x), ...) thay cho
+    np.random.choice(range(len(x)), ...) (cung 1 lan randint -> cung chi so). Bat bang DATASET.posefix_fast.
+    Kiem tra: tools/check_posefix_fast.py (so tung bit voi ban goc)."""
+    def get_dist_wrt_ks(ks, area):
+        vars = (kps_sigmas * 2) ** 2
+        return np.sqrt(-2 * area * vars * np.log(ks))
+
+    ks_10_dist = get_dist_wrt_ks(0.10, area)
+    ks_50_dist = get_dist_wrt_ks(0.50, area)
+    ks_85_dist = get_dist_wrt_ks(0.85, area)
+
+    synth_joints = joints.copy()
+
+    num_valid_joint = np.sum(joints[:, 2] > 0)
+
+    pf_scale = float(cfg.DATASET.get('posefix_scale', 1.0))
+    if pf_scale != 1.0:
+        assert 0.0 <= pf_scale <= 1.0, f'DATASET.posefix_scale phai trong [0, 1]: {pf_scale}'
+
+    N = 500
+    for j in range(num_kps):
+        coord_list = []
+        gt_coord = np.expand_dims(synth_joints[j, :2], 0)
+        coord_list.append(gt_coord)
+        swap_coord = near_joints[near_joints[:, j, 2] > 0, j, :2]
+        coord_list.append(swap_coord)
+        pair_exist = False
+        for (q, w) in kps_symmetry:
+            if j == q or j == w:
+                if j == q:
+                    pair_idx = w
+                else:
+                    pair_idx = q
+                pair_exist = True
+        if pair_exist and (joints[pair_idx, 2] > 0):
+            inv_coord = np.expand_dims(synth_joints[pair_idx, :2], 0)
+            coord_list.append(inv_coord)
+        else:
+            coord_list.append(np.empty([0, 2]))
+
+        if pair_exist:
+            swap_inv_coord = near_joints[near_joints[:, pair_idx, 2] > 0, pair_idx, :2]
+            coord_list.append(swap_inv_coord)
+        else:
+            coord_list.append(np.empty([0, 2]))
+
+        tot_coord_list = np.concatenate(coord_list)
+        n_src = len(tot_coord_list)
+        all_rows = np.arange(n_src)
+
+        # jitter error
+        synth_jitter = np.zeros(3)
+        if num_valid_joint <= 10:
+            if j == 0 or (j >= 13 and j <= 16):
+                jitter_prob = 0.15
+            elif (j >= 1 and j <= 10):
+                jitter_prob = 0.20
+            else:
+                jitter_prob = 0.25
+        else:
+            if j == 0 or (j >= 13 and j <= 16):
+                jitter_prob = 0.10
+            elif (j >= 1 and j <= 10):
+                jitter_prob = 0.15
+            else:
+                jitter_prob = 0.20
+        angle = np.random.uniform(0, 2 * math.pi, [N])
+        r = np.random.uniform(ks_85_dist[j], ks_50_dist[j], [N])
+        jitter_idx = 0
+        x = tot_coord_list[jitter_idx][0] + r * np.cos(angle)
+        y = tot_coord_list[jitter_idx][1] + r * np.sin(angle)
+        dist_mask = _far_mask(tot_coord_list, x, y, r[None, :], all_rows[all_rows != jitter_idx])
+        x = x[dist_mask]
+        y = y[dist_mask]
+        if len(x) > 0:
+            rand_idx = random.randrange(0, len(x))
+            synth_jitter[0] = x[rand_idx]
+            synth_jitter[1] = y[rand_idx]
+            synth_jitter[2] = 1
+
+        # miss error
+        synth_miss = np.zeros(3)
+        if num_valid_joint <= 5:
+            if j >= 0 and j <= 4:
+                miss_prob = 0.15
+            elif j == 5 or j == 6 or j == 15 or j == 16:
+                miss_prob = 0.20
+            else:
+                miss_prob = 0.25
+        elif num_valid_joint <= 10:
+            if j >= 0 and j <= 4:
+                miss_prob = 0.10
+            elif j == 5 or j == 6 or j == 15 or j == 16:
+                miss_prob = 0.13
+            else:
+                miss_prob = 0.15
+        else:
+            if j >= 0 and j <= 4:
+                miss_prob = 0.02
+            elif j == 5 or j == 6 or j == 15 or j == 16:
+                miss_prob = 0.05
+            else:
+                miss_prob = 0.10
+
+        miss_pt_list = []
+        for miss_idx in range(n_src):
+            angle = np.random.uniform(0, 2 * math.pi, [4 * N])
+            r = np.random.uniform(ks_50_dist[j], ks_10_dist[j], [4 * N])
+            x = tot_coord_list[miss_idx][0] + r * np.cos(angle)
+            y = tot_coord_list[miss_idx][1] + r * np.sin(angle)
+            dist_mask = _far_mask(tot_coord_list, x, y, ks_50_dist[j], all_rows[all_rows != miss_idx])
+            x = x[dist_mask]
+            y = y[dist_mask]
+            if len(x) > 0:
+                if miss_idx == 0:
+                    miss_pt_list.append(np.stack([x, y], 1))
+                else:
+                    rand_idx = np.random.choice(len(x), size=len(x) // 4)
+                    miss_pt_list.append(np.stack([np.take(x, rand_idx), np.take(y, rand_idx)], 1))
+        if len(miss_pt_list) > 0:
+            miss_pt_list = np.concatenate(miss_pt_list, axis=0).reshape(-1, 2)
+            rand_idx = random.randrange(0, len(miss_pt_list))
+            synth_miss[0] = miss_pt_list[rand_idx][0]
+            synth_miss[1] = miss_pt_list[rand_idx][1]
+            synth_miss[2] = 1
+
+        # inversion prob
+        synth_inv = np.zeros(3)
+        if j <= 4:
+            inv_prob = 0.01
+        elif j >= 5 and j <= 10:
+            inv_prob = 0.03
+        else:
+            inv_prob = 0.06
+        if pair_exist and joints[pair_idx, 2] > 0:
+            angle = np.random.uniform(0, 2 * math.pi, [N])
+            r = np.random.uniform(0, ks_50_dist[j], [N])
+            inv_idx = (len(coord_list[0]) + len(coord_list[1]))
+            x = tot_coord_list[inv_idx][0] + r * np.cos(angle)
+            y = tot_coord_list[inv_idx][1] + r * np.sin(angle)
+            dist_mask = _far_mask(tot_coord_list, x, y, r[None, :], all_rows[all_rows != inv_idx])
+            x = x[dist_mask]
+            y = y[dist_mask]
+            if len(x) > 0:
+                rand_idx = random.randrange(0, len(x))
+                synth_inv[0] = x[rand_idx]
+                synth_inv[1] = y[rand_idx]
+                synth_inv[2] = 1
+
+        # swap prob
+        synth_swap = np.zeros(3)
+        swap_exist = (len(coord_list[1]) > 0) or (len(coord_list[3]) > 0)
+        if (num_valid_joint <= 10 and num_overlap > 0) or (num_valid_joint <= 15 and num_overlap >= 3):
+            if j >= 0 and j <= 4:
+                swap_prob = 0.02
+            elif j >= 5 and j <= 10:
+                swap_prob = 0.15
+            else:
+                swap_prob = 0.10
+        else:
+            if j >= 0 and j <= 4:
+                swap_prob = 0.01
+            elif j >= 5 and j <= 10:
+                swap_prob = 0.06
+            else:
+                swap_prob = 0.03
+        if swap_exist:
+            k_inv = len(coord_list[0]) + len(coord_list[1])
+            ref_rows = all_rows[(all_rows == 0) | (all_rows == k_inv)]     # ban goc chi so voi nguon 0 va k_inv
+            swap_pt_list = []
+            for swap_idx in range(n_src):
+                if swap_idx == 0 or swap_idx == k_inv:
+                    continue
+                angle = np.random.uniform(0, 2 * math.pi, [N])
+                r = np.random.uniform(0, ks_50_dist[j], [N])
+                x = tot_coord_list[swap_idx][0] + r * np.cos(angle)
+                y = tot_coord_list[swap_idx][1] + r * np.sin(angle)
+                dist_mask = _far_mask(tot_coord_list, x, y, r[None, :], ref_rows)
+                x = x[dist_mask]
+                y = y[dist_mask]
+                if len(x) > 0:
+                    swap_pt_list.append(np.stack([x, y], 1))
+            if len(swap_pt_list) > 0:
+                swap_pt_list = np.concatenate(swap_pt_list, axis=0).reshape(-1, 2)
+                rand_idx = random.randrange(0, len(swap_pt_list))
+                synth_swap[0] = swap_pt_list[rand_idx][0]
+                synth_swap[1] = swap_pt_list[rand_idx][1]
+                synth_swap[2] = 1
+
+        if pf_scale != 1.0:
+            jitter_prob, miss_prob, inv_prob, swap_prob = (jitter_prob * pf_scale, miss_prob * pf_scale,
+                                                           inv_prob * pf_scale, swap_prob * pf_scale)
+
+        # good prob
+        synth_good = np.zeros(3)
+        good_prob = 1 - (jitter_prob + miss_prob + inv_prob + swap_prob)
+        assert good_prob >= 0
+        angle = np.random.uniform(0, 2 * math.pi, [N // 4])
+        r = np.random.uniform(0, ks_85_dist[j], [N // 4])
+        good_idx = 0
+        x = tot_coord_list[good_idx][0] + r * np.cos(angle)
+        y = tot_coord_list[good_idx][1] + r * np.sin(angle)
+        dist_mask = _far_mask(tot_coord_list, x, y, r[None, :], all_rows[all_rows != good_idx])
+        x = x[dist_mask]
+        y = y[dist_mask]
         if len(x) > 0:
             rand_idx = random.randrange(0, len(x))
             synth_good[0] = x[rand_idx]

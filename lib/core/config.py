@@ -161,6 +161,9 @@ cfg.DATASET.jotr_strict = False
 # Nhan xac suat 4 loai loi PoseFix (jitter, miss, inversion, swap) cua utils/posefix.synthesize_pose (mac dinh 1.0 = JOTR).
 # Vd 0.5: loi nhe hon cho lifter (lifter khong co anh de sua loi). Ap dung cho moi bo dung gt_posefix.
 cfg.DATASET.posefix_scale = 1.0
+# Ban PoseFix vector hoa (utils/posefix.synthesize_pose_fast): cung thu tu goi random -> giong tung bit ban goc, nhanh hon.
+# Chi bat sau khi tools/check_posefix_fast.py bao GIONG TUNG BIT.
+cfg.DATASET.posefix_fast = False
 cfg.DATASET.jotr_data_root = os.environ.get(
     'JOTR_DATA_ROOT',
     osp.abspath(osp.join(cfg.root_dir, 'data_final')),
