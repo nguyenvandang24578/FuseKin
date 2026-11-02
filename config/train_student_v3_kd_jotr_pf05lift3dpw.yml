@@ -1,6 +1,6 @@
 # =====================================================================
 # train_student_v3_kd_jotr_pf05lift3dpw (2026-11-02, nguoi dung xac nhan, THU NGHIEM): GIONG train_student_v3_kd_jotr.yml
-# (v3 KD, Teacher teacher_v3_jotr dung lai), CHI DOI du lieu 2D sang KIEU JOTR + lifter moi:
+# (v3 KD, Teacher teacher_v3_jotr_pf05 - train lai cung 2D), CHI DOI du lieu 2D sang KIEU JOTR + lifter moi:
 #   - lifter: finetune_difflifter_d512_e15_jotr_pf05_3dpw/best_epoch.bin (lifter DA THAY 3DPW train -> ca he thong KHONG con
 #     giao thuc JOTR; OC / PC danh gia TOAN BO theo yeu cau nguoi dung -> co ro ri qua lifter)
 #   - train 4 bo (KHONG 3dpw-train): 2D = GT + PoseFix kieu JOTR (posefix_scale 0.5 nhu lifter, jotr_strict), mask nhi phan, update_bbox
@@ -34,7 +34,7 @@ MODEL:
   difflift_steps: 1
   difflift_k: 1
   backbone_pretrained: 'spin'
-  TEACHER: './experiment/teacher_v3_jotr/checkpoint/best.pth.tar'
+  TEACHER: './experiment/teacher_v3_jotr_pf05/checkpoint/best.pth.tar'   # Teacher train cung 2D PoseFix 0.5 (2026-11-02)
   student_use_kd: True
   init_student_from_teacher: True
 
