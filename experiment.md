@@ -906,3 +906,15 @@ da co, cung giao thuc). Ket qua: chua co.
 - 2026-11-01 (nguoi dung xac nhan, THU): config/finetune_difflifter_d512_e15_jotr_pf05_3dpw.yaml = pf05 + 3dpw-train (2D OpenPose annotation, 3D SMPL GT), 20% moi bo (ratio), save_freq 1, select_metric mpjpe. KHONG con giao thuc JOTR.
 - KET QUA jotr_pf05_3dpw (them 3dpw-train, test cuoi, nguoi dung 2026-11-02; thieu dong 3dpw): H36M 54.36 / 42.71 | OC 54.53 / 38.70 | PC 76.99 / 59.60 | Crowd 69.69 / 50.99. CANH BAO RO RI: OC / PC gom ca sequence 3DPW train / val (muc truoc) -> so OC / PC TOAN BO bi ro ri khi train 3dpw-train; can danh gia lai voi pw3d_ocpc_test_only. Crowd = 2 seq validation (khong nam trong train) nhung chon ckpt theo 3dpw-val (chua Crowd) -> ro ri o buoc chon.
 - 2026-11-02: config/eval_lifter_jotr_pf05_3dpw_ocpctest.yaml (= yaml pf05_3dpw + pw3d_ocpc_test_only True) de danh gia OC / PC khong ro ri.
+- KET QUA danh gia KHONG RO RI lifter jotr_pf05_3dpw (best_epoch, eval_lifter_jotr_pf05_3dpw_ocpctest.yaml, nguoi dung 2026-11-02), MPJPE17 / MPJPE16 mm:
+  3dpw 77.47 / 82.31 (n 35515) | OC test-only 79.43 / 84.40 (n 4157; toan bo 54.53 -> ro ri ~25 mm) | PC test-only 40.98 / 43.54 (n 281, qua it de tin) | Crowd 69.69 / 74.04 (n 1923).
+  So pf05 khong 3dpw-train: 3dpw 81.43 (ep7) / 82.47 (ep5) -> -4 / -5 mm; Crowd 84.64 (ep5) -> -15 mm (Crowd khong nam trong train; chi chon ckpt theo 3dpw-val co ro ri). OC chua so duoc (tap con khac).
+  KHONG theo giao thuc JOTR (dung 3DPW train); OC / PC phai bao tren sequence test.
+
+## 51. Student v3 KD voi du lieu KIEU JOTR + lifter jotr_pf05_3dpw (nguoi dung xac nhan 2026-11-02, THU NGHIEM, da code, chua chay)
+- Code (mac dinh giu hanh vi cu): fusekin_unified ho tro 2D 'gt_posefix': Human36M / MuCo them _jotr_posefix_input (chep nhanh train JOTR, MuCo theo jotr_strict); MSCOCO / CrowdPose bo NotImplementedError, jotr_posefix ap dung ca fusekin_unified; keep_unified(require_halpe=False) cho gt_posefix (chi can SMPL). Backup: _to_delete/bak_student_jotr/.
+- YAML config/train_student_v3_kd_jotr_pf05lift3dpw.yml = v3 KD + 2D JOTR (posefix_scale 1.0, jotr_strict, update_bbox, mask nhi phan, posefix_fast) + test OpenPose / HHRNet + lifter jotr_pf05_3dpw best + ti le ~JOTR [0.305, 0.195, 0.404, 0.096] (uoc theo so mau lifter). Teacher dung lai teacher_v3_jotr (train bang Halpe).
+- Student train 4 bo (khong 3dpw-train) nhung lifter da thay 3DPW train -> KHONG giao thuc JOTR; OC / PC danh gia toan bo theo yeu cau nguoi dung (co ro ri qua lifter).
+- Kiem tra truoc khi train: tools/check_jotr_equivalence.py --cfg <yaml nay> --sets Human36M,MuCo,MSCOCO,CrowdPose.
+- 2026-11-02 (nguoi dung chon): ti le tron Student pf05lift3dpw doi ve [0.25, 0.25, 0.25, 0.25] (giong v3 KD, it yeu to doi hon).
+- 2026-11-02 (nguoi dung chon): Student pf05lift3dpw posefix_scale 1.0 -> 0.5 (dong bo voi lifter: lifter nam trong Student nhan cung 2D).

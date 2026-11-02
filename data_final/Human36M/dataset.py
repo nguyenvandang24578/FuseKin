@@ -70,8 +70,8 @@ class Human36M(torch.utils.data.Dataset):
         self.halpe26_conf_thr = cfg.DATASET.halpe26_conf_thr
         self.datalist = self.load_data()
         if cfg.DATASET.fusekin_unified and self.data_split == 'train' and not cfg.DATASET.lift_only:
-            assert self.h36m_2d_source == 'halpe26', 'fusekin_unified can DATASET.h36m_2d_source = halpe26'
-            self.datalist = keep_unified(self.datalist, 'Human36M')
+            # halpe26: 2D Halpe (cu); gt_posefix: 2D = GT + PoseFix GIONG JOTR (_jotr_posefix_input)
+            self.datalist = keep_unified(self.datalist, 'Human36M', require_halpe=(self.h36m_2d_source == 'halpe26'))
         print("h36m data len: ", len(self.datalist))
 
     def get_subsampling_ratio(self):
@@ -222,6 +222,37 @@ class Human36M(torch.utils.data.Dataset):
             print(msg + ' -> bo qua cac mau nay')
         return datalist
 
+    def _jotr_posefix_input(self, data, do_flip, img_shape, img2bb_trans):
+        """2D dau vao + mask GIONG HET nhanh train JOTR (dataloader/Human36M.py): lat, affine, trunc 3D tu GT,
+        PoseFix tren 13 khop chung COCO (near_joints rong). Tra ve H36M-17: xy (17, 2) khung hm, mask (17, 1).
+        Dung cho fusekin_unified (Student / Teacher); sua data['joint_img'] tai cho (data da deepcopy)."""
+        h36m_joint_img = data['joint_img']
+        h36m_joint_valid = data['joint_valid']
+        if do_flip:
+            h36m_joint_img[:,0] = img_shape[1] - 1 - h36m_joint_img[:,0]
+            for pair in self.h36m_flip_pairs:
+                h36m_joint_img[pair[0],:], h36m_joint_img[pair[1],:] = h36m_joint_img[pair[1],:].copy(), h36m_joint_img[pair[0],:].copy()
+                h36m_joint_valid[pair[0],:], h36m_joint_valid[pair[1],:] = h36m_joint_valid[pair[1],:].copy(), h36m_joint_valid[pair[0],:].copy()
+        h36m_joint_img_xy1 = np.concatenate((h36m_joint_img[:,:2], np.ones_like(h36m_joint_img[:,:1])),1)
+        h36m_joint_img[:,:2] = np.dot(img2bb_trans, h36m_joint_img_xy1.transpose(1,0)).transpose(1,0)
+        input_h36m_joint_img = h36m_joint_img.copy()
+        h36m_joint_img[:,0] = h36m_joint_img[:,0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+        h36m_joint_img[:,1] = h36m_joint_img[:,1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+        h36m_joint_img[:,2] = h36m_joint_img[:,2] - h36m_joint_img[self.h36m_root_joint_idx][2] # root-relative
+        h36m_joint_img[:,2] = (h36m_joint_img[:,2] / (cfg.bbox_3d_size * 1000  / 2) + 1)/2. * cfg.output_hm_shape[0]
+        h36m_joint_trunc = h36m_joint_valid * ((h36m_joint_img[:,0] >= 0) * (h36m_joint_img[:,0] < cfg.output_hm_shape[2]) * \
+                    (h36m_joint_img[:,1] >= 0) * (h36m_joint_img[:,1] < cfg.output_hm_shape[1]) * \
+                    (h36m_joint_img[:,2] >= 0) * (h36m_joint_img[:,2] < cfg.output_hm_shape[0])).reshape(-1,1).astype(np.float32)
+        # apply PoseFix
+        input_h36m_joint_img[:, 2] = 1  # joint valid
+        tmp_joint_img = transform_joint_to_other_db(input_h36m_joint_img, self.h36m_joints_name, self.coco_joints_name)
+        tmp_joint_img = replace_joint_img(tmp_joint_img, data['tight_bbox'], data['near_joints'], data['num_overlap'], img2bb_trans)
+        tmp_joint_img = transform_joint_to_other_db(tmp_joint_img, self.coco_joints_name, self.h36m_joints_name)
+        input_h36m_joint_img[self.h36m_coco_common_jidx, :2] = tmp_joint_img[self.h36m_coco_common_jidx, :2]
+        input_h36m_joint_img[:, 0] = input_h36m_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+        input_h36m_joint_img[:, 1] = input_h36m_joint_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+        return input_h36m_joint_img[:, :2].astype(np.float32), h36m_joint_trunc.astype(np.float32)
+
     def _halpe_input(self, data, do_flip, img_shape, img2bb_trans):
         """Halpe-26 (da doi H36M-17, pixel anh goc) -> 2D dau vao trong khung output_hm_shape.
         Lat + affine GIONG khop GT o nhanh train. Tra ve xy (17, 2), mask (17, 1):
@@ -336,8 +367,11 @@ class Human36M(torch.utils.data.Dataset):
             img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split)
             img = self.transform(img.astype(np.float32))/255.
         if cfg.DATASET.fusekin_unified and self.data_split == 'train' and not lift_only:
-            # Mau FuseKin thong nhat (giong 3DPW train): 2D Halpe, GT 3D / mesh tu SMPL NeuralAnnot (camera that)
-            xy, mask = self._halpe_input(data, do_flip, img_shape, img2bb_trans)
+            # Mau FuseKin thong nhat (giong 3DPW train): 2D Halpe hoac GT + PoseFix (JOTR), GT 3D / mesh tu SMPL
+            if self.h36m_2d_source == 'gt_posefix':
+                xy, mask = self._jotr_posefix_input(data, do_flip, img_shape, img2bb_trans)
+            else:
+                xy, mask = self._halpe_input(data, do_flip, img_shape, img2bb_trans)
             mesh, _, pose, shape = self.get_smpl_coord(smpl_param, cam_param, do_flip, img_shape)
             return fusekin_train_sample(self, img, img2bb_trans, rot, do_flip, bbox, img_shape, img_path,
                                         xy, mask, mesh / 1000., pose, shape, cam_param, cam_param)

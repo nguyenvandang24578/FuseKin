@@ -77,8 +77,8 @@ class MuCo(torch.utils.data.Dataset):
         self.halpe26_conf_thr = cfg.DATASET.halpe26_conf_thr
         self.datalist = self.load_data()
         if cfg.DATASET.fusekin_unified and self.data_split == 'train' and not cfg.DATASET.lift_only:
-            assert self.muco_2d_source == 'halpe26', 'fusekin_unified can DATASET.muco_2d_source = halpe26'
-            self.datalist = keep_unified(self.datalist, 'MuCo')
+            # halpe26: 2D Halpe (cu); gt_posefix: 2D = GT + PoseFix GIONG JOTR (_jotr_posefix_input)
+            self.datalist = keep_unified(self.datalist, 'MuCo', require_halpe=(self.muco_2d_source == 'halpe26'))
         print("muco data len: ", len(self.datalist))
 
     def load_data(self):
@@ -178,6 +178,50 @@ class MuCo(torch.utils.data.Dataset):
         if n_halpe_missing:
             print(f"[MuCo] {n_halpe_missing} mau khong co Halpe-26 trong file npz -> bo qua")
         return datalist
+
+    def _jotr_posefix_input(self, data, do_flip, img_shape, img2bb_trans):
+        """2D dau vao + mask GIONG HET nhanh train JOTR (dataloader/MuCo.py): lat, affine, near_joints (score 1,
+        khong lat), trunc 3D tu GT, PoseFix tren 12 khop chung COCO. Doi sang H36M-17 theo ten (jotr_strict: ten goc
+        MuCo nhu JOTR; khong: alias Thorax->Neck...). Tra ve xy (17, 2) khung hm, mask (17, 1). Dung cho fusekin_unified."""
+        muco_joint_img = data['joint_img']
+        muco_joint_valid = data['joint_valid']
+        if do_flip:
+            muco_joint_img[:,0] = img_shape[1] - 1 - muco_joint_img[:,0]
+            for pair in self.muco_flip_pairs:
+                muco_joint_img[pair[0],:], muco_joint_img[pair[1],:] = muco_joint_img[pair[1],:].copy(), muco_joint_img[pair[0],:].copy()
+                muco_joint_valid[pair[0],:], muco_joint_valid[pair[1],:] = muco_joint_valid[pair[1],:].copy(), muco_joint_valid[pair[0],:].copy()
+        muco_joint_img_xy1 = np.concatenate((muco_joint_img[:,:2], np.ones_like(muco_joint_img[:,:1])),1)
+        muco_joint_img[:,:2] = np.dot(img2bb_trans, muco_joint_img_xy1.transpose(1,0)).transpose(1,0)
+        if len(data['near_joints']) > 0:
+            near_joint_list = []
+            for nj in data['near_joints']:
+                near_joint = np.ones((self.coco_joint_num, 3), dtype=np.float32)
+                nj_xy1 = np.concatenate((nj[:, :2], np.ones_like(nj[:, :1])), axis=1)
+                near_joint[:, :2] = np.dot(img2bb_trans, nj_xy1.transpose(1,0)).transpose(1,0)
+                near_joint_list.append(near_joint)
+            near_joints = np.asarray(near_joint_list, dtype=np.float32)
+        else:
+            near_joints = np.zeros((1, self.coco_joint_num, 3), dtype=np.float32)
+        input_muco_joint_img = muco_joint_img.copy()
+        muco_joint_img[:,0] = muco_joint_img[:,0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+        muco_joint_img[:,1] = muco_joint_img[:,1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+        muco_joint_img[:,2] = muco_joint_img[:,2] - muco_joint_img[self.muco_root_joint_idx][2] # root-relative
+        muco_joint_img[:,2] = (muco_joint_img[:,2] / (cfg.bbox_3d_size * 1000 / 2) + 1)/2. * cfg.output_hm_shape[0]
+        muco_joint_trunc = muco_joint_valid * ((muco_joint_img[:,0] >= 0) * (muco_joint_img[:,0] < cfg.output_hm_shape[2]) * \
+                    (muco_joint_img[:,1] >= 0) * (muco_joint_img[:,1] < cfg.output_hm_shape[1]) * \
+                    (muco_joint_img[:,2] >= 0) * (muco_joint_img[:,2] < cfg.output_hm_shape[0])).reshape(-1,1).astype(np.float32)
+        # apply PoseFix
+        input_muco_joint_img[:, 2] = 1 # joint valid
+        tmp_joint_img = transform_joint_to_other_db(input_muco_joint_img, self.muco_joints_name, self.coco_joints_name)
+        tmp_joint_img = replace_joint_img(tmp_joint_img, data['tight_bbox'], near_joints, data['num_overlap'], img2bb_trans)
+        tmp_joint_img = transform_joint_to_other_db(tmp_joint_img, self.coco_joints_name, self.muco_joints_name)
+        input_muco_joint_img[self.muco_coco_common_jidx, :2] = tmp_joint_img[self.muco_coco_common_jidx, :2]
+        input_muco_joint_img[:, 0] = input_muco_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+        input_muco_joint_img[:, 1] = input_muco_joint_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+        names = self.muco_joints_name if cfg.DATASET.get('jotr_strict', False) else self.muco_joints_name_h36m_alias
+        xy = transform_joint_to_other_db(input_muco_joint_img, names, self.h36m_joints_name)[:, :2]
+        mask = transform_joint_to_other_db(muco_joint_trunc, names, self.h36m_joints_name)
+        return xy.astype(np.float32), mask.astype(np.float32)
 
     def _halpe_input(self, data, do_flip, img_shape, img2bb_trans):
         """Halpe-26 (da doi H36M-17, pixel anh goc) -> 2D dau vao khung output_hm_shape (giong Human36M._halpe_input).
@@ -298,8 +342,11 @@ class MuCo(torch.utils.data.Dataset):
             img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split)
             img = self.transform(img.astype(np.float32))/255.
         if cfg.DATASET.fusekin_unified and self.data_split == 'train' and not lift_only:
-            # Mau FuseKin thong nhat (giong 3DPW train): 2D Halpe, GT 3D / mesh tu SMPL NeuralAnnot (camera that)
-            xy, mask = self._halpe_input(data, do_flip, img_shape, img2bb_trans)
+            # Mau FuseKin thong nhat (giong 3DPW train): 2D Halpe hoac GT + PoseFix (JOTR), GT 3D / mesh tu SMPL
+            if self.muco_2d_source == 'gt_posefix':
+                xy, mask = self._jotr_posefix_input(data, do_flip, img_shape, img2bb_trans)
+            else:
+                xy, mask = self._halpe_input(data, do_flip, img_shape, img2bb_trans)
             mesh, _, pose, shape = self.get_smpl_coord(smpl_param, cam_param, do_flip, img_shape)
             return fusekin_train_sample(self, img, img2bb_trans, rot, do_flip, bbox, img_shape, img_path,
                                         xy, mask, mesh / 1000., pose, shape, cam_param, cam_param)

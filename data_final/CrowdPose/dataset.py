@@ -66,9 +66,9 @@ class CrowdPose(torch.utils.data.Dataset):
         self.crowdpose_2d_source = cfg.DATASET.get('crowdpose_2d_source', 'halpe26')
         if self.crowdpose_2d_source not in ('halpe26', 'gt_posefix'):
             raise ValueError(f"cfg.DATASET.crowdpose_2d_source khong hop le: {self.crowdpose_2d_source}")
-        self.jotr_posefix = (self.crowdpose_2d_source == 'gt_posefix' and cfg.DATASET.lift_only and self.data_split == 'train')
-        if self.crowdpose_2d_source == 'gt_posefix' and cfg.DATASET.fusekin_unified and not cfg.DATASET.lift_only:
-            raise NotImplementedError('crowdpose_2d_source gt_posefix chua ho tro fusekin_unified (Student) -> chi dung cho lifter')
+        # gt_posefix dung cho ca lifter (lift_only) va Student / Teacher (fusekin_unified)
+        self.jotr_posefix = (self.crowdpose_2d_source == 'gt_posefix' and (cfg.DATASET.lift_only or cfg.DATASET.fusekin_unified)
+                             and self.data_split == 'train')
 
         self.datalist = self.load_data()
         if (cfg.DATASET.lift_only or cfg.DATASET.fusekin_unified) and self.data_split == 'train':
@@ -279,8 +279,11 @@ class CrowdPose(torch.utils.data.Dataset):
         if cfg.DATASET.fusekin_unified and self.data_split == 'train':
             # Mau FuseKin thong nhat: 2D Halpe; pseudo-GT NeuralAnnot xoay tu camera ao sang camera uoc luong
             na = data['neural_annot_result']
-            xy, mask = halpe_to_crop(data['halpe_h36m'], do_flip, img_shape, img2bb_trans, self.halpe26_conf_thr)
-            mask = gt_mask_halpe(self, data, xy, mask, do_flip, img_shape, img2bb_trans)
+            if self.jotr_posefix:
+                xy, mask = self._jotr_posefix_input(data, do_flip, img_shape, img2bb_trans)   # GT + PoseFix (JOTR)
+            else:
+                xy, mask = halpe_to_crop(data['halpe_h36m'], do_flip, img_shape, img2bb_trans, self.halpe26_conf_thr)
+                mask = gt_mask_halpe(self, data, xy, mask, do_flip, img_shape, img2bb_trans)
             mesh, _, pose, shape = self.get_smpl_coord(na['smpl_param'], na['cam_param'], do_flip, img_shape)
             return fusekin_train_sample(self, img, img2bb_trans, rot, do_flip, bbox, img_shape, img_path,
                                         xy, mask, mesh, pose, shape, na['cam_param'], est_cam(img_shape),

@@ -76,8 +76,11 @@ def fusekin_train_sample(ds, img, img2bb_trans, rot, do_flip, bbox, img_shape, i
     return inputs, targets, meta
 
 
-def keep_unified(datalist, name, param_key='smpl_param'):
-    """fusekin_unified: chi giu mau co SMPL (pseudo-)GT va Halpe-26 (Teacher can GT 3D cho moi mau)."""
-    out = [d for d in datalist if d.get(param_key) is not None and d.get('halpe_h36m') is not None]
-    print(f'[{name} fusekin_unified] giu {len(out)} / {len(datalist)} mau (co SMPL + Halpe-26)')
+def keep_unified(datalist, name, param_key='smpl_param', require_halpe=True):
+    """fusekin_unified: chi giu mau co SMPL (pseudo-)GT (Teacher can GT 3D cho moi mau) va Halpe-26
+    (require_halpe=False khi 2D = GT + PoseFix kieu JOTR, khong can Halpe)."""
+    out = [d for d in datalist if d.get(param_key) is not None and
+           (not require_halpe or d.get('halpe_h36m') is not None)]
+    print(f'[{name} fusekin_unified] giu {len(out)} / {len(datalist)} mau (co SMPL' +
+          (' + Halpe-26)' if require_halpe else ', 2D = GT + PoseFix)'))
     return out
