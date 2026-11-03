@@ -385,6 +385,9 @@ cfg.SELECTOR.val_max_samples = 2000
 # Du lieu, batch, ti le bo, lich lr dung chung cfg.DATASET / cfg.TRAIN (base.get_dataloader); thu muc = --exp_name.
 cfg.REFINE2D = edict()
 cfg.REFINE2D.backbone_pretrained = 'spin'   # 'spin' | 'imagenet'
+# Muc tieu 2D: 'clean' = GT annotation truoc PoseFix (can DATASET.return_clean_2d) | 'mesh' = H36M-17 tinh tu mesh GT
+# chieu vao crop (targets orig_joint_img, mask orig_joint_trunc) -> cung dinh nghia khop voi GT 3D benchmark
+cfg.REFINE2D.target = 'clean'
 cfg.REFINE2D.bb_lr_scale = 0.1             # lr backbone = TRAIN.lr * bb_lr_scale (head dung TRAIN.lr)
 cfg.REFINE2D.bb_bn_eval = True             # backbone giu thong ke BN pretrain (giong [A]); head BN train binh thuong
 cfg.REFINE2D.heat_sigma = 2.0              # sigma Gauss (o luoi 64) cho heatmap dau vao va phan bo muc tieu

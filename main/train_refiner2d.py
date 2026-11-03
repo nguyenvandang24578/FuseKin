@@ -2,8 +2,11 @@
 main/train_refiner2d.py -- Train Refiner 2D (lib/models/refiner2d.py) doc lap, KHONG dung lifter / Teacher / Student.
 
 Du lieu: DATASET.train_list (giao thuc JOTR: Human36M + MuCo + MSCOCO + CrowdPose, khong 3DPW), mau fusekin_unified
-voi 2D dau vao = GT + PoseFix kieu JOTR (*_2d_source 'gt_posefix'), muc tieu = GT 2D TRUOC PoseFix
-(targets['joint_img_clean'], can DATASET.return_clean_2d = True), mask = khop GT trong khung crop.
+voi 2D dau vao = GT + PoseFix kieu JOTR (*_2d_source 'gt_posefix'). Muc tieu theo REFINE2D.target:
+  'clean' : GT 2D annotation TRUOC PoseFix (targets['joint_img_clean'], can DATASET.return_clean_2d), mask = khop GT
+            trong khung (= joints_mask)
+  'mesh'  : 2D H36M-17 tinh tu mesh GT (H36M regressor x mesh, chieu vao crop; targets['orig_joint_img']), mask =
+            meta orig_joint_trunc -> CUNG dinh nghia khop voi GT 3D cua benchmark (2026-11-03)
 Luc train bo ngau nhien khop dau vao (REFINE2D.input_drop_prob) de Refiner hoc dien khop detector bo sot.
 Lay mau / batch / lich lr theo cfg.TRAIN (base.get_dataloader). lr backbone = TRAIN.lr * REFINE2D.bb_lr_scale.
 Moi epoch: danh gia nhanh 2D tren REFINE2D.eval_sets (OpenPose / HHRNet nhu benchmark; chi LOG, khong chon ckpt).
@@ -37,7 +40,10 @@ from tqdm import tqdm
 
 from core.config import cfg, update_config
 update_config(args.cfg)
-assert cfg.DATASET.get('return_clean_2d', False), 'Refiner 2D can DATASET.return_clean_2d: True (muc tieu GT 2D sach)'
+TARGET = str(cfg.REFINE2D.get('target', 'clean'))
+assert TARGET in ('clean', 'mesh'), f"REFINE2D.target khong hop le: {TARGET} (chon 'clean' | 'mesh')"
+if TARGET == 'clean':
+    assert cfg.DATASET.get('return_clean_2d', False), "target 'clean' can DATASET.return_clean_2d: True"
 assert cfg.DATASET.fusekin_unified, 'Refiner 2D dung mau fusekin_unified (anh + 2D + GT)'
 cfg.DATASET.pw3d_test_gt2d = True          # tap danh gia 3DPW tra GT 2D
 
@@ -101,21 +107,26 @@ def main():
             img = inputs['img'].to(DEVICE).float()
             B = img.shape[0]
             j2 = inputs['joints'].to(DEVICE).float()[..., :2]                     # GT + PoseFix, [-1,1]
-            jm = inputs['joints_mask'].to(DEVICE).float().reshape(B, 17)          # = khop GT trong khung
-            clean = targets['joint_img_clean'].to(DEVICE).float() / hm * 2 - 1    # GT 2D sach [-1,1]
-            valid = (jm > 0).float()
-            drop = (torch.rand_like(jm) < float(R.input_drop_prob)).float() * valid
+            jm = inputs['joints_mask'].to(DEVICE).float().reshape(B, 17)          # = khop GT (annotation) trong khung
+            if TARGET == 'mesh':
+                # 2D H36M-17 tu mesh GT (cung dinh nghia khop GT 3D benchmark); mask = khop do trong khung crop
+                tgt = targets['orig_joint_img'].to(DEVICE).float()[..., :2] / hm * 2 - 1
+                valid = (meta['orig_joint_trunc'].to(DEVICE).float().reshape(B, 17) > 0).float()
+            else:
+                tgt = targets['joint_img_clean'].to(DEVICE).float() / hm * 2 - 1  # GT 2D annotation sach [-1,1]
+                valid = (jm > 0).float()
+            drop = (torch.rand_like(jm) < float(R.input_drop_prob)).float() * (jm > 0).float()
             jm_in = jm * (1 - drop)                                               # khop bi bo: van giam sat
             out = model(img, j2 * (jm_in > 0).unsqueeze(-1), jm_in.unsqueeze(-1))
-            loss, parts = refiner_losses(out, clean, valid, sigma=float(R.heat_sigma), w_coord=float(R.w_coord),
+            loss, parts = refiner_losses(out, tgt, valid, sigma=float(R.heat_sigma), w_coord=float(R.w_coord),
                                          w_heat=float(R.w_heat), w_nll=float(R.w_nll))
             opt.zero_grad()
             loss.backward()
             opt.step()
 
             with torch.no_grad():
-                keep = valid * (1 - drop)
-                in_err = (torch.norm(j2 - clean, dim=-1) * keep).sum() / keep.sum().clamp_min(1) * 128.0
+                keep = valid * (jm_in > 0).float()                                # loi dau vao so voi CUNG muc tieu
+                in_err = (torch.norm(j2 - tgt, dim=-1) * keep).sum() / keep.sum().clamp_min(1) * 128.0
             run['loss'] += float(loss)
             for k in ('coord', 'heat', 'nll', 'err_px'):
                 run[k] += parts[k]
