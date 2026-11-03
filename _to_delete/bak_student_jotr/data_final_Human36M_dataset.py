@@ -1,0 +1,613 @@
+import os
+import os.path as osp
+import numpy as np
+import torch
+import cv2
+import random
+import json
+import math
+import copy
+import transforms3d
+from pycocotools.coco import COCO
+from core.config import cfg
+import lmdb
+from utils.posefix import replace_joint_img
+from utils.cam_bbox import cam_bbox_feat
+from utils.fusekin_sample import fusekin_train_sample, keep_unified
+from utils.smpl import SMPL
+from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch_image, augmentation, load_img_from_lmdb, augmentation_noimg
+from utils.transforms import world2cam, cam2pixel, pixel2cam, rigid_align, transform_joint_to_other_db
+from utils.h36m_adapter import halpe26_to_human36m
+from utils.lift_pseudo3d import gt_mask_halpe
+# from utils.vis import vis_mesh, save_obj
+
+
+class Human36M(torch.utils.data.Dataset):
+    def __init__(self, transform, data_split):
+        print('='*20, 'Human36M', '='*20)
+        self.transform = transform
+        self.data_split = data_split
+        self.img_dir = osp.join(cfg.DATASET.jotr_data_root, 'Human36M', 'images')
+        self.annot_path = osp.join(cfg.DATASET.jotr_data_root, 'Human36M', 'annotations')
+        self.human_bbox_root_dir = osp.join(cfg.DATASET.jotr_data_root, 'Human36M', 'rootnet_output', 'bbox_root_human36m_output.json')
+        self.action_name = ['Directions', 'Discussion', 'Eating', 'Greeting', 'Phoning', 'Posing', 'Purchases', 'Sitting', 'SittingDown', 'Smoking', 'Photo', 'Waiting', 'Walking', 'WalkDog', 'WalkTogether']
+        self.fitting_thr = 25 # milimeter
+
+        # COCO joint set
+        self.coco_joint_num = 17  # original: 17
+        self.coco_joints_name = (
+        'Nose', 'L_Eye', 'R_Eye', 'L_Ear', 'R_Ear', 'L_Shoulder', 'R_Shoulder', 'L_Elbow', 'R_Elbow', 'L_Wrist',
+        'R_Wrist', 'L_Hip', 'R_Hip', 'L_Knee', 'R_Knee', 'L_Ankle', 'R_Ankle')
+
+        # H36M joint set
+        self.h36m_joint_num = 17
+        self.h36m_joints_name = ('Pelvis', 'R_Hip', 'R_Knee', 'R_Ankle', 'L_Hip', 'L_Knee', 'L_Ankle', 'Torso', 'Neck', 'Nose', 'Head_top', 'L_Shoulder', 'L_Elbow', 'L_Wrist', 'R_Shoulder', 'R_Elbow', 'R_Wrist')
+        self.h36m_flip_pairs = ( (1, 4), (2, 5), (3, 6), (14, 11), (15, 12), (16, 13) )
+        self.h36m_skeleton = ( (0, 7), (7, 8), (8, 9), (9, 10), (8, 11), (11, 12), (12, 13), (8, 14), (14, 15), (15, 16), (0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 6) )
+        self.h36m_root_joint_idx = self.h36m_joints_name.index('Pelvis')
+        self.h36m_eval_joint = (1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13, 14, 15, 16)
+        self.h36m_joint_regressor = np.load(osp.join(cfg.DATASET.jotr_data_root, 'Human36M', 'J_regressor_h36m_correct.npy'))
+        self.h36m_coco_common_jidx = (1, 2, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 16)  # for posefix, exclude pelvis
+
+        # SMPL joint set
+        self.smpl = SMPL()
+        self.face = self.smpl.face
+        self.joint_regressor = self.smpl.joint_regressor
+        self.vertex_num = self.smpl.vertex_num
+        self.joint_num = self.smpl.joint_num
+        self.joints_name = self.smpl.joints_name
+        self.flip_pairs = self.smpl.flip_pairs
+        self.skeleton = self.smpl.skeleton
+        self.root_joint_idx = self.smpl.root_joint_idx
+        self.face_kps_vertex = self.smpl.face_kps_vertex
+
+        # Nguon 2D dau vao (cfg.DATASET.h36m_2d_source):
+        #   'gt_posefix' (mac dinh, giong JOTR): train = GT 2D + nhieu PoseFix, test = GT 2D sach
+        #   'halpe26'   : 2D RTMPose Halpe-26 tu tools/extract_halpe26_h36m.py (train + test), bo PoseFix
+        self.h36m_2d_source = cfg.DATASET.get('h36m_2d_source', 'gt_posefix')
+        if self.h36m_2d_source not in ('gt_posefix', 'halpe26'):
+            raise ValueError(f"cfg.DATASET.h36m_2d_source khong hop le: {self.h36m_2d_source}")
+        self.halpe26_conf_thr = cfg.DATASET.halpe26_conf_thr
+        self.datalist = self.load_data()
+        if cfg.DATASET.fusekin_unified and self.data_split == 'train' and not cfg.DATASET.lift_only:
+            assert self.h36m_2d_source == 'halpe26', 'fusekin_unified can DATASET.h36m_2d_source = halpe26'
+            self.datalist = keep_unified(self.datalist, 'Human36M')
+        print("h36m data len: ", len(self.datalist))
+
+    def get_subsampling_ratio(self):
+        if self.data_split == 'train':
+            return 5
+        elif self.data_split == 'test':
+            return 64
+        else:
+            assert 0, print('Unknown subset')
+
+    def get_subject(self):
+        if self.data_split == 'train':
+            # subject = [1]
+            subject = [1,5,6,7,8]
+        elif self.data_split == 'test':
+            subject = [9,11]
+        else:
+            assert 0, print("Unknown subset")
+
+        return subject
+    
+    def load_data(self):
+        subject_list = self.get_subject()
+        sampling_ratio = self.get_subsampling_ratio()
+        
+        # aggregate annotations from each subject
+        db = COCO()
+        cameras = {}
+        joints = {}
+        smpl_params = {}
+        for subject in subject_list:
+            # data load
+            with open(osp.join(self.annot_path, 'Human36M_subject' + str(subject) + '_data.json'),'r') as f:
+                annot = json.load(f)
+            if len(db.dataset) == 0:
+                for k,v in annot.items():
+                    db.dataset[k] = v
+            else:
+                for k,v in annot.items():
+                    db.dataset[k] += v
+            # camera load
+            with open(osp.join(self.annot_path, 'Human36M_subject' + str(subject) + '_camera.json'),'r') as f:
+                cameras[str(subject)] = json.load(f)
+            # joint coordinate load
+            with open(osp.join(self.annot_path, 'Human36M_subject' + str(subject) + '_joint_3d.json'),'r') as f:
+                joints[str(subject)] = json.load(f)
+            # smpl parameter load
+            with open(osp.join(self.annot_path, 'Human36M_subject' + str(subject) + '_smpl_param.json'),'r') as f:
+                smpl_params[str(subject)] = json.load(f)
+        db.createIndex()
+
+        if self.data_split == 'test' and not cfg.use_gt_info:
+            print("Get bounding box and root from " + self.human_bbox_root_dir)
+            bbox_root_result = {}
+            with open(self.human_bbox_root_dir) as f:
+                annot = json.load(f)
+            for i in range(len(annot)):
+                bbox_root_result[str(annot[i]['image_id'])] = {'bbox': np.array(annot[i]['bbox']), 'root': np.array(annot[i]['root_cam'])}
+        else:
+            print("Get bounding box and root from groundtruth")
+
+        halpe_index, halpe_kpts, n_halpe_missing = None, None, 0
+        if self.h36m_2d_source == 'halpe26':
+            halpe_dir = cfg.DATASET.get('h36m_halpe26_dir', '') or osp.join(cfg.DATASET.jotr_data_root, 'Human36M')
+            halpe_path = osp.join(halpe_dir, f'Human36M_{self.data_split}_halpe26.npz')
+            if not osp.isfile(halpe_path):
+                raise FileNotFoundError(f"{halpe_path} khong ton tai. Chay tools/extract_halpe26_h36m.py --splits {self.data_split}")
+            hz = np.load(halpe_path)
+            halpe_kpts = hz['kpts']
+            halpe_index = {str(n): i for i, n in enumerate(hz['file_name'])}
+            print(f"Load Halpe-26 input: {halpe_path} ({len(halpe_index)} nguoi)")
+
+        datalist = []
+        for aid in db.anns.keys():
+            ann = db.anns[aid]
+            image_id = ann['image_id']
+            img = db.loadImgs(image_id)[0]
+            img_path = osp.join(self.img_dir, img['file_name'])
+            img_shape = (img['height'], img['width'])
+            
+            # check subject and frame_idx
+            frame_idx = img['frame_idx'];
+            if frame_idx % sampling_ratio != 0:
+                continue
+
+            # check smpl parameter exist
+            subject = img['subject']; action_idx = img['action_idx']; subaction_idx = img['subaction_idx']; frame_idx = img['frame_idx'];
+            try:
+                smpl_param = smpl_params[str(subject)][str(action_idx)][str(subaction_idx)][str(frame_idx)]
+            except KeyError:
+                smpl_param = None
+
+            # camera parameter
+            cam_idx = img['cam_idx']
+            cam_param = cameras[str(subject)][str(cam_idx)]
+            R,t,f,c = np.array(cam_param['R'], dtype=np.float32), np.array(cam_param['t'], dtype=np.float32), np.array(cam_param['f'], dtype=np.float32), np.array(cam_param['c'], dtype=np.float32)
+            cam_param = {'R': R, 't': t, 'focal': f, 'princpt': c}
+            
+            # only use frontal camera following previous works (HMR and SPIN)
+            if self.data_split == 'test' and str(cam_idx) != '4':
+                continue
+                
+            # project world coordinate to cam, image coordinate space
+            joint_world = np.array(joints[str(subject)][str(action_idx)][str(subaction_idx)][str(frame_idx)], dtype=np.float32)
+            joint_cam = world2cam(joint_world, R, t)
+            joint_img = cam2pixel(joint_cam, f, c)
+            joint_valid = np.ones((self.h36m_joint_num,1))
+
+            tight_bbox = np.array(ann['bbox'])
+            if self.data_split == 'test' and not cfg.use_gt_info:
+                bbox = bbox_root_result[str(image_id)]['bbox'] # bbox should be aspect ratio preserved-extended. It is done in RootNet.
+                root_joint_depth = bbox_root_result[str(image_id)]['root'][2]
+            else:
+                bbox = process_bbox(np.array(ann['bbox']), img['width'], img['height'])
+                if bbox is None: continue
+                root_joint_depth = joint_cam[self.h36m_root_joint_idx][2]
+    
+            halpe_h36m = None
+            if halpe_index is not None:
+                hi = halpe_index.get(img['file_name'])
+                if hi is None:
+                    n_halpe_missing += 1   # anh khong doc duoc luc trich -> bo mau (test: bao loi ben duoi)
+                    continue
+                halpe_h36m = halpe26_to_human36m(halpe_kpts[hi])   # (17, 3) pixel anh goc + score
+
+            datalist.append({
+                'img_path': img_path,
+                'img_id': image_id,
+                'img_shape': img_shape,
+                'bbox': bbox,
+                'tight_bbox': tight_bbox,
+                'joint_img': joint_img,
+                'joint_cam': joint_cam,
+                'joint_valid': joint_valid,
+                'smpl_param': smpl_param,
+                'root_joint_depth': root_joint_depth,
+                'cam_param': cam_param,
+                'halpe_h36m': halpe_h36m,
+                'num_overlap': 0,
+                'near_joints': np.zeros((1, self.coco_joint_num, 3), dtype=np.float32)  # coco_joint_num
+
+            })
+            
+        if n_halpe_missing:
+            msg = f"[Human36M {self.data_split}] {n_halpe_missing} mau khong co Halpe-26 trong file npz"
+            if self.data_split == 'test':
+                raise KeyError(msg + ' -> tap test bi thieu, trich lai (tools/extract_halpe26_h36m.py --splits test)')
+            print(msg + ' -> bo qua cac mau nay')
+        return datalist
+
+    def _halpe_input(self, data, do_flip, img_shape, img2bb_trans):
+        """Halpe-26 (da doi H36M-17, pixel anh goc) -> 2D dau vao trong khung output_hm_shape.
+        Lat + affine GIONG khop GT o nhanh train. Tra ve xy (17, 2), mask (17, 1):
+        mask = 1 khi score > halpe26_conf_thr va khop nam trong khung crop."""
+        k = data['halpe_h36m'].copy()
+        if do_flip:
+            k[:, 0] = img_shape[1] - 1 - k[:, 0]
+            for a, b in self.h36m_flip_pairs:
+                k[a], k[b] = k[b].copy(), k[a].copy()
+        xy1 = np.concatenate((k[:, :2], np.ones_like(k[:, :1])), 1)
+        xy = np.dot(img2bb_trans, xy1.transpose(1, 0)).transpose(1, 0)[:, :2]
+        xy[:, 0] = xy[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+        xy[:, 1] = xy[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+        inside = (xy[:, 0] >= 0) * (xy[:, 0] < cfg.output_hm_shape[2]) * (xy[:, 1] >= 0) * (xy[:, 1] < cfg.output_hm_shape[1])
+        mask = ((k[:, 2] > self.halpe26_conf_thr) * inside).reshape(-1, 1).astype(np.float32)
+        if cfg.DATASET.lift_soft_conf:
+            # giu score lien tuc cho khop hop le (tin hieu che khuat cho lifter)
+            mask = mask * np.clip(k[:, 2:3], 0.0, 1.0).astype(np.float32)
+        mask = gt_mask_halpe(self, data, xy, mask, do_flip, img_shape, img2bb_trans)
+        return xy.astype(np.float32), mask
+
+    def get_smpl_coord(self, smpl_param, cam_param, do_flip, img_shape):
+        pose, shape, trans = smpl_param['pose'], smpl_param['shape'], smpl_param['trans']
+        smpl_pose = torch.FloatTensor(pose).view(-1,3); smpl_shape = torch.FloatTensor(shape).view(1,-1); # smpl parameters (pose: 72 dimension, shape: 10 dimension)
+        R, t = np.array(cam_param['R'], dtype=np.float32).reshape(3,3), np.array(cam_param['t'], dtype=np.float32).reshape(3) # camera rotation and translation
+        
+        # merge root pose and camera rotation 
+        root_pose = smpl_pose[self.root_joint_idx,:].numpy()
+        root_pose, _ = cv2.Rodrigues(root_pose)
+        root_pose, _ = cv2.Rodrigues(np.dot(R,root_pose))
+        smpl_pose[self.root_joint_idx] = torch.from_numpy(root_pose).view(3)
+
+        # flip smpl pose parameter (axis-angle)
+        if do_flip:
+            for pair in self.flip_pairs:
+                if pair[0] < len(smpl_pose) and pair[1] < len(smpl_pose): # face keypoints are already included in self.flip_pairs. However, they are not included in smpl_pose.
+                    smpl_pose[pair[0], :], smpl_pose[pair[1], :] = smpl_pose[pair[1], :].clone(), smpl_pose[pair[0], :].clone()
+            smpl_pose[:,1:3] *= -1; # multiply -1 to y and z axis of axis-angle
+        smpl_pose = smpl_pose.view(1,-1)
+       
+        # get mesh and joint coordinates
+        smpl_mesh_coord, smpl_joint_coord = self.smpl.layer['neutral'](smpl_pose, smpl_shape)
+
+        # incorporate face keypoints
+        smpl_mesh_coord = smpl_mesh_coord.numpy().astype(np.float32).reshape(-1,3);
+        # smpl_joint_coord = smpl_joint_coord.numpy().astype(np.float32).reshape(-1,3)
+        # smpl_face_kps_coord = smpl_mesh_coord[self.face_kps_vertex,:].reshape(-1,3)
+        # smpl_joint_coord = np.concatenate((smpl_joint_coord, smpl_face_kps_coord))
+        smpl_joint_coord = np.dot(self.joint_regressor, smpl_mesh_coord)
+
+        # compenstate rotation (translation from origin to root joint was not cancled)
+        smpl_trans = np.array(trans, dtype=np.float32).reshape(3) # translation vector from smpl coordinate to h36m world coordinate
+        smpl_trans = np.dot(R, smpl_trans[:,None]).reshape(1,3) + t.reshape(1,3)/1000
+        root_joint_coord = smpl_joint_coord[self.root_joint_idx].reshape(1,3)
+        smpl_trans = smpl_trans - root_joint_coord + np.dot(R, root_joint_coord.transpose(1,0)).transpose(1,0)
+        smpl_mesh_coord = smpl_mesh_coord + smpl_trans
+        smpl_joint_coord = smpl_joint_coord + smpl_trans
+
+        # flip translation
+        if do_flip: # avg of old and new root joint should be image center.
+            focal, princpt = cam_param['focal'], cam_param['princpt']
+            flip_trans_x = 2 * (((img_shape[1] - 1)/2. - princpt[0]) / focal[0] * (smpl_joint_coord[self.root_joint_idx,2] * 1000)) / 1000 - 2 * smpl_joint_coord[self.root_joint_idx][0]
+            smpl_mesh_coord[:,0] += flip_trans_x
+            smpl_joint_coord[:,0] += flip_trans_x
+
+        # change to mean shape if beta is too far from it
+        smpl_shape[(smpl_shape.abs() > 3).any(dim=1)] = 0.
+
+        # meter -> milimeter
+        smpl_mesh_coord *= 1000; smpl_joint_coord *= 1000;
+        return smpl_mesh_coord, smpl_joint_coord, smpl_pose[0].numpy(), smpl_shape[0].numpy()
+    
+    def get_fitting_error(self, h36m_joint, smpl_mesh, do_flip):
+        h36m_joint = h36m_joint - h36m_joint[self.h36m_root_joint_idx,None,:] # root-relative
+        if do_flip:
+            h36m_joint[:,0] = -h36m_joint[:,0]
+            for pair in self.h36m_flip_pairs:
+                h36m_joint[pair[0],:] , h36m_joint[pair[1],:] = h36m_joint[pair[1],:].copy(), h36m_joint[pair[0],:].copy()
+
+        h36m_from_smpl = np.dot(self.h36m_joint_regressor, smpl_mesh)
+        h36m_from_smpl = h36m_from_smpl - np.mean(h36m_from_smpl,0)[None,:] + np.mean(h36m_joint,0)[None,:] # translation alignment
+
+        error = np.sqrt(np.sum((h36m_joint - h36m_from_smpl)**2,1)).mean()
+        return error
+
+    def __len__(self):
+        return len(self.datalist)
+
+    def __getitem__(self, idx):
+        # if not hasattr(self, 'lmdb'):
+        #     db_path = osp.join(cfg.root_dir, 'data', 'Human36M', 'images_lmdb', 'images_lmdb.lmdb')
+        #     env = lmdb.open(db_path,
+        #                     subdir=os.path.isdir(db_path),
+        #                     readonly=True, lock=False,
+        #                     readahead=False, meminit=False)
+        #     self.lmdb = env.begin(write=False)
+        data = copy.deepcopy(self.datalist[idx])
+        data['gt2d_px'] = np.asarray(data['joint_img'])[:, :2].copy()   # GT 2D goc cho halpe_gt_mask_thr
+        img_path, img_shape, bbox, smpl_param, cam_param = data['img_path'], data['img_shape'], data['bbox'], data['smpl_param'], data['cam_param']
+        if cfg.update_bbox:
+            height, width = img_shape
+            bbox = process_bbox(data['tight_bbox'], width, height)
+        lift_only = cfg.DATASET.lift_only
+        # img
+        if lift_only:
+            # Che do lifter: khong doc anh, chi can phep bien doi affine de dua 2D vao khung crop
+            img2bb_trans, bb2img_trans, rot, do_flip = augmentation_noimg(bbox, self.data_split, img_shape)
+            img = torch.zeros(1)
+        else:
+            img = load_img(img_path)
+            # img = load_img_from_lmdb(img_path, self.lmdb)
+            img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split)
+            img = self.transform(img.astype(np.float32))/255.
+        if cfg.DATASET.fusekin_unified and self.data_split == 'train' and not lift_only:
+            # Mau FuseKin thong nhat (giong 3DPW train): 2D Halpe, GT 3D / mesh tu SMPL NeuralAnnot (camera that)
+            xy, mask = self._halpe_input(data, do_flip, img_shape, img2bb_trans)
+            mesh, _, pose, shape = self.get_smpl_coord(smpl_param, cam_param, do_flip, img_shape)
+            return fusekin_train_sample(self, img, img2bb_trans, rot, do_flip, bbox, img_shape, img_path,
+                                        xy, mask, mesh / 1000., pose, shape, cam_param, cam_param)
+
+        if self.data_split != 'train':
+            # Test lifter tren H36M (S9, S11, camera 4): dau vao = GT 2D SACH (giao thuc "GT 2D input"),
+            # KHONG them nhieu PoseFix (PoseFix co loi rat nang -> so do bi doi len, khong phan anh kha nang lift).
+            # GT 3D = mocap, root-relative, met.
+            # Truoc day nhanh nay chi chay khi lift_only=True (dieu kien "lift_only and ..."). Bo dieu kien
+            # lift_only de nhanh nay CUNG chay duoc khi lift_only=False -> luc do img o tren la ANH THUC
+            # (load_img), dung cho mo hinh can dac trung anh (vd GraphormerNet/PMCE, xem main/compare_pmce_lift.py).
+            # Khi lift_only=True (cac cfg finetune MotionBERT hien co), img van la placeholder torch.zeros(1)
+            # nhu cu -> hanh vi mac dinh KHONG doi.
+            h36m_joint_img = data['joint_img'].copy()
+            raw_joint_coord_img = h36m_joint_img.copy()  # (17,3) pixel ANH GOC -- dung cho PMCE (xem main/compare_pmce_lift.py)
+            h36m_joint_cam = data['joint_cam'] - data['joint_cam'][self.h36m_root_joint_idx, None, :]
+            h36m_joint_valid = data['joint_valid'].astype(np.float32)
+            xy1 = np.concatenate((h36m_joint_img[:, :2], np.ones_like(h36m_joint_img[:, :1])), 1)
+            h36m_joint_img[:, :2] = np.dot(img2bb_trans, xy1.transpose(1, 0)).transpose(1, 0)
+
+            input_img = h36m_joint_img.copy()
+            input_img[:, 0] = input_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+            input_img[:, 1] = input_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+            gt_x = h36m_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+            gt_y = h36m_joint_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+            joint_trunc = h36m_joint_valid * ((gt_x >= 0) * (gt_x < cfg.output_hm_shape[2]) *
+                                              (gt_y >= 0) * (gt_y < cfg.output_hm_shape[1])).reshape(-1, 1).astype(np.float32)
+
+            gt_joint_img = input_img.astype(np.float32)   # GT 2D sach, khung output_hm_shape (cot z = do sau mm, khong dung)
+            if self.h36m_2d_source == 'halpe26':
+                in_xy, in_mask = self._halpe_input(data, False, img_shape, img2bb_trans)
+                raw_joint_coord_img = data['halpe_h36m'].copy()   # 2D dau vao pixel ANH GOC = Halpe (cho PMCE)
+            else:
+                in_xy, in_mask = gt_joint_img[:, :2], joint_trunc
+            inputs = {'img': img, 'joints': in_xy.astype(np.float32), 'joints_mask': in_mask.astype(np.float32)}
+            # vi tri bbox so voi camera (CLIFF) -> lifter biet goc nhin cua camera toi nguoi
+            inputs['cam_bbox'] = cam_bbox_feat(bbox, cam_param, img_shape, False, rot)
+            targets = {'orig_joint_cam': (h36m_joint_cam / 1000).astype(np.float32),  # milimeter to meter
+                       'orig_joint_img': gt_joint_img}                              # GT 2D (vd compare_motionbert_gt2d.py)
+            meta_info = {'orig_joint_valid': h36m_joint_valid, 'orig_joint_trunc': joint_trunc,
+                         'img_path': img_path, 'img2bb_trans': img2bb_trans.astype(np.float32),  # de ve hinh
+                         'img_shape': img_shape, 'raw_joint_coord_img': raw_joint_coord_img}  # cho main/compare_pmce_lift.py
+            return inputs, targets, meta_info
+
+        if self.data_split == 'train':
+            # h36m gt
+            h36m_joint_img = data['joint_img']
+            h36m_joint_cam = data['joint_cam']
+            h36m_joint_cam = h36m_joint_cam - h36m_joint_cam[self.h36m_root_joint_idx,None,:] # root-relative
+            h36m_joint_valid = data['joint_valid']
+            if do_flip:
+                h36m_joint_cam[:,0] = -h36m_joint_cam[:,0]
+                h36m_joint_img[:,0] = img_shape[1] - 1 - h36m_joint_img[:,0]
+                for pair in self.h36m_flip_pairs:
+                    h36m_joint_img[pair[0],:], h36m_joint_img[pair[1],:] = h36m_joint_img[pair[1],:].copy(), h36m_joint_img[pair[0],:].copy()
+                    h36m_joint_cam[pair[0],:], h36m_joint_cam[pair[1],:] = h36m_joint_cam[pair[1],:].copy(), h36m_joint_cam[pair[0],:].copy()
+                    h36m_joint_valid[pair[0],:], h36m_joint_valid[pair[1],:] = h36m_joint_valid[pair[1],:].copy(), h36m_joint_valid[pair[0],:].copy()
+
+            h36m_joint_img_xy1 = np.concatenate((h36m_joint_img[:,:2], np.ones_like(h36m_joint_img[:,:1])),1)
+            h36m_joint_img[:,:2] = np.dot(img2bb_trans, h36m_joint_img_xy1.transpose(1,0)).transpose(1,0)
+            input_h36m_joint_img = h36m_joint_img.copy()
+            h36m_joint_img[:,0] = h36m_joint_img[:,0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+            h36m_joint_img[:,1] = h36m_joint_img[:,1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+            h36m_joint_img[:,2] = h36m_joint_img[:,2] - h36m_joint_img[self.h36m_root_joint_idx][2] # root-relative
+            h36m_joint_img[:,2] = (h36m_joint_img[:,2] / (cfg.bbox_3d_size * 1000  / 2) + 1)/2. * cfg.output_hm_shape[0] # change cfg.bbox_3d_size from meter to milimeter
+
+            # check truncation
+            h36m_joint_trunc = h36m_joint_valid * ((h36m_joint_img[:,0] >= 0) * (h36m_joint_img[:,0] < cfg.output_hm_shape[2]) * \
+                        (h36m_joint_img[:,1] >= 0) * (h36m_joint_img[:,1] < cfg.output_hm_shape[1]) * \
+                        (h36m_joint_img[:,2] >= 0) * (h36m_joint_img[:,2] < cfg.output_hm_shape[0])).reshape(-1,1).astype(np.float32)
+
+            """
+            print(f'{img_path} trunc:\n', h36m_joint_trunc.nonzero())
+            tmp_coord = h36m_joint_img[:, :2] * np.array([[cfg.input_img_shape[1] / cfg.output_hm_shape[2], cfg.input_img_shape[0]/ cfg.output_hm_shape[1]]])
+            newimg = vis_keypoints(img.numpy().transpose(1,2,0), tmp_coord)
+            cv2.imshow(f'{img_path}', newimg)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+            cv2.waitKey(1)
+            """
+
+            # transform h36m joints to target db joints
+            # (lift_only: giu nguyen H36M-17, khong vong qua SMPL 29 -> khong mat Head_top)
+            if not lift_only:
+                h36m_joint_img = transform_joint_to_other_db(h36m_joint_img, self.h36m_joints_name, self.joints_name)
+                h36m_joint_cam = transform_joint_to_other_db(h36m_joint_cam, self.h36m_joints_name, self.joints_name)
+                h36m_joint_valid = transform_joint_to_other_db(h36m_joint_valid, self.h36m_joints_name, self.joints_name)
+                h36m_joint_trunc = transform_joint_to_other_db(h36m_joint_trunc, self.h36m_joints_name, self.joints_name)
+
+            if self.h36m_2d_source == 'halpe26':
+                # 2D dau vao = Halpe-26 (lat + affine nhu GT), KHONG them PoseFix
+                in_xy, in_mask = self._halpe_input(data, do_flip, img_shape, img2bb_trans)
+                input_h36m_joint_img = np.concatenate([in_xy, in_mask], axis=1).astype(np.float32)  # H36M-17, khung hm
+                joint_mask = in_mask if lift_only else \
+                    transform_joint_to_other_db(in_mask, self.h36m_joints_name, self.joints_name)
+            else:
+                # apply PoseFix
+                input_h36m_joint_img[:, 2] = 1  # joint valid
+                tmp_joint_img = transform_joint_to_other_db(input_h36m_joint_img, self.h36m_joints_name, self.coco_joints_name)
+                tmp_joint_img = replace_joint_img(tmp_joint_img, data['tight_bbox'], data['near_joints'], data['num_overlap'], img2bb_trans)
+                tmp_joint_img = transform_joint_to_other_db(tmp_joint_img, self.coco_joints_name, self.h36m_joints_name)
+                input_h36m_joint_img[self.h36m_coco_common_jidx, :2] = tmp_joint_img[self.h36m_coco_common_jidx, :2]
+                """
+                # debug PoseFix result
+                newimg = vis_keypoints_with_skeleton(img.numpy().transpose(1, 2, 0), input_h36m_joint_img.T, self.h36m_skeleton)
+                cv2.imshow(f'{img_path}', newimg)
+                cv2.waitKey(0)
+                cv2.destroyAllWindows()
+                cv2.waitKey(1)
+                import pdb; pdb.set_trace()
+                """
+                input_h36m_joint_img[:, 0] = input_h36m_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+                input_h36m_joint_img[:, 1] = input_h36m_joint_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+                joint_mask = h36m_joint_trunc
+
+            if lift_only:
+                # Chi tra du lieu lifter can, tat ca o H36M-17. Bo qua SMPL (rat ton thoi gian).
+                rot_aug_mat = np.array([[np.cos(np.deg2rad(-rot)), -np.sin(np.deg2rad(-rot)), 0],
+                [np.sin(np.deg2rad(-rot)), np.cos(np.deg2rad(-rot)), 0],
+                [0, 0, 1]], dtype=np.float32)
+                h36m_joint_cam = np.dot(rot_aug_mat, h36m_joint_cam.transpose(1,0)).transpose(1,0) / 1000 # milimeter to meter
+                inputs = {'img': img, 'joints': input_h36m_joint_img[:, :2].astype(np.float32), 'joints_mask': joint_mask.astype(np.float32)}
+                # vi tri bbox so voi camera (CLIFF) -> lifter biet goc nhin cua camera toi nguoi
+                inputs['cam_bbox'] = cam_bbox_feat(bbox, cam_param, img_shape, do_flip, rot)
+                targets = {'orig_joint_img': h36m_joint_img.astype(np.float32), 'orig_joint_cam': h36m_joint_cam.astype(np.float32)}
+                meta_info = {'orig_joint_valid': h36m_joint_valid.astype(np.float32), 'orig_joint_trunc': h36m_joint_trunc.astype(np.float32), 'is_3D': float(True),
+                             'img_path': img_path, 'img2bb_trans': img2bb_trans.astype(np.float32)}  # de ve hinh
+                return inputs, targets, meta_info
+
+            input_h36m_joint_img = transform_joint_to_other_db(input_h36m_joint_img, self.h36m_joints_name, self.joints_name)
+
+            if smpl_param is not None:
+                # smpl coordinates
+                smpl_mesh_cam, smpl_joint_cam, smpl_pose, smpl_shape = self.get_smpl_coord(smpl_param, cam_param, do_flip, img_shape)
+                smpl_coord_cam = np.concatenate((smpl_mesh_cam, smpl_joint_cam))
+                focal, princpt = cam_param['focal'], cam_param['princpt']
+                smpl_coord_img = cam2pixel(smpl_coord_cam, focal, princpt)
+
+                """
+                # vis smpl joint coord
+                tmpimg = cv2.imread(img_path)
+                newimg = vis_keypoints(tmpimg, smpl_coord_img[6890:])
+                cv2.imshow(f'{img_path}', newimg)
+                cv2.waitKey(0)
+                cv2.destroyAllWindows()
+                cv2.waitKey(1)
+                import pdb; pdb.set_trace()
+                """
+
+                # affine transform x,y coordinates, root-relative depth
+                smpl_coord_img_xy1 = np.concatenate((smpl_coord_img[:,:2], np.ones_like(smpl_coord_img[:,:1])),1)
+                smpl_coord_img[:,:2] = np.dot(img2bb_trans, smpl_coord_img_xy1.transpose(1,0)).transpose(1,0)[:,:2]
+                smpl_coord_img[:,2] = smpl_coord_img[:,2] - smpl_coord_cam[self.vertex_num + self.root_joint_idx][2]
+                # coordinates voxelize
+                smpl_coord_img[:,0] = smpl_coord_img[:,0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
+                smpl_coord_img[:,1] = smpl_coord_img[:,1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
+                smpl_coord_img[:,2] = (smpl_coord_img[:,2] / (cfg.bbox_3d_size * 1000  / 2) + 1)/2. * cfg.output_hm_shape[0] # change cfg.bbox_3d_size from meter to milimeter
+
+                # check truncation
+                smpl_trunc = ((smpl_coord_img[:,0] >= 0) * (smpl_coord_img[:,0] < cfg.output_hm_shape[2]) * \
+                            (smpl_coord_img[:,1] >= 0) * (smpl_coord_img[:,1] < cfg.output_hm_shape[1]) * \
+                            (smpl_coord_img[:,2] >= 0) * (smpl_coord_img[:,2] < cfg.output_hm_shape[0])).reshape(-1,1).astype(np.float32)
+                
+                # split mesh and joint coordinates
+                smpl_mesh_img = smpl_coord_img[:self.vertex_num]; smpl_joint_img = smpl_coord_img[self.vertex_num:];
+                smpl_mesh_trunc = smpl_trunc[:self.vertex_num]; smpl_joint_trunc = smpl_trunc[self.vertex_num:];
+
+                # if fitted mesh is too far from h36m gt, discard it
+                is_valid_fit = True
+                error = self.get_fitting_error(data['joint_cam'], smpl_mesh_cam, do_flip)
+                if error > self.fitting_thr:
+                    is_valid_fit = False
+
+            else:
+                smpl_joint_img = np.zeros((self.joint_num,3), dtype=np.float32) # dummy
+                smpl_joint_cam = np.zeros((self.joint_num,3), dtype=np.float32) # dummy
+                smpl_mesh_cam = np.zeros((self.vertex_num,3), dtype=np.float32) # dummy
+                smpl_mesh_img = np.zeros((self.vertex_num,3), dtype=np.float32) # dummy
+                smpl_pose = np.zeros((72), dtype=np.float32) # dummy
+                smpl_shape = np.zeros((10), dtype=np.float32) # dummy
+                smpl_joint_trunc = np.zeros((self.joint_num,1), dtype=np.float32) # dummy
+                smpl_mesh_trunc = np.zeros((self.vertex_num,1), dtype=np.float32) # dummy
+                is_valid_fit = False
+            
+            # 3D data rotation augmentation
+            rot_aug_mat = np.array([[np.cos(np.deg2rad(-rot)), -np.sin(np.deg2rad(-rot)), 0], 
+            [np.sin(np.deg2rad(-rot)), np.cos(np.deg2rad(-rot)), 0],
+            [0, 0, 1]], dtype=np.float32)
+            # h36m coordinate
+            h36m_joint_cam = np.dot(rot_aug_mat, h36m_joint_cam.transpose(1,0)).transpose(1,0) / 1000 # milimeter to meter
+            # parameter
+            smpl_pose = smpl_pose.reshape(-1,3)
+            root_pose = smpl_pose[self.root_joint_idx,:]
+            root_pose, _ = cv2.Rodrigues(root_pose)
+            root_pose, _ = cv2.Rodrigues(np.dot(rot_aug_mat,root_pose))
+            smpl_pose[self.root_joint_idx] = root_pose.reshape(3)
+            smpl_pose = smpl_pose.reshape(-1)
+            # smpl coordinate
+            smpl_joint_cam = smpl_joint_cam - smpl_joint_cam[self.root_joint_idx,None] # root-relative
+            smpl_joint_cam = np.dot(rot_aug_mat, smpl_joint_cam.transpose(1,0)).transpose(1,0) / 1000 # milimeter to meter
+
+            # SMPL pose parameter validity
+            smpl_param_valid = np.ones((self.smpl.orig_joint_num, 3), dtype=np.float32)
+            for name in ('L_Ankle', 'R_Ankle', 'L_Toe', 'R_Toe', 'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand'):
+                smpl_param_valid[self.joints_name.index(name)] = 0
+            smpl_param_valid = smpl_param_valid.reshape(-1)
+
+            inputs = {'img': img, 'joints': input_h36m_joint_img[:, :2], 'joints_mask': joint_mask}
+            targets = {'orig_joint_img': h36m_joint_img, 'fit_joint_img': smpl_joint_img, 'orig_joint_cam': h36m_joint_cam, 'fit_joint_cam': smpl_joint_cam, 'pose_param': smpl_pose, 'shape_param': smpl_shape}
+            meta_info = {'orig_joint_valid': h36m_joint_valid, 'orig_joint_trunc': h36m_joint_trunc, 'fit_param_valid': smpl_param_valid, 'fit_joint_trunc': smpl_joint_trunc, 'is_valid_fit': float(is_valid_fit), 'is_3D': float(True)}
+            return inputs, targets, meta_info
+        else:
+            inputs = {'img': img}
+            targets = {}
+            meta_info = {'bb2img_trans': bb2img_trans}
+            return inputs, targets, meta_info
+
+    def evaluate(self, outs, cur_sample_idx):
+
+        annots = self.datalist
+        sample_num = len(outs)
+        eval_result = {'mpjpe_lixel': [], 'pa_mpjpe_lixel': [], 'mpjpe_param': [], 'pa_mpjpe_param': []}
+        for n in range(sample_num):
+            annot = annots[cur_sample_idx + n]
+            out = outs[n]
+            
+            # mesh from lixel
+            # x,y: resize to input image space and perform bbox to image affine transform
+            mesh_out_img = out['mesh_coord_img']
+            mesh_out_img[:,0] = mesh_out_img[:,0] / cfg.output_hm_shape[2] * cfg.input_img_shape[1]
+            mesh_out_img[:,1] = mesh_out_img[:,1] / cfg.output_hm_shape[1] * cfg.input_img_shape[0]
+            mesh_out_img_xy1 = np.concatenate((mesh_out_img[:,:2], np.ones_like(mesh_out_img[:,:1])),1)
+            mesh_out_img[:,:2] = np.dot(out['bb2img_trans'], mesh_out_img_xy1.transpose(1,0)).transpose(1,0)[:,:2]
+            # z: devoxelize and translate to absolute depth
+            root_joint_depth = annot['root_joint_depth']
+            mesh_out_img[:,2] = (mesh_out_img[:,2] / cfg.output_hm_shape[0] * 2. - 1) * (cfg.bbox_3d_size * 1000 / 2)
+            mesh_out_img[:,2] = mesh_out_img[:,2] + root_joint_depth
+            # camera back-projection
+            cam_param = annot['cam_param']
+            focal, princpt = cam_param['focal'], cam_param['princpt']
+            mesh_out_cam = pixel2cam(mesh_out_img, focal, princpt)
+
+            # h36m joint from gt mesh
+            pose_coord_gt_h36m = annot['joint_cam'] 
+            pose_coord_gt_h36m = pose_coord_gt_h36m - pose_coord_gt_h36m[self.h36m_root_joint_idx,None] # root-relative 
+            pose_coord_gt_h36m = pose_coord_gt_h36m[self.h36m_eval_joint,:] 
+            
+            # h36m joint from lixel mesh
+            pose_coord_out_h36m = np.dot(self.h36m_joint_regressor, mesh_out_cam)
+            pose_coord_out_h36m = pose_coord_out_h36m - pose_coord_out_h36m[self.h36m_root_joint_idx,None] # root-relative
+            pose_coord_out_h36m = pose_coord_out_h36m[self.h36m_eval_joint,:]
+            pose_coord_out_h36m_aligned = rigid_align(pose_coord_out_h36m, pose_coord_gt_h36m)
+            eval_result['mpjpe_lixel'].append(np.sqrt(np.sum((pose_coord_out_h36m - pose_coord_gt_h36m)**2,1)).mean())
+            eval_result['pa_mpjpe_lixel'].append(np.sqrt(np.sum((pose_coord_out_h36m_aligned - pose_coord_gt_h36m)**2,1)).mean())
+    
+            vis = False
+            if vis:
+                filename = annot['img_path'].split('/')[-1][:-4]
+
+                img = load_img(annot['img_path'])[:,:,::-1]
+                img = vis_mesh(img, mesh_out_img, 0.5)
+                cv2.imwrite(filename + '.jpg', img)
+
+                save_obj(mesh_out_cam, self.smpl.face, filename + '.obj')
+
+        return eval_result
+
+    def print_eval_result(self, eval_result):
+        print('MPJPE from lixel mesh: %.2f mm' % np.mean(eval_result['mpjpe_lixel']))
+        print('PA MPJPE from lixel mesh: %.2f mm' % np.mean(eval_result['pa_mpjpe_lixel']))
+        
+        print('MPJPE from param mesh: %.2f mm' % np.mean(eval_result['mpjpe_param']))
+        print('PA MPJPE from param mesh: %.2f mm' % np.mean(eval_result['pa_mpjpe_param']))

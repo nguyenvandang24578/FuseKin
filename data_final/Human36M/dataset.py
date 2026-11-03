@@ -222,9 +222,11 @@ class Human36M(torch.utils.data.Dataset):
             print(msg + ' -> bo qua cac mau nay')
         return datalist
 
-    def _jotr_posefix_input(self, data, do_flip, img_shape, img2bb_trans):
+    def _jotr_posefix_input(self, data, do_flip, img_shape, img2bb_trans, return_clean=False):
         """2D dau vao + mask GIONG HET nhanh train JOTR (dataloader/Human36M.py): lat, affine, trunc 3D tu GT,
         PoseFix tren 13 khop chung COCO (near_joints rong). Tra ve H36M-17: xy (17, 2) khung hm, mask (17, 1).
+        return_clean=True (Refiner 2D, cfg.DATASET.return_clean_2d): tra them xy_clean (17, 2) = GT 2D TRUOC PoseFix,
+        cung khung hm / cung phep doi ten khop voi xy; khong goi them random -> xy, mask giong het.
         Dung cho fusekin_unified (Student / Teacher); sua data['joint_img'] tai cho (data da deepcopy)."""
         h36m_joint_img = data['joint_img']
         h36m_joint_valid = data['joint_valid']
@@ -251,7 +253,11 @@ class Human36M(torch.utils.data.Dataset):
         input_h36m_joint_img[self.h36m_coco_common_jidx, :2] = tmp_joint_img[self.h36m_coco_common_jidx, :2]
         input_h36m_joint_img[:, 0] = input_h36m_joint_img[:, 0] / cfg.input_img_shape[1] * cfg.output_hm_shape[2]
         input_h36m_joint_img[:, 1] = input_h36m_joint_img[:, 1] / cfg.input_img_shape[0] * cfg.output_hm_shape[1]
-        return input_h36m_joint_img[:, :2].astype(np.float32), h36m_joint_trunc.astype(np.float32)
+        xy = input_h36m_joint_img[:, :2].astype(np.float32)
+        if return_clean:
+            # GT 2D sach (khung hm, cung thu tu H36M-17 voi xy) cho Refiner 2D
+            return xy, h36m_joint_trunc.astype(np.float32), h36m_joint_img[:, :2].astype(np.float32)
+        return xy, h36m_joint_trunc.astype(np.float32)
 
     def _halpe_input(self, data, do_flip, img_shape, img2bb_trans):
         """Halpe-26 (da doi H36M-17, pixel anh goc) -> 2D dau vao trong khung output_hm_shape.
@@ -368,13 +374,21 @@ class Human36M(torch.utils.data.Dataset):
             img = self.transform(img.astype(np.float32))/255.
         if cfg.DATASET.fusekin_unified and self.data_split == 'train' and not lift_only:
             # Mau FuseKin thong nhat (giong 3DPW train): 2D Halpe hoac GT + PoseFix (JOTR), GT 3D / mesh tu SMPL
+            xy_clean = None   # Refiner 2D: GT 2D truoc PoseFix (cfg.DATASET.return_clean_2d)
+            if cfg.DATASET.get('return_clean_2d', False) and not (self.h36m_2d_source == 'gt_posefix'):
+                raise ValueError('return_clean_2d chi ho tro nguon 2D gt_posefix')
             if self.h36m_2d_source == 'gt_posefix':
-                xy, mask = self._jotr_posefix_input(data, do_flip, img_shape, img2bb_trans)
+                if cfg.DATASET.get('return_clean_2d', False):
+                    xy, mask, xy_clean = self._jotr_posefix_input(data, do_flip, img_shape, img2bb_trans,
+                                                                  return_clean=True)
+                else:
+                    xy, mask = self._jotr_posefix_input(data, do_flip, img_shape, img2bb_trans)
             else:
                 xy, mask = self._halpe_input(data, do_flip, img_shape, img2bb_trans)
             mesh, _, pose, shape = self.get_smpl_coord(smpl_param, cam_param, do_flip, img_shape)
             return fusekin_train_sample(self, img, img2bb_trans, rot, do_flip, bbox, img_shape, img_path,
-                                        xy, mask, mesh / 1000., pose, shape, cam_param, cam_param)
+                                        xy, mask, mesh / 1000., pose, shape, cam_param, cam_param,
+                                        xy_clean=xy_clean)
 
         if self.data_split != 'train':
             # Test lifter tren H36M (S9, S11, camera 4): dau vao = GT 2D SACH (giao thuc "GT 2D input"),

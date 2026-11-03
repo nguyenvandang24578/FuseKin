@@ -112,6 +112,10 @@ cfg.DATASET.fusekin_unified = False
 # 3DPW test: tra them GT 2D (targets['orig_joint_img'] H36M-17, khung output_hm_shape) + meta orig_joint_valid/trunc.
 # Chi de phan tich sai so 2D dau vao; evaluate() khong dung. Mac dinh TAT = hanh vi cu.
 cfg.DATASET.pw3d_test_gt2d = False
+# Refiner 2D (2026-11-03): mau train fusekin_unified (nguon 2D gt_posefix) tra them targets['joint_img_clean']
+# (17, 2) = GT 2D TRUOC PoseFix, khung output_hm_shape, cung dinh nghia khop voi 2D dau vao. Khong doi 2D dau vao.
+# Mac dinh TAT (bo key giu nguyen nhu cu).
+cfg.DATASET.return_clean_2d = False
 # Tat augmentation xoay (giu scale/flip). Chi dung cho chan doan lifter.
 cfg.DATASET.no_rot_aug = False
 # Mask khop Halpe SAI bang GT 2D (chi tap TRAIN Human36M / MuCo / MSCOCO / CrowdPose): khop Halpe hop le lech
@@ -375,6 +379,24 @@ cfg.SELECTOR.lr_factor = 0.1
 # dung last.pth.tar, khong dung best.
 cfg.SELECTOR.val_set = ''
 cfg.SELECTOR.val_max_samples = 2000
+
+""" Refiner 2D (2026-11-03): anh + 2D detector -> 2D da sua cua DUNG nguoi + do bat dinh tung khop """
+# Chi main/train_refiner2d.py, main/eval_refiner2d.py doc nhom nay; train.py / Teacher / Student khong dung.
+# Du lieu, batch, ti le bo, lich lr dung chung cfg.DATASET / cfg.TRAIN (base.get_dataloader); thu muc = --exp_name.
+cfg.REFINE2D = edict()
+cfg.REFINE2D.backbone_pretrained = 'spin'   # 'spin' | 'imagenet'
+cfg.REFINE2D.bb_lr_scale = 0.1             # lr backbone = TRAIN.lr * bb_lr_scale (head dung TRAIN.lr)
+cfg.REFINE2D.bb_bn_eval = True             # backbone giu thong ke BN pretrain (giong [A]); head BN train binh thuong
+cfg.REFINE2D.heat_sigma = 2.0              # sigma Gauss (o luoi 64) cho heatmap dau vao va phan bo muc tieu
+cfg.REFINE2D.deconv_ch = 256               # so kenh 3 lop deconv (8x8 -> 64x64)
+cfg.REFINE2D.w_coord = 1.0                 # L1 toa do soft-argmax (don vi o luoi 64)
+cfg.REFINE2D.w_heat = 0.1                  # CE phan bo softmax heatmap vs Gauss muc tieu (chuan hoa)
+cfg.REFINE2D.w_nll = 0.1                   # Laplace NLL cho log_b (loi detach, dac trung vao head detach)
+cfg.REFINE2D.input_drop_prob = 0.1         # bo ngau nhien khop dau vao (mask 0) luc train -> hoc dien khop thieu
+cfg.REFINE2D.weight_decay = 1e-4
+cfg.REFINE2D.eval_sets = ['3dpw', '3dpw-pc', '3dpw-crowd']   # danh gia nhanh moi epoch (chi log, KHONG chon ckpt)
+cfg.REFINE2D.eval_max_samples = 3000       # so mau dau moi tap khi danh gia nhanh (0 = toan bo)
+cfg.REFINE2D.far_ratio = 0.2               # khop "xa": loi > far_ratio x kich thuoc nguoi (giong compare_2d_sources)
 
 """ Test Detail """
 cfg.TEST = edict()

@@ -183,10 +183,12 @@ class MSCOCO(torch.utils.data.Dataset):
 
         return datalist
 
-    def _jotr_posefix_input(self, data, do_flip, img_shape, img2bb_trans):
+    def _jotr_posefix_input(self, data, do_flip, img_shape, img2bb_trans, return_clean=False):
         """2D dau vao + mask GIONG HET nhanh train cua JOTR (dataloader/MSCOCO.py __getitem__): lat, affine,
         near_joints (score = 1, KHONG lat - giong JOTR), trunc tu GT, PoseFix (replace_joint_img) tren toa do crop,
         chuan hoa khung hm. Doi sang H36M-17 theo TEN (= JOTR SMPL-30 -> H36M-17). Tra ve xy (17, 2), mask (17, 1).
+        return_clean=True (Refiner 2D, cfg.DATASET.return_clean_2d): tra them xy_clean (17, 2) = GT 2D TRUOC PoseFix,
+        cung khung hm / cung phep doi ten khop voi xy; khong goi them random -> xy, mask giong het.
         Sua data['joint_img'] / data['joint_valid'] tai cho (data da deepcopy trong __getitem__)."""
         coco_joint_img = data['joint_img']
         coco_joint_valid = data['joint_valid']
@@ -225,6 +227,10 @@ class MSCOCO(torch.utils.data.Dataset):
 
         xy = transform_joint_to_other_db(input_coco_joint_img, self.coco_joints_name, HUMAN36M_JOINTS)[:, :2]
         mask = transform_joint_to_other_db(coco_joint_trunc, self.coco_joints_name, HUMAN36M_JOINTS)
+        if return_clean:
+            # GT 2D sach (khung hm; replace_joint_img chi sua ban sao input_coco_joint_img)
+            clean = transform_joint_to_other_db(coco_joint_img, self.coco_joints_name, HUMAN36M_JOINTS)[:, :2]
+            return xy.astype(np.float32), mask.astype(np.float32), clean.astype(np.float32)
         return xy.astype(np.float32), mask.astype(np.float32)
 
     def get_smpl_coord(self, smpl_param, cam_param, do_flip, img_shape):
@@ -310,15 +316,23 @@ class MSCOCO(torch.utils.data.Dataset):
         if cfg.DATASET.fusekin_unified and self.data_split == 'train':
             # Mau FuseKin thong nhat: 2D Halpe; pseudo-GT NeuralAnnot xoay tu camera ao sang camera uoc luong
             sp = data['smpl_param']
+            xy_clean = None   # Refiner 2D: GT 2D truoc PoseFix (cfg.DATASET.return_clean_2d)
+            if cfg.DATASET.get('return_clean_2d', False) and not (self.jotr_posefix):
+                raise ValueError('return_clean_2d chi ho tro nguon 2D gt_posefix')
             if self.jotr_posefix:
-                xy, mask = self._jotr_posefix_input(data, do_flip, img_shape, img2bb_trans)   # GT + PoseFix (JOTR)
+                if cfg.DATASET.get('return_clean_2d', False):
+                    xy, mask, xy_clean = self._jotr_posefix_input(data, do_flip, img_shape, img2bb_trans,
+                                                                  return_clean=True)
+                else:
+                    xy, mask = self._jotr_posefix_input(data, do_flip, img_shape, img2bb_trans)   # GT + PoseFix (JOTR)
             else:
                 xy, mask = halpe_to_crop(data['halpe_h36m'], do_flip, img_shape, img2bb_trans, self.halpe26_conf_thr)
                 mask = gt_mask_halpe(self, data, xy, mask, do_flip, img_shape, img2bb_trans)
             mesh, _, pose, shape = self.get_smpl_coord(sp['smpl_param'], sp['cam_param'], do_flip, img_shape)
             return fusekin_train_sample(self, img, img2bb_trans, rot, do_flip, bbox, img_shape, img_path,
                                         xy, mask, mesh, pose, shape, sp['cam_param'], est_cam(img_shape),
-                                        use_view_rot=True)
+                                        use_view_rot=True,
+                                        xy_clean=xy_clean)
         
         if self.data_split == 'train':
             # coco gt

@@ -25,7 +25,8 @@ NO_PARAM_JOINTS = ('L_Ankle', 'R_Ankle', 'L_Toe', 'R_Toe', 'L_Wrist', 'R_Wrist',
 
 
 def fusekin_train_sample(ds, img, img2bb_trans, rot, do_flip, bbox, img_shape, img_path,
-                         xy, mask, mesh_cam, smpl_pose, smpl_shape, proj_cam, feat_cam, use_view_rot=False):
+                         xy, mask, mesh_cam, smpl_pose, smpl_shape, proj_cam, feat_cam, use_view_rot=False,
+                         xy_clean=None):
     """
     ds        : dataset (can h36m_joint_regressor, smpl, joints_name)
     xy, mask  : 2D Halpe (17, 2) khung output_hm_shape (da lat + affine), conf (17, 1)
@@ -33,6 +34,8 @@ def fusekin_train_sample(ds, img, img2bb_trans, rot, do_flip, bbox, img_shape, i
     smpl_pose : (72,) axis-angle, goc root trong cung he camera (da lat); smpl_shape (10,)
     proj_cam  : camera chieu mesh_cam ra dung pixel anh (da lat) -> GT 2D
     feat_cam  : camera tinh cam_bbox (camera that, hoac est_cam cho MSCOCO / CrowdPose)
+    xy_clean  : (17, 2) GT 2D truoc PoseFix, khung output_hm_shape (Refiner 2D, cfg.DATASET.return_clean_2d);
+                None -> khong them key (bo key giu nguyen nhu cu)
     """
     h36m = np.dot(ds.h36m_joint_regressor, mesh_cam).astype(np.float32)               # (17, 3) met
     root = h36m[0:1]                                                                   # Pelvis
@@ -69,6 +72,8 @@ def fusekin_train_sample(ds, img, img2bb_trans, rot, do_flip, bbox, img_shape, i
     targets = {'orig_joint_img': j2d.astype(np.float32), 'orig_joint_cam': joint_cam, 'fit_joint_cam': joint_cam.copy(),
                'pose_param': pose.reshape(-1), 'shape_param': np.asarray(smpl_shape, dtype=np.float32),
                'smpl_mesh_cam': mesh}
+    if xy_clean is not None:
+        targets['joint_img_clean'] = np.asarray(xy_clean, dtype=np.float32).reshape(17, 2)
     meta = {'img_path': img_path, 'img2bb_trans': img2bb_trans.astype(np.float32),
             'orig_joint_valid': np.ones((17, 1), dtype=np.float32), 'orig_joint_trunc': trunc,
             'fit_param_valid': param_valid.reshape(-1), 'fit_joint_trunc': np.ones((17, 1), dtype=np.float32),

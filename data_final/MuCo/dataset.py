@@ -179,10 +179,12 @@ class MuCo(torch.utils.data.Dataset):
             print(f"[MuCo] {n_halpe_missing} mau khong co Halpe-26 trong file npz -> bo qua")
         return datalist
 
-    def _jotr_posefix_input(self, data, do_flip, img_shape, img2bb_trans):
+    def _jotr_posefix_input(self, data, do_flip, img_shape, img2bb_trans, return_clean=False):
         """2D dau vao + mask GIONG HET nhanh train JOTR (dataloader/MuCo.py): lat, affine, near_joints (score 1,
         khong lat), trunc 3D tu GT, PoseFix tren 12 khop chung COCO. Doi sang H36M-17 theo ten (jotr_strict: ten goc
-        MuCo nhu JOTR; khong: alias Thorax->Neck...). Tra ve xy (17, 2) khung hm, mask (17, 1). Dung cho fusekin_unified."""
+        MuCo nhu JOTR; khong: alias Thorax->Neck...). Tra ve xy (17, 2) khung hm, mask (17, 1). Dung cho fusekin_unified.
+        return_clean=True (Refiner 2D, cfg.DATASET.return_clean_2d): tra them xy_clean (17, 2) = GT 2D TRUOC PoseFix,
+        cung khung hm / cung phep doi ten khop voi xy; khong goi them random -> xy, mask giong het."""
         muco_joint_img = data['joint_img']
         muco_joint_valid = data['joint_valid']
         if do_flip:
@@ -221,6 +223,10 @@ class MuCo(torch.utils.data.Dataset):
         names = self.muco_joints_name if cfg.DATASET.get('jotr_strict', False) else self.muco_joints_name_h36m_alias
         xy = transform_joint_to_other_db(input_muco_joint_img, names, self.h36m_joints_name)[:, :2]
         mask = transform_joint_to_other_db(muco_joint_trunc, names, self.h36m_joints_name)
+        if return_clean:
+            # GT 2D sach (khung hm), cung phep doi ten khop voi xy -> cung dinh nghia khop
+            clean = transform_joint_to_other_db(muco_joint_img, names, self.h36m_joints_name)[:, :2]
+            return xy.astype(np.float32), mask.astype(np.float32), clean.astype(np.float32)
         return xy.astype(np.float32), mask.astype(np.float32)
 
     def _halpe_input(self, data, do_flip, img_shape, img2bb_trans):
@@ -343,13 +349,21 @@ class MuCo(torch.utils.data.Dataset):
             img = self.transform(img.astype(np.float32))/255.
         if cfg.DATASET.fusekin_unified and self.data_split == 'train' and not lift_only:
             # Mau FuseKin thong nhat (giong 3DPW train): 2D Halpe hoac GT + PoseFix (JOTR), GT 3D / mesh tu SMPL
+            xy_clean = None   # Refiner 2D: GT 2D truoc PoseFix (cfg.DATASET.return_clean_2d)
+            if cfg.DATASET.get('return_clean_2d', False) and not (self.muco_2d_source == 'gt_posefix'):
+                raise ValueError('return_clean_2d chi ho tro nguon 2D gt_posefix')
             if self.muco_2d_source == 'gt_posefix':
-                xy, mask = self._jotr_posefix_input(data, do_flip, img_shape, img2bb_trans)
+                if cfg.DATASET.get('return_clean_2d', False):
+                    xy, mask, xy_clean = self._jotr_posefix_input(data, do_flip, img_shape, img2bb_trans,
+                                                                  return_clean=True)
+                else:
+                    xy, mask = self._jotr_posefix_input(data, do_flip, img_shape, img2bb_trans)
             else:
                 xy, mask = self._halpe_input(data, do_flip, img_shape, img2bb_trans)
             mesh, _, pose, shape = self.get_smpl_coord(smpl_param, cam_param, do_flip, img_shape)
             return fusekin_train_sample(self, img, img2bb_trans, rot, do_flip, bbox, img_shape, img_path,
-                                        xy, mask, mesh / 1000., pose, shape, cam_param, cam_param)
+                                        xy, mask, mesh / 1000., pose, shape, cam_param, cam_param,
+                                        xy_clean=xy_clean)
 
         # muco gt
         muco_joint_img = data['joint_img']
