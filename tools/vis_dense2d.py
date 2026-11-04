@@ -15,8 +15,9 @@ Chay (yml co DATASET.dense2d_vertex_file, vd config/train_refiner2d_jotr_mesh_de
   (them Refiner day da train: --ckpt experiment/refiner2d_dense48/checkpoint/last.pth.tar --gpu 0)
 """
 import os, sys
-sys.path.append('./lib')
-sys.path.append('./')
+sys.path.insert(0, './lib')
+sys.path.insert(0, './')
+sys.path.insert(0, './main')   # __init_path.py (them smplpytorch vao sys.path)
 import argparse
 
 parser = argparse.ArgumentParser(description='Ve nhan 2D day')

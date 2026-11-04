@@ -9,8 +9,9 @@ Chay (moi truong arts, can SMPL trong smplpytorch/smplpytorch/native/models):
   python tools/select_dense_vertices.py --n 48 --out config/dense48_fps.json
 """
 import os, sys
-sys.path.append('./lib')
-sys.path.append('./')
+sys.path.insert(0, './lib')
+sys.path.insert(0, './')
+sys.path.insert(0, './main')   # __init_path.py (them smplpytorch vao sys.path)
 import argparse
 import json
 
@@ -25,6 +26,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from core.config import cfg  # noqa: F401  (cfg.smpl_path)
+import __init_path  # noqa: F401
 from utils.smpl import SMPL
 
 
