@@ -14,7 +14,7 @@ from utils.preprocessing import load_img, get_bbox, process_bbox, generate_patch
 from utils.transforms import cam2pixel, pixel2cam, rigid_align, transform_joint_to_other_db, denorm_joints, convert_crop_cam_to_orig_img
 from utils.h36m_adapter import halpe26_to_human36m
 from utils.cam_bbox import cam_bbox_feat
-from utils.dense2d import dense_vertex_ids, project_dense
+from utils.dense2d import dense_vertex_ids, project_dense, project_points
 # from utils.vis import save_obj, vis_keypoints_with_skeleton, vis_bbox, render_mesh
 
 
@@ -518,6 +518,8 @@ class PW3D(torch.utils.data.Dataset):
                 if dense_vertex_ids() is not None:
                     # Nhan 2D day (dinh mesh GT co dinh) cho danh gia Refiner day, cung cach voi mau train
                     targets['dense_img'], meta_info['dense_trunc'] = project_dense(smpl_mesh_cam, cam_param, img2bb_trans)
+                if cfg.DATASET.get('debug_mesh2d', False):          # chi de ve kiem tra (vis_dense2d)
+                    targets['mesh_img'] = project_points(smpl_mesh_cam, cam_param, img2bb_trans)[0]
             return inputs, targets, meta_info
 
     def random_idx_eval(self, outs, index):

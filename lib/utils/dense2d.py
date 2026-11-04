@@ -33,8 +33,12 @@ def dense_vertex_ids():
 def project_dense(mesh_cam, cam_param, img2bb_trans):
     """mesh_cam (6890, 3) toa do camera (met hoac mm, chieu khong phu thuoc don vi), cam_param co focal / princpt,
     img2bb_trans (2, 3). Tra (N, 2) khung output_hm_shape va trunc (N, 1) = diem nam trong khung crop."""
-    ids = dense_vertex_ids()
-    pts = np.asarray(mesh_cam, dtype=np.float32)[ids]
+    return project_points(np.asarray(mesh_cam, dtype=np.float32)[dense_vertex_ids()], cam_param, img2bb_trans)
+
+
+def project_points(pts, cam_param, img2bb_trans):
+    """Chieu diem 3D toa do camera (M, 3) vao crop: (M, 2) khung output_hm_shape + trunc (M, 1)."""
+    pts = np.asarray(pts, dtype=np.float32)
     img = cam2pixel(pts, cam_param['focal'], cam_param['princpt'])
     xy1 = np.concatenate((img[:, :2], np.ones_like(img[:, :1])), 1)
     xy = np.dot(img2bb_trans, xy1.transpose(1, 0)).transpose(1, 0)[:, :2]

@@ -20,7 +20,7 @@ import numpy as np
 from core.config import cfg
 from utils.transforms import cam2pixel
 from utils.cam_bbox import cam_bbox_feat, view_rot
-from utils.dense2d import dense_vertex_ids, project_dense
+from utils.dense2d import dense_vertex_ids, project_dense, project_points
 
 NO_PARAM_JOINTS = ('L_Ankle', 'R_Ankle', 'L_Toe', 'R_Toe', 'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand')   # giong 3DPW
 
@@ -80,6 +80,8 @@ def fusekin_train_sample(ds, img, img2bb_trans, rot, do_flip, bbox, img_shape, i
         # Nhan 2D day (cfg.DATASET.dense2d_vertex_file): dinh mesh GT co dinh chieu vao crop, cung camera voi GT 2D
         dense = project_dense(mesh_cam, proj_cam, img2bb_trans)
         targets['dense_img'] = dense[0]
+    if cfg.DATASET.get('debug_mesh2d', False):                       # chi de ve kiem tra (vis_dense2d)
+        targets['mesh_img'] = project_points(mesh_cam, proj_cam, img2bb_trans)[0]
     meta = {'img_path': img_path, 'img2bb_trans': img2bb_trans.astype(np.float32),
             'orig_joint_valid': np.ones((17, 1), dtype=np.float32), 'orig_joint_trunc': trunc,
             'fit_param_valid': param_valid.reshape(-1), 'fit_joint_trunc': np.ones((17, 1), dtype=np.float32),

@@ -6,6 +6,10 @@ Moi tap: N mau ngau nhien (seed co dinh), ve tren anh crop 256:
   do + xuong   = 17 khop H36M tinh tu mesh GT (muc tieu Refiner hien tai)
   xanh duong   = N diem day (tron dac = trong khung, vong rong = ngoai khung / trunc 0), kem chi so diem
   (--ckpt) cam = 17 khop Refiner du doan, vang = diem day Refiner du doan
+  mesh GT (tim nhat, ban trong suot) = toan bo 6890 dinh chieu vao crop (DATASET.debug_mesh2d)
+  trang = 2D annotation goc truoc PoseFix (chi tap train, can DATASET.return_clean_2d)
+Thong ke (--n_stat mau / tap train): loi giua 17 khop tu mesh va annotation goc tren 12 khop tay chan, chia kich
+thuoc nguoi -> % mau lech > 0.1 / > 0.2 (mesh pseudo-GT khong khop nguoi trong anh).
 Kiem tra: diem day phai nam TREN nguoi dung (khong lech / khong lat trai phai), ca o mau bi lat ngang; ty le / vi tri
 khop voi 17 khop do.
 Ra: <cfg.output_dir>/vis_dense2d_<tap>.png
@@ -26,6 +30,7 @@ parser.add_argument('--sets', type=str, default='Human36M,MuCo,MSCOCO,CrowdPose,
 parser.add_argument('--n', type=int, default=8)
 parser.add_argument('--seed', type=int, default=0)
 parser.add_argument('--ckpt', type=str, default='', help='Refiner (day) de ve them du doan')
+parser.add_argument('--n_stat', type=int, default=300, help='so mau / tap train de thong ke mesh lech annotation (0 = bo)')
 parser.add_argument('--gpu', type=str, default='0')
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -37,13 +42,17 @@ import torch
 from core.config import cfg, update_config
 update_config(args.cfg)
 cfg.DATASET.pw3d_test_gt2d = True
+cfg.DATASET.debug_mesh2d = True           # tra them targets['mesh_img'] de ve mesh
 assert cfg.DATASET.get('dense2d_vertex_file', ''), 'yml can DATASET.dense2d_vertex_file'
 
 import __init_path  # noqa: F401
 from models.diff_lifter import H36M_PARENTS
+from models.refiner2d import LIMB_IDX
+from utils.smpl import SMPL
 from utils.jotr_dataset import get_train_dataset, get_test_dataset
 
 HM = cfg.output_hm_shape[2]
+FACES = SMPL().face.astype(np.int64)        # (13776, 3)
 PX = cfg.input_img_shape[1] / HM                   # o luoi 64 -> px crop 256
 
 
@@ -60,6 +69,11 @@ def draw(sample, pred=None, title=''):
     img = (inputs['img'].numpy().transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8)[:, :, ::-1].copy()
     img = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)    # 512 cho de nhin
     s = 2.0
+    if 'mesh_img' in targets:                                                   # mesh GT ban trong suot
+        mp = (to_px_hm(targets['mesh_img']) * s).astype(np.int32)
+        overlay = img.copy()
+        cv2.fillPoly(overlay, [mp[f] for f in FACES], (255, 120, 200))
+        img = cv2.addWeighted(overlay, 0.35, img, 0.65, 0)
     j_in, m_in = to_px_norm(inputs['joints']), np.asarray(inputs['joints_mask']).reshape(-1)
     for (x, y), m in zip(j_in, m_in):
         if m > 0:
@@ -70,6 +84,9 @@ def draw(sample, pred=None, title=''):
             cv2.line(img, tuple(int(v * s) for v in g17[j]), tuple(int(v * s) for v in g17[p]), (0, 0, 220), 2)
     for x, y in g17:
         cv2.circle(img, (int(x * s), int(y * s)), 4, (0, 0, 255), -1)
+    if 'joint_img_clean' in targets:                                            # annotation goc (trang)
+        for x, y in to_px_hm(targets['joint_img_clean']):
+            cv2.circle(img, (int(x * s), int(y * s)), 3, (255, 255, 255), -1)
     d = to_px_hm(targets['dense_img'])
     tr = np.asarray(meta['dense_trunc']).reshape(-1)
     for k, ((x, y), t) in enumerate(zip(d, tr)):
@@ -86,6 +103,26 @@ def draw(sample, pred=None, title=''):
     return img
 
 
+def mesh_vs_annot(ds, n, rng):
+    """Loi 17 khop tu mesh so voi annotation goc (12 khop tay chan, khop annotation hop le), / kich thuoc nguoi."""
+    errs = []
+    for i in rng.choice(len(ds), size=min(n, len(ds)), replace=False):
+        inp, tgt, _ = ds[int(i)]
+        if 'joint_img_clean' not in tgt:
+            return None
+        g = np.asarray(tgt['orig_joint_img'], dtype=np.float32)[:, :2]
+        a = np.asarray(tgt['joint_img_clean'], dtype=np.float32)
+        m = np.asarray(inp['joints_mask']).reshape(-1) > 0
+        idx = [j for j in LIMB_IDX if m[j]]
+        if len(idx) < 4:
+            continue
+        size = max(np.ptp(g[:, 0]), np.ptp(g[:, 1]), 1e-6)
+        errs.append(float(np.linalg.norm(g[idx] - a[idx], axis=1).mean() / size))
+    e = np.asarray(errs)
+    return {'n': len(e), 'median': float(np.median(e)), 'gt0.1': 100 * float((e > 0.1).mean()),
+            'gt0.2': 100 * float((e > 0.2).mean())}
+
+
 def main():
     model = None
     if args.ckpt:
@@ -96,6 +133,11 @@ def main():
         ds = get_train_dataset(name, None) if name in ('Human36M', 'MuCo', 'MSCOCO', 'CrowdPose') else \
             get_test_dataset(name, None)
         idx = rng.choice(len(ds), size=min(args.n, len(ds)), replace=False)
+        if args.n_stat and name in ('Human36M', 'MuCo', 'MSCOCO', 'CrowdPose'):
+            st = mesh_vs_annot(ds, args.n_stat, np.random.default_rng(args.seed + 1))
+            if st is not None:
+                print(f'[{name}] mesh vs annotation goc ({st["n"]} mau): trung vi {100 * st["median"]:.1f}% kich thuoc '
+                      f'nguoi | lech > 10%: {st["gt0.1"]:.1f}% mau | lech > 20%: {st["gt0.2"]:.1f}% mau')
         tiles = []
         for i in idx:
             sample = ds[int(i)]
@@ -114,7 +156,8 @@ def main():
         out = os.path.join(cfg.output_dir, f'vis_dense2d_{name}.png')
         cv2.imwrite(out, grid)
         print(f'===> {name}: {len(idx)} mau -> {out}')
-    print('Chu thich: xanh la = 2D dau vao | do = 17 khop tu mesh | xanh duong = diem day (vong rong = ngoai khung)'
+    print('Chu thich: tim nhat = mesh GT | trang = annotation goc | xanh la = 2D dau vao | do = 17 khop tu mesh | '
+          'xanh duong = diem day (vong rong = ngoai khung)'
           + (' | cam = 17 khop du doan | vang (+) = diem day du doan' if model is not None else ''))
 
 

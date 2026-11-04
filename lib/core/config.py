@@ -120,6 +120,9 @@ cfg.DATASET.return_clean_2d = False
 # Bat -> mau fusekin_unified va 3DPW test (khi pw3d_test_gt2d) tra them targets['dense_img'] (N, 2) khung
 # output_hm_shape + meta['dense_trunc'] (N, 1). '' = TAT (bo key nhu cu).
 cfg.DATASET.dense2d_vertex_file = ''
+# CHI DE VE KIEM TRA (tools/vis_dense2d.py): mau fusekin_unified / 3DPW test (pw3d_test_gt2d) tra them
+# targets['mesh_img'] (6890, 2) = toan bo mesh GT chieu vao crop. Mac dinh TAT (khong dung khi train).
+cfg.DATASET.debug_mesh2d = False
 # Tat augmentation xoay (giu scale/flip). Chi dung cho chan doan lifter.
 cfg.DATASET.no_rot_aug = False
 # Mask khop Halpe SAI bang GT 2D (chi tap TRAIN Human36M / MuCo / MSCOCO / CrowdPose): khop Halpe hop le lech
