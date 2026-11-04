@@ -126,3 +126,11 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - Lệnh: `python main/train_img_lifter.py --cfg config/train_img_lifter_jotr.yaml --exp_name img_lifter_jotr --gpu 0`; eval: `python main/eval_img_lifter.py --cfg config/train_img_lifter_jotr.yaml --ckpt experiment/img_lifter_jotr/checkpoint/last.pth.tar --old_lifter_ckpt experiment/finetune_difflifter_d512_e15_jotr_pf05_3dpw/best_epoch.bin --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --gpu 0`.
 - Mốc: lifter cũ `jotr_pf05_3dpw` (có 3DPW-train) 3DPW 77.47 / Crowd 69.69 MPJPE17 toàn tập; eval có cột `old_lifter_op` trên cùng mẫu. Phép tách: `--ablate_img`, mean vs jpma, oracle min-K.
 - Kết quả: chưa có.
+
+## 11. Refiner DÀY: 17 khớp + 48 đỉnh mesh (2026-11-04, người dùng xác nhận, đã code, chưa chạy)
+
+- Lý do: HiPART (arXiv 2503.23331) cho thấy 2D dày tính từ mesh giúp lifter rõ (48 điểm −5.4 mm, 96 điểm −4.7 mm trên H36M); họ làm dày không dùng ảnh, Refiner của mình dự đoán điểm dày từ ẢNH.
+- Nhãn: `lib/utils/dense2d.py` chiếu 48 đỉnh SMPL cố định (FPS trên mesh mẫu, `tools/select_dense_vertices.py` → `config/dense48_fps.json`) từ mesh GT vào crop; tính ngay khi đọc dữ liệu (`fusekin_sample`, 3DPW test khi `pw3d_test_gt2d`). Lật ảnh: mesh dựng từ pose đã lật nên đỉnh giữ đúng vị trí giải phẫu.
+- Refiner: `num_dense` kênh thêm sau 17 khớp; `init_ckpt` chép từ `refiner2d_jotr_mesh` (17 kênh đầu của lớp final). ImgLifter hiện tại chỉ lấy 17 khớp đầu.
+- Trình tự: (1) `python tools/select_dense_vertices.py --n 48 --out config/dense48_fps.json` (xem hình .png); (2) `python tools/vis_dense2d.py --cfg config/train_refiner2d_jotr_mesh_dense48.yaml --n 8` (người dùng kiểm tra hình); (3) `python main/train_refiner2d.py --cfg config/train_refiner2d_jotr_mesh_dense48.yaml --exp_name refiner2d_dense48 --gpu 0`.
+- Kiểm tra sau train: 17 khớp không tệ hơn bản mesh (3DPW 4.67%), và lỗi điểm dày. Kết quả: chưa có.

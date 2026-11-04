@@ -1,0 +1,63 @@
+# =====================================================================
+# train_refiner2d_jotr_mesh_dense48 (2026-11-04, nguoi dung xac nhan): Refiner DAY = train_refiner2d_jotr_mesh.yaml
+# + du doan them 48 dinh mesh (config/dense48_fps.json, tools/select_dense_vertices.py) sau 17 khop -> 65 diem 2D.
+#   - khoi tao tu refiner2d_jotr_mesh (epoch cuoi): chep backbone / deconv / 17 kenh dau; 48 kenh moi khoi tao moi
+#   - fine-tune 10 epoch (lr 5e-4, giam x0.1 o 7, 9); du lieu / loss giong ban mesh
+#   - log 'loi 2D ra' tinh tren CA 65 diem; danh gia nhanh in loi 17 khop (so 4.67% 3DPW cua ban mesh) + loi diem day
+# Kiem tra nhan TRUOC khi train:
+#   python tools/select_dense_vertices.py --n 48 --out config/dense48_fps.json
+#   python tools/vis_dense2d.py --cfg config/train_refiner2d_jotr_mesh_dense48.yaml --n 8
+# Chay:
+#   python main/train_refiner2d.py --cfg config/train_refiner2d_jotr_mesh_dense48.yaml --exp_name refiner2d_dense48 --gpu 0
+# =====================================================================
+
+update_bbox: True          # giong JOTR yml
+DATASET:
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']   # KHONG 3dpw-train
+  workers: 8
+  pw3d_2d_source: 'openpose'     # danh gia: OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd)
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: False    # mask nhi phan, giong lifter jotr
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  posefix_scale: 1.0
+  posefix_fast: True       # giong tung bit ban goc, nhanh ~10%
+  fusekin_unified: True    # mau train thong nhat 4 bo (lib/utils/fusekin_sample.py)
+  return_clean_2d: True    # them targets['joint_img_clean'] = GT 2D truoc PoseFix (khong dung voi target mesh)
+  dense2d_vertex_file: 'config/dense48_fps.json'   # 48 dinh mesh co dinh -> targets dense_img, meta dense_trunc
+
+TRAIN:
+  print_freq: 20
+  batch_size: 64
+  shuffle: True
+  dataset_ratio: [0.25, 0.25, 0.25, 0.25]   # Human36M, MuCo, MSCOCO, CrowdPose
+  samples_per_epoch: 64000                   # 1000 iter / epoch voi batch 64
+  end_epoch: 10
+  lr: 0.0005                   # fine-tune tu ban mesh; backbone x REFINE2D.bb_lr_scale
+  lr_step: [7, 9]
+  lr_factor: 0.1
+
+TEST:
+  batch_size: 64
+  shuffle: False
+
+REFINE2D:
+  backbone_pretrained: 'spin'
+  target: 'mesh'
+  num_dense: 48
+  init_ckpt: 'experiment/refiner2d_jotr_mesh/checkpoint/last.pth.tar'
+  bb_lr_scale: 0.1
+  bb_bn_eval: True
+  heat_sigma: 2.0
+  deconv_ch: 256
+  w_coord: 1.0
+  w_heat: 0.1
+  w_nll: 0.1
+  input_drop_prob: 0.1
+  weight_decay: 0.0001
+  eval_sets: ['3dpw', '3dpw-pc', '3dpw-crowd']
+  eval_max_samples: 3000
+  far_ratio: 0.2

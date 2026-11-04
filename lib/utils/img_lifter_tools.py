@@ -49,7 +49,9 @@ def load_frozen_refiner(path, dev):
 def refiner_inputs(refiner, img, j2, jm):
     """j2 (B,17,2) [-1,1], jm (B,17) -> xy (B,17,2), log_b (B,17), f8 (B,2048,8,8), feat_j (B,17,C)."""
     out = refiner(img, j2 * (jm > 0).unsqueeze(-1).float(), jm.unsqueeze(-1), return_feats=True)
-    return out['xy'].float(), out['log_b'].float(), out['f8'].float(), out['feat_j'].float()
+    # Chi 17 khop (Refiner day co them diem sau 17 khop; ImgLifter 17 diem chua dung diem day)
+    return (out['xy'].float()[:, :17], out['log_b'].float()[:, :17], out['f8'].float(),
+            out['feat_j'].float()[:, :17])
 
 
 def pa_errors(pred, gt):

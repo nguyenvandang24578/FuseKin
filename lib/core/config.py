@@ -116,6 +116,10 @@ cfg.DATASET.pw3d_test_gt2d = False
 # (17, 2) = GT 2D TRUOC PoseFix, khung output_hm_shape, cung dinh nghia khop voi 2D dau vao. Khong doi 2D dau vao.
 # Mac dinh TAT (bo key giu nguyen nhu cu).
 cfg.DATASET.return_clean_2d = False
+# Nhan 2D DAY (2026-11-04): file json danh sach dinh SMPL (tools/select_dense_vertices.py, vd config/dense48_fps.json).
+# Bat -> mau fusekin_unified va 3DPW test (khi pw3d_test_gt2d) tra them targets['dense_img'] (N, 2) khung
+# output_hm_shape + meta['dense_trunc'] (N, 1). '' = TAT (bo key nhu cu).
+cfg.DATASET.dense2d_vertex_file = ''
 # Tat augmentation xoay (giu scale/flip). Chi dung cho chan doan lifter.
 cfg.DATASET.no_rot_aug = False
 # Mask khop Halpe SAI bang GT 2D (chi tap TRAIN Human36M / MuCo / MSCOCO / CrowdPose): khop Halpe hop le lech
@@ -388,6 +392,11 @@ cfg.REFINE2D.backbone_pretrained = 'spin'   # 'spin' | 'imagenet'
 # Muc tieu 2D: 'clean' = GT annotation truoc PoseFix (can DATASET.return_clean_2d) | 'mesh' = H36M-17 tinh tu mesh GT
 # chieu vao crop (targets orig_joint_img, mask orig_joint_trunc) -> cung dinh nghia khop voi GT 3D benchmark
 cfg.REFINE2D.target = 'clean'
+# Refiner day: so diem 2D day du doan them sau 17 khop (can DATASET.dense2d_vertex_file, target 'mesh'). 0 = TAT.
+cfg.REFINE2D.num_dense = 0
+# Khoi tao tu checkpoint Refiner khac (vd ban 17 khop): nap moi tensor cung shape; lop 'final' chep 17 kenh dau,
+# kenh diem day khoi tao moi. '' = khong.
+cfg.REFINE2D.init_ckpt = ''
 cfg.REFINE2D.bb_lr_scale = 0.1             # lr backbone = TRAIN.lr * bb_lr_scale (head dung TRAIN.lr)
 cfg.REFINE2D.bb_bn_eval = True             # backbone giu thong ke BN pretrain (giong [A]); head BN train binh thuong
 cfg.REFINE2D.heat_sigma = 2.0              # sigma Gauss (o luoi 64) cho heatmap dau vao va phan bo muc tieu

@@ -30,9 +30,13 @@ LIMB_IDX = tuple(H36M_NAMES.index(n) for n in LIMB_NAMES)
 
 
 class Refiner2D(nn.Module):
-    def __init__(self, num_joints=17, deconv_ch=256, heat_sigma=2.0, pretrained='spin', bb_bn_eval=True):
+    def __init__(self, num_joints=17, deconv_ch=256, heat_sigma=2.0, pretrained='spin', bb_bn_eval=True, num_dense=0):
+        """num_dense > 0 (Refiner day, 2026-11-04): du doan them num_dense diem 2D day (dinh mesh) SAU 17 khop.
+        Dau vao detector van 17 khop; diem day khong co dau vao (co = 0, |du doan - dau vao| = 0 o head bat dinh)."""
         super().__init__()
         self.num_joints = num_joints
+        self.num_dense = int(num_dense)
+        num_out = num_joints + self.num_dense
         self.heat_sigma = float(heat_sigma)
         self.bb_bn_eval = bool(bb_bn_eval)
         self.backbone = ResNetBackbone(50)
@@ -45,7 +49,7 @@ class Refiner2D(nn.Module):
                        nn.BatchNorm2d(deconv_ch), nn.ReLU(inplace=True)]
             cin = deconv_ch
         self.deconv = nn.Sequential(*layers)
-        self.final = nn.Conv2d(deconv_ch, num_joints, kernel_size=1)
+        self.final = nn.Conv2d(deconv_ch, num_out, kernel_size=1)          # 17 khop (+ num_dense diem day)
         # Head do bat dinh: [dac trung ky vong tai khop, co khop dau vao, |du doan - dau vao|, dinh xac suat] (detach)
         self.unc = nn.Sequential(nn.Linear(deconv_ch + 3, 128), nn.ReLU(inplace=True), nn.Linear(128, 1))
         for m in self.deconv.modules():
@@ -97,10 +101,14 @@ class Refiner2D(nn.Module):
         # Do bat dinh: chi hoc head unc (dau vao detach -> NLL khong keo backbone / heatmap)
         feat_j = torch.einsum('bjn,bcn->bjc', prob.detach(), x.detach().flatten(2).float())
         in_grid = (p2 + 1) * 0.5 * scale - 0.5
-        dist = torch.norm(xy_grid.detach() - in_grid, dim=-1) * m                  # 0 khi khong co khop dau vao
+        dist = torch.norm(xy_grid.detach()[:, :J] - in_grid, dim=-1) * m           # 0 khi khong co khop dau vao
+        m_all, dist_all = m, dist
+        if self.num_dense:                                                         # diem day: khong co dau vao
+            z = torch.zeros(B, self.num_dense, device=img.device, dtype=m.dtype)
+            m_all, dist_all = torch.cat([m, z], 1), torch.cat([dist, z], 1)
         peak = prob.detach().amax(-1)
-        unc_in = torch.cat([feat_j, m.unsqueeze(-1), dist.unsqueeze(-1), peak.unsqueeze(-1)], -1)
-        log_b = self.unc(unc_in).squeeze(-1).clamp(-6.0, 6.0)                     # (B, J), log(o luoi)
+        unc_in = torch.cat([feat_j, m_all.unsqueeze(-1), dist_all.unsqueeze(-1), peak.unsqueeze(-1)], -1)
+        log_b = self.unc(unc_in).squeeze(-1).clamp(-6.0, 6.0)                     # (B, J [+ N]), log(o luoi)
         out = {'logits': logits, 'xy': xy, 'xy_grid': xy_grid, 'log_b': log_b}
         if return_feats:
             # Cho ImgLifter (lib/models/img_lifter.py): dac trung anh toan cuc + dac trung ky vong tai tung khop

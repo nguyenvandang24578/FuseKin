@@ -29,13 +29,36 @@ VARIANTS = ('op', 'refine', 'refine_fill', 'refine_limb', 'op_fill', 'op_fill_al
 def refine2d_arch():
     R = cfg.REFINE2D
     return {'num_joints': 17, 'deconv_ch': int(R.deconv_ch), 'heat_sigma': float(R.heat_sigma),
-            'bb_bn_eval': bool(R.bb_bn_eval)}
+            'bb_bn_eval': bool(R.bb_bn_eval), 'num_dense': int(R.get('num_dense', 0))}
 
 
 def build_refiner(pretrained, arch=None):
     a = dict(arch or refine2d_arch())
     return Refiner2D(num_joints=a['num_joints'], deconv_ch=a['deconv_ch'], heat_sigma=a['heat_sigma'],
-                     pretrained=pretrained, bb_bn_eval=a['bb_bn_eval'])
+                     pretrained=pretrained, bb_bn_eval=a['bb_bn_eval'],
+                     num_dense=int(a.get('num_dense', 0)))          # checkpoint cu khong co key -> 0
+
+
+def init_refiner_from(model, path):
+    """Khoi tao Refiner (vd ban day) tu checkpoint Refiner khac: chep moi tensor cung ten + cung shape; lop 'final'
+    (so kenh khac) chep cac kenh dau cua checkpoint, kenh con lai giu khoi tao moi. Bao loi neu co key la."""
+    ck = torch.load(path, map_location='cpu', weights_only=False)
+    src, own = ck['model_state'], model.state_dict()
+    extra = [k for k in src if k not in own]
+    assert not extra, f'key thua trong {path}: {extra[:5]}'
+    partial = []
+    for k, v in src.items():
+        if own[k].shape == v.shape:
+            own[k] = v
+        elif k in ('final.weight', 'final.bias') and v.shape[0] < own[k].shape[0] and v.shape[1:] == own[k].shape[1:]:
+            own[k][:v.shape[0]] = v
+            partial.append(k)
+        else:
+            raise ValueError(f'lech shape {k}: {tuple(v.shape)} vs {tuple(own[k].shape)}')
+    missing = [k for k in own if k not in src]
+    model.load_state_dict(own, strict=True)
+    print(f'===> Khoi tao Refiner tu {path} (epoch {ck.get("epoch")}); chep mot phan: {partial}; key moi: {missing}')
+    return model
 
 
 def load_refiner(path, dev):
@@ -77,6 +100,7 @@ def eval_refiner(model, loader, dev, far_ratio=0.2, lifter=None, regressor=None,
     lift = {v: [] for v in VARIANTS}
     logb_all, loge_all = [], []
     j17 = {k: np.zeros(17) for k in ('e_op', 'e_ref', 'disp', 'n')}     # (c) loi tung khop, ca 17 khop
+    dense_acc = [0.0, 0.0, 0.0]                                          # Refiner day: tong loi, so diem, so diem xa
     reg = torch.as_tensor(regressor, dtype=torch.float32, device=dev) if regressor is not None else None
     seen = 0
     for inputs, targets, meta in loader:
@@ -94,8 +118,15 @@ def eval_refiner(model, loader, dev, far_ratio=0.2, lifter=None, regressor=None,
         gin = gin > 0
 
         out = model(img, j2, jm.unsqueeze(-1))
-        rx = out['xy'].float()
-        b = torch.exp(out['log_b'].float())
+        rx = out['xy'].float()[:, :17]                                            # 17 khop (bo diem day neu co)
+        b = torch.exp(out['log_b'].float()[:, :17])
+        if 'dense_img' in targets and out['xy'].shape[1] > 17:                    # Refiner day: loi diem day
+            dg = targets['dense_img'].to(dev).float() / hm * 2 - 1
+            dv = meta['dense_trunc'].to(dev).float().reshape(B, -1)
+            de = torch.norm(out['xy'].float()[:, 17:] - dg, dim=-1) / person_size(g2)[:, None]
+            dense_acc[0] += float((de * dv).sum())
+            dense_acc[1] += float(dv.sum())
+            dense_acc[2] += float(((de > far_ratio).float() * dv).sum())
         fill = det | (limb[None] & (b <= fill_max_b))
         n_fill += float((fill & ~det & limb[None]).sum())
         n_missing += float((~det & limb[None]).sum())
@@ -152,6 +183,9 @@ def eval_refiner(model, loader, dev, far_ratio=0.2, lifter=None, regressor=None,
     res['corr_logb_logerr'] = float(np.corrcoef(lb, le)[0, 1]) if lb.size > 2 else float('nan')
     if lifter is not None:
         res['lift_mpjpe17'] = {v: float(np.concatenate(lift[v]).mean()) for v in VARIANTS}
+    if dense_acc[1] > 0:
+        res['dense'] = {'n_points': int(dense_acc[1]), 'err_pct': 100 * dense_acc[0] / dense_acc[1],
+                        'far_pct': 100 * dense_acc[2] / dense_acc[1]}
     return res
 
 
@@ -166,6 +200,10 @@ def format_result(name, r):
                  f'corr(log b, log loi) {r["corr_logb_logerr"]:.3f}')
     if 'lift_mpjpe17' in r:
         lines.append('  lifter MPJPE17 (mm): ' + ' | '.join(f'{v} {x:.2f}' for v, x in r['lift_mpjpe17'].items()))
+    if 'dense' in r:
+        d = r['dense']
+        lines.append(f'  diem day (dinh mesh, moi diem GT trong khung): loi {d["err_pct"]:.2f}% | xa {d["far_pct"]:.2f}% '
+                     f'| {d["n_points"]} diem')
     if 'per_joint17_pct' in r:
         lines.append('  loi tung khop (% kich thuoc nguoi; GT than / dau khac dinh nghia detector): '
                      'khop | n | op | refine | doi |refine - op|')

@@ -46,12 +46,16 @@ if TARGET == 'clean':
     assert cfg.DATASET.get('return_clean_2d', False), "target 'clean' can DATASET.return_clean_2d: True"
 assert cfg.DATASET.fusekin_unified, 'Refiner 2D dung mau fusekin_unified (anh + 2D + GT)'
 cfg.DATASET.pw3d_test_gt2d = True          # tap danh gia 3DPW tra GT 2D
+NUM_DENSE = int(cfg.REFINE2D.get('num_dense', 0))
+if NUM_DENSE:                              # Refiner day: 17 khop + NUM_DENSE dinh mesh (2026-11-04)
+    assert TARGET == 'mesh', "Refiner day can REFINE2D.target: 'mesh' (cung dinh nghia mesh voi diem day)"
+    assert cfg.DATASET.get('dense2d_vertex_file', ''), 'Refiner day can DATASET.dense2d_vertex_file'
 
 import __init_path  # noqa: F401
 from core.base import get_dataloader
 from models.refiner2d import refiner_losses
 from utils.jotr_dataset import get_test_dataset
-from utils.refiner2d_tools import build_refiner, refine2d_arch, eval_refiner, format_result
+from utils.refiner2d_tools import build_refiner, refine2d_arch, eval_refiner, format_result, init_refiner_from
 
 random.seed(args.seed)
 np.random.seed(args.seed)
@@ -70,8 +74,12 @@ def main():
 
     log(f'cfg={args.cfg} | REFINE2D={json.dumps(dict(R), default=str)} | TRAIN lr={cfg.TRAIN.lr} '
         f'lr_step={cfg.TRAIN.lr_step} end_epoch={cfg.TRAIN.end_epoch} batch={cfg.TRAIN.batch_size}')
-    model = build_refiner(pretrained=R.backbone_pretrained).to(DEVICE)
-    log(f'Refiner 2D: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M tham so')
+    model = build_refiner(pretrained=R.backbone_pretrained)
+    if R.get('init_ckpt', '') and not args.resume_training:
+        init_refiner_from(model, R.init_ckpt)                             # vd Refiner 17 khop -> Refiner day
+        log(f'Khoi tao tu {R.init_ckpt}')
+    model = model.to(DEVICE)
+    log(f'Refiner 2D: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M tham so, {17 + NUM_DENSE} diem ra')
     opt = torch.optim.AdamW([{'params': model.head_parameters(), 'lr': cfg.TRAIN.lr},
                              {'params': model.backbone_parameters(), 'lr': cfg.TRAIN.lr * float(R.bb_lr_scale)}],
                             weight_decay=float(R.weight_decay))
@@ -115,7 +123,10 @@ def main():
             else:
                 tgt = targets['joint_img_clean'].to(DEVICE).float() / hm * 2 - 1  # GT 2D annotation sach [-1,1]
                 valid = (jm > 0).float()
-            drop = (torch.rand_like(jm) < float(R.input_drop_prob)).float() * (jm > 0).float()
+            if NUM_DENSE:                                                         # + diem day (dinh mesh GT)
+                tgt = torch.cat([tgt, targets['dense_img'].to(DEVICE).float() / hm * 2 - 1], 1)
+                valid = torch.cat([valid, (meta['dense_trunc'].to(DEVICE).float().reshape(B, -1) > 0).float()], 1)
+            drop =(torch.rand_like(jm) < float(R.input_drop_prob)).float() * (jm > 0).float()
             jm_in = jm * (1 - drop)                                               # khop bi bo: van giam sat
             out = model(img, j2 * (jm_in > 0).unsqueeze(-1), jm_in.unsqueeze(-1))
             loss, parts = refiner_losses(out, tgt, valid, sigma=float(R.heat_sigma), w_coord=float(R.w_coord),
@@ -125,8 +136,8 @@ def main():
             opt.step()
 
             with torch.no_grad():
-                keep = valid * (jm_in > 0).float()                                # loi dau vao so voi CUNG muc tieu
-                in_err = (torch.norm(j2 - tgt, dim=-1) * keep).sum() / keep.sum().clamp_min(1) * 128.0
+                keep = valid[:, :17] * (jm_in > 0).float()                        # loi dau vao so voi CUNG muc tieu
+                in_err = (torch.norm(j2 - tgt[:, :17], dim=-1) * keep).sum() / keep.sum().clamp_min(1) * 128.0
             run['loss'] += float(loss)
             for k in ('coord', 'heat', 'nll', 'err_px'):
                 run[k] += parts[k]
