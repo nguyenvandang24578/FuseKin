@@ -44,6 +44,7 @@ from torch.utils.data import DataLoader, Subset
 
 from core.config import cfg, update_config
 update_config(args.cfg)
+cfg.DATASET.pw3d_test_gt2d = True          # GT 2D mesh cho chan doan lech 2D (reproj)
 assert cfg.DATASET.pw3d_2d_source == 'openpose', 'Benchmark: dau vao 3DPW la OpenPose / HHRNet (pw3d_2d_source openpose)'
 
 import __init_path  # noqa: F401

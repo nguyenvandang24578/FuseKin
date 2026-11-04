@@ -39,6 +39,7 @@ from tqdm import tqdm
 from core.config import cfg, update_config
 update_config(args.cfg)
 assert cfg.DATASET.fusekin_unified, 'ImgLifter dung mau fusekin_unified (anh + 2D + GT 3D tu mesh)'
+cfg.DATASET.pw3d_test_gt2d = True          # tap danh gia 3DPW tra GT 2D -> log lech 2D (reproj)
 assert cfg.IMGLIFT.refiner_ckpt, 'Can IMGLIFT.refiner_ckpt (checkpoint Refiner 2D target mesh)'
 
 import __init_path  # noqa: F401
