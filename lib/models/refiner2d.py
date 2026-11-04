@@ -74,8 +74,9 @@ class Refiner2D(nn.Module):
     def backbone_parameters(self):
         return [p for n, p in self.backbone.named_parameters() if not n.startswith('heat_fuse.')]
 
-    def forward(self, img, pose_2d, joints_mask):
-        """img (B,3,256,256) RGB [0,1]; pose_2d (B,J,2|3) [-1,1]; joints_mask (B,J,1) (0 = khong co khop)."""
+    def forward(self, img, pose_2d, joints_mask, return_feats=False):
+        """img (B,3,256,256) RGB [0,1]; pose_2d (B,J,2|3) [-1,1]; joints_mask (B,J,1) (0 = khong co khop).
+        return_feats=True: tra them 'f8' (B,2048,8,8) va 'feat_j' (B,J,C) (mac dinh False = nhu cu)."""
         B, J = pose_2d.shape[0], self.num_joints
         p2 = pose_2d[..., :2].float()
         m = (joints_mask.reshape(B, J).float() > 0).float()
@@ -100,7 +101,12 @@ class Refiner2D(nn.Module):
         peak = prob.detach().amax(-1)
         unc_in = torch.cat([feat_j, m.unsqueeze(-1), dist.unsqueeze(-1), peak.unsqueeze(-1)], -1)
         log_b = self.unc(unc_in).squeeze(-1).clamp(-6.0, 6.0)                     # (B, J), log(o luoi)
-        return {'logits': logits, 'xy': xy, 'xy_grid': xy_grid, 'log_b': log_b}
+        out = {'logits': logits, 'xy': xy, 'xy_grid': xy_grid, 'log_b': log_b}
+        if return_feats:
+            # Cho ImgLifter (lib/models/img_lifter.py): dac trung anh toan cuc + dac trung ky vong tai tung khop
+            out['f8'] = f8
+            out['feat_j'] = feat_j
+        return out
 
 
 def refiner_losses(out, target_xy, valid, sigma=2.0, w_coord=1.0, w_heat=0.1, w_nll=0.1):

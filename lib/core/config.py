@@ -401,6 +401,29 @@ cfg.REFINE2D.eval_sets = ['3dpw', '3dpw-pc', '3dpw-crowd']   # danh gia nhanh mo
 cfg.REFINE2D.eval_max_samples = 3000       # so mau dau moi tap khi danh gia nhanh (0 = toan bo)
 cfg.REFINE2D.far_ratio = 0.2               # khop "xa": loi > far_ratio x kich thuoc nguoi (giong compare_2d_sources)
 
+""" ImgLifter (2026-11-04): diffusion 2D -> 3D CO ANH, dung Refiner 2D dong bang (lib/models/img_lifter.py) """
+# Chi main/train_img_lifter.py, main/eval_img_lifter.py doc nhom nay; train.py / Teacher / Student / DiffLifter cu khong dung.
+# Du lieu, batch, lich lr dung chung cfg.DATASET / cfg.TRAIN (base.get_dataloader); thu muc = --exp_name.
+cfg.IMGLIFT = edict()
+cfg.IMGLIFT.refiner_ckpt = ''          # checkpoint Refiner 2D (target mesh), vd experiment/refiner2d_jotr_mesh/checkpoint/last.pth.tar
+cfg.IMGLIFT.embed_dim = 512
+cfg.IMGLIFT.depth = 8
+cfg.IMGLIFT.num_heads = 8
+cfg.IMGLIFT.mlp_ratio = 2.0
+cfg.IMGLIFT.drop_path = 0.1
+cfg.IMGLIFT.timesteps = 1000
+cfg.IMGLIFT.scale = 3.0                # nhan pose 3D (met) truoc khi them nhieu, giong DiffLifter cu
+cfg.IMGLIFT.train_xy_noise = 0.5       # nhieu Gauss std = he so x b cong vao xy Refiner luc train (0 = tat)
+cfg.IMGLIFT.input_drop_prob = 0.1      # bo ngau nhien khop dau vao Refiner (det = 0) luc train
+cfg.IMGLIFT.weight_decay = 0.01
+cfg.IMGLIFT.ema_decay = 0.999
+cfg.IMGLIFT.eval_sets = ['3dpw', '3dpw-pc', '3dpw-crowd']   # danh gia nhanh moi epoch (chi log)
+cfg.IMGLIFT.eval_max_samples = 3000
+cfg.IMGLIFT.eval_K = 5                 # so gia thuyet / buoc DDIM khi danh gia nhanh
+cfg.IMGLIFT.eval_S = 2
+cfg.IMGLIFT.eta = 1.0                  # DDIM eta
+cfg.IMGLIFT.jpma_max_b = 3.0           # gop jpma: chi chon theo 2D o khop co b <= nguong (o luoi 64)
+
 """ Test Detail """
 cfg.TEST = edict()
 cfg.TEST.batch_size = 64

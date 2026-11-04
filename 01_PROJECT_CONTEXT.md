@@ -129,3 +129,11 @@ Mục tiêu: dùng ảnh sửa 2D detector **trước** khi lift (nhầm ngườ
 - Đánh giá (`lib/utils/refiner2d_tools.py`, `main/eval_refiner2d.py`): 3DPW/OC/PC/Crowd với OpenPose/HHRNet; 12 khớp tay chân; khớp xa = lỗi > 0.2 × kích thước người (giống `compare_2d_sources`). Biến thể `op` / `refine` (giữ mask detector) / `refine_fill` (điền khớp tay chân bị bỏ sót khi b ≤ `--fill_max_b`). Tùy chọn lifter đóng băng → MPJPE17.
 - Chọn checkpoint: báo theo **epoch cuối** (lịch cố định); không chọn theo 3dpw-val (chứa Crowd) hay test.
 - Config: `cfg.DATASET.return_clean_2d`, `cfg.REFINE2D.*` (mặc định tắt / không ảnh hưởng run cũ). YAML `config/train_refiner2d_jotr.yaml`. Bản sao file dataset/config trước khi sửa: `_to_delete/bak_refiner2d/`.
+
+## 10. ImgLifter (2026-11-04, đã code, chưa chạy) — thay DiffLifter cũ
+
+- `lib/models/img_lifter.py`: diffusion 2D → 3D **có ảnh**. Đầu vào từ Refiner 2D đóng băng (`refiner2d_jotr_mesh`): `xy` (định nghĩa mesh), `log_b`, cờ detector có khớp, `cam_bbox`, `f8` (2048×8×8 → 64 token ảnh), `feat_j` (đặc trưng kỳ vọng tại khớp; `Refiner2D.forward(..., return_feats=True)`).
+- Điều kiện khớp c_j = MLP([x, y, log_b, det, cam_bbox]) + Linear(feat_j): cộng ở đầu vào; adaLN-Zero (từ c_j + t) ở mọi block; cross-attn khớp → 64 token ảnh ở mọi block. 8 block, D=512, 8 head. Diffusion như DiffLifter cũ (cosine T=1000, dự đoán x0, scale 3, DDIM, loss MPJPE L2).
+- Train (`main/train_img_lifter.py`): 4 bộ, không 3DPW; 2D vào Refiner = GT + PoseFix 1.0; bỏ ngẫu nhiên khớp vào (`input_drop_prob`); nhiễu thêm vào xy theo b (`train_xy_noise`, b chặn 8 ô); mục tiêu `orig_joint_cam` (H36M-17 từ mesh, mét, root-relative); EMA 0.999.
+- Suy luận: K giả thuyết × S bước DDIM; gộp `mean` hoặc `jpma` (fit weak-perspective trọng số 1/b², chọn giả thuyết theo từng khớp khi b ≤ `jpma_max_b`). Eval (`main/eval_img_lifter.py`, `lib/utils/img_lifter_tools.py`): MPJPE17/PA, oracle min-K, `--ablate_img`, so với lifter cũ trên cùng mẫu.
+- Config `cfg.IMGLIFT.*`, YAML `config/train_img_lifter_jotr.yaml`. Chưa ghép vào Student.
