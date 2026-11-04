@@ -18,14 +18,16 @@ def imglift_arch():
     L = cfg.IMGLIFT
     return {'dim': int(L.embed_dim), 'depth': int(L.depth), 'num_heads': int(L.num_heads),
             'mlp_ratio': float(L.mlp_ratio), 'drop_path': float(L.drop_path), 'timesteps': int(L.timesteps),
-            'scale': float(L.scale), 'feat_j_ch': int(cfg.REFINE2D.deconv_ch), 'num_ctx': int(L.num_ctx)}
+            'scale': float(L.scale), 'feat_j_ch': int(cfg.REFINE2D.deconv_ch), 'num_ctx': int(L.num_ctx),
+            'markov': bool(L.markov_layer), 'markov_gate_b': bool(L.markov_gate_b)}
 
 
 def build_img_lifter(arch=None):
     a = dict(arch or imglift_arch())
     return ImgLifter(num_joints=17, dim=a['dim'], depth=a['depth'], num_heads=a['num_heads'],
                      mlp_ratio=a['mlp_ratio'], drop_path=a['drop_path'], timesteps=a['timesteps'],
-                     scale=a['scale'], feat_j_ch=a['feat_j_ch'], num_ctx=int(a.get('num_ctx', 0)))   # ckpt cu: 0
+                     scale=a['scale'], feat_j_ch=a['feat_j_ch'], num_ctx=int(a.get('num_ctx', 0)),   # ckpt cu: 0
+                     markov=bool(a.get('markov', False)), markov_gate_b=bool(a.get('markov_gate_b', False)))
 
 
 def load_img_lifter(path, dev):
@@ -102,14 +104,19 @@ def eval_img_lifter(lifter, refiner, loader, dev, regressor, K=10, S=4, eta=1.0,
     lifter.eval()
     reg = torch.as_tensor(regressor, dtype=torch.float32, device=dev)
     acc = {}
+    cur = {'jm': None}                                                      # mask detector cua batch hien tai
     hm = torch.tensor([cfg.output_hm_shape[2], cfg.output_hm_shape[1]], dtype=torch.float32, device=dev)
 
     def add(name, pred, gt17, g2=None, gin=None):
         e = (torch.norm(pred - gt17, dim=-1).mean(-1) * 1000).cpu().numpy()
         p = pa_errors(pred, gt17).cpu().numpy()
-        acc.setdefault(name, {'mpjpe': [], 'pa': [], 'reproj': []})
+        acc.setdefault(name, {'mpjpe': [], 'pa': [], 'reproj': [], 'miss': [0.0, 0], 'vis': [0.0, 0]})
         acc[name]['mpjpe'].append(e)
         acc[name]['pa'].append(p)
+        ej = torch.norm(pred - gt17, dim=-1) * 1000                         # (B,17) mm, tach khop detector sot / co
+        miss = cur['jm'] <= 0
+        acc[name]['miss'][0] += float(ej[miss].sum()); acc[name]['miss'][1] += int(miss.sum())
+        acc[name]['vis'][0] += float(ej[~miss].sum()); acc[name]['vis'][1] += int((~miss).sum())
         if g2 is not None:                                                  # (chan doan 1) lech pha 3D - 2D
             acc[name]['reproj'].append(reproj_errors(pred, g2, gin).cpu().numpy())
 
@@ -122,6 +129,7 @@ def eval_img_lifter(lifter, refiner, loader, dev, regressor, K=10, S=4, eta=1.0,
         j2 = inputs['joints'].to(dev).float()[..., :2]
         jm = inputs['joints_mask'].to(dev).float().reshape(B, 17)
         cam = inputs['cam_bbox'].to(dev).float()
+        cur['jm'] = jm
         gt17 = torch.einsum('jk,bkc->bjc', reg, targets['smpl_mesh_cam'].to(dev).float())
         gt17 = gt17 - gt17[:, 0:1]
         g2 = gin = None
@@ -154,6 +162,9 @@ def eval_img_lifter(lifter, refiner, loader, dev, regressor, K=10, S=4, eta=1.0,
         d = {'mpjpe17': float(np.concatenate(v['mpjpe']).mean()), 'pa_mpjpe17': float(np.concatenate(v['pa']).mean())}
         if v['reproj']:
             d['reproj_px'] = float(np.concatenate(v['reproj']).mean())
+        d['mpjpe_miss'] = v['miss'][0] / max(v['miss'][1], 1)               # khop detector sot (thuong bi che)
+        d['mpjpe_vis'] = v['vis'][0] / max(v['vis'][1], 1)
+        d['miss_ratio'] = v['miss'][1] / max(v['miss'][1] + v['vis'][1], 1)
         return d
     return {'n': seen, 'K': K, 'S': S, 'ablate_img': bool(ablate_img), 'res': {k: summ(v) for k, v in acc.items()}}
 
@@ -163,8 +174,13 @@ def format_eval(name, r):
     lines = [s]
     for k, v in r['res'].items():
         rp = f' | lech 2D {v["reproj_px"]:5.2f} px' if 'reproj_px' in v else ''
-        lines.append(f'  {k:<14} MPJPE17 {v["mpjpe17"]:7.2f} | PA {v["pa_mpjpe17"]:6.2f}{rp}')
+        ms = (f' | khop sot {v["mpjpe_miss"]:6.2f} / co {v["mpjpe_vis"]:6.2f}' if 'mpjpe_miss' in v else '')
+        lines.append(f'  {k:<14} MPJPE17 {v["mpjpe17"]:7.2f} | PA {v["pa_mpjpe17"]:6.2f}{rp}{ms}')
     if any('reproj_px' in v for v in r['res'].values()):
         lines.append('  (lech 2D: fit scale + dich toi uu tu XY pose 3D sang GT 2D mesh, px crop 256; gt3d_san = muc san '
                      'do chieu phoi canh)')
+    v0 = next(iter(r['res'].values()), None)
+    if v0 is not None and 'miss_ratio' in v0:
+        lines.append(f'  (khop sot / co: MPJPE tung khop, mm, theo mask detector OpenPose / HHRNet; ty le khop sot '
+                     f'{100 * v0["miss_ratio"]:.1f}%)')
     return '\n'.join(lines)

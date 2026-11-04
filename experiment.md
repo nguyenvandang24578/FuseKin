@@ -140,3 +140,9 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - Train 5 bộ, tỷ lệ 0.2 mỗi bộ: Human36M, MuCo, MSCOCO, CrowdPose (GT + PoseFix) + 3dpw-train (OpenPose). Key `DATASET.drop_raw_smpl_stats` để collate được.
 - Đổi 2 yếu tố so với `img_lifter_jotr` (dày + 3dpw-train) → không tách được đóng góp. 3dpw-train phá giao thức JOTR với OC/PC → báo thêm `--ocpc_mode test`.
 - Config `config/train_img_lifter_dense48_3dpw.yaml`, exp `img_lifter_dense48_3dpw`. Kết quả: chưa có.
+
+## 13. ImgLifter dày + lớp Markov + loss xương/góc (2026-11-05, người dùng xác nhận gộp, đã code, chưa chạy)
+- Ý tưởng Markov Optimization Layer (DiffusionPose, AAAI-26): mỗi block truyền tin giữa 17 token khớp theo 16 xương H36M, msg = ψ(h_i)·φ(h_i,h_j), gộp logsumexp, khởi tạo 0. Điểm mới: cổng sigmoid(a(log_b − c)) theo độ bất định Refiner → khớp mơ hồ nhận nhiều từ khớp kề.
+- Loss trên x0: `w_bone` × L1 độ dài xương + `w_angle` × (Δcos góc 2 xương nối tiếp)². Key `IMGLIFT.markov_layer / markov_gate_b / w_bone / w_angle`, mặc định tắt.
+- Eval thêm MPJPE tách khớp detector sót / có.
+- Config `config/train_img_lifter_dense48_3dpw_markov.yaml`, so với §12. Đổi 2 thành phần cùng lúc; ablation chạy sau. Kết quả: chưa có.

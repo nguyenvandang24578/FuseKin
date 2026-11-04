@@ -99,7 +99,7 @@ def main():
     decay = float(L.ema_decay)
     for epoch in range(begin, cfg.TRAIN.end_epoch + 1):
         model.train()
-        run, nb = {'loss_mm': 0.0, 'xy_err_px': 0.0}, 0
+        run, nb = {'loss_mm': 0.0, 'xy_err_px': 0.0, 'bone_mm': 0.0, 'angle': 0.0}, 0
         pbar = tqdm(train_loader, desc=f'Epoch {epoch}')
         for i, (inputs, targets, meta) in enumerate(pbar):
             img = inputs['img'].to(DEVICE).float()
@@ -117,7 +117,8 @@ def main():
                 b = torch.exp(log_b).clamp(max=8.0)                               # chan 8 o (32 px): log_b toi da 6
                 xy = xy + torch.randn_like(xy) * (b / 32.0 * float(L.train_xy_noise)).unsqueeze(-1)
             cond7 = ImgLifter.make_cond7(xy, log_b, lifter_det(jm_in, NC), cam)
-            loss, _ = model.loss(gt3d, cond7, fj, f8, valid)
+            loss, _ = model.loss(gt3d, cond7, fj, f8, valid,
+                                 w_bone=float(L.w_bone), w_angle=float(L.w_angle))   # 0 = tat (chi MPJPE)
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -130,7 +131,10 @@ def main():
                 g2 = g2 / torch.tensor([cfg.output_hm_shape[2], cfg.output_hm_shape[1]], device=DEVICE) * 2 - 1
                 gv = meta['orig_joint_trunc'].to(DEVICE).float().reshape(B, 17)
                 xy_err = (torch.norm(xy[:, :17] - g2, dim=-1) * gv).sum() / gv.sum().clamp_min(1) * 128.0
-            run['loss_mm'] += float(loss) * 1000
+            tm = model.last_terms                                                 # tung thanh phan, chua nhan trong so
+            run['loss_mm'] += tm['mpjpe'] * 1000
+            run['bone_mm'] += tm.get('bone', 0.0) * 1000
+            run['angle'] += tm.get('angle', 0.0)
             run['xy_err_px'] += float(xy_err)
             nb += 1
             if i % cfg.TRAIN.print_freq == 0:
@@ -138,7 +142,9 @@ def main():
                                      f'{run["xy_err_px"] / nb:.1f} px')
         sched.step()
         log(f'Epoch {epoch} | lr {opt.param_groups[0]["lr"]:.2e} | MPJPE x0 (train, moi t) '
-            f'{run["loss_mm"] / max(nb, 1):.2f} mm | loi 2D Refiner {run["xy_err_px"] / max(nb, 1):.2f} px')
+            f'{run["loss_mm"] / max(nb, 1):.2f} mm | loi 2D Refiner {run["xy_err_px"] / max(nb, 1):.2f} px'
+            + (f' | bone {run["bone_mm"] / max(nb, 1):.2f} mm | angle (cos^2) {run["angle"] / max(nb, 1):.4f}'
+               if float(L.w_bone) > 0 or float(L.w_angle) > 0 else ''))
 
         ck = {'epoch': epoch, 'model_state': ema.state_dict(), 'imglift_arch': imglift_arch(),
               'refiner_ckpt': L.refiner_ckpt, 'cfg_file': args.cfg}

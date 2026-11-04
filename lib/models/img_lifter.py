@@ -10,6 +10,15 @@ Dieu kien tung khop c_j = Linear([x, y, log_b, det, cam_bbox]) + Linear(feat_j).
 Diffusion giong DiffLifter cu: cosine T=1000, du doan x0, scale pose x3, DDIM eta=1; loss MPJPE (L2) tren x0.
 Suy luan: K gia thuyet x S buoc DDIM, gop 'mean' hoac 'jpma' (moi khop chon gia thuyet chieu 2D khop xy nhat;
 khop co b > jpma_max_b giu trung binh). Output: (B,17,3) met, root-relative tai Pelvis, dinh nghia khop mesh.
+
+Tuy chon (2026-11-05, y tuong Markov Optimization Layer cua DiffusionPose AAAI-26, mac dinh TAT):
+  markov_layer: moi block them 1 lop truyen tin giua 17 token khop THEO XUONG (16 canh H36M), sau self-attn.
+    msg_{j->i} = psi(h_i) * phi(h_i, h_j) (psi = h_i W_n, phi = [h_i; h_j] W_e, nhan tung phan tu), gop logsumexp
+    tren cac khop ke j, chieu ve D (khoi tao 0 -> luc dau la identity), cong residual.
+    Ban don gian: 1 vong / block (bo tich tin nhan bac 2 cua cong thuc (1)); 8 block -> truyen xa nhieu bac.
+  markov_gate_b: phan tin cong vao nhan cong g = sigmoid(a * (log_b - c)) (a, c hoc duoc) -> khop mo ho (b lon,
+    bi che / detector sot) nhan nhieu tu khop ke, khop ro giu dac trung cua minh. (Diem moi so voi paper.)
+  loss: w_bone x L1 do dai 16 xuong + w_angle x (cos goc 2 xuong noi tiep: du doan - GT)^2, tren x0 du doan.
 """
 import torch
 import torch.nn as nn
@@ -23,6 +32,66 @@ except ImportError:
 
 COND_DIM = 7     # [x, y, log_b, det, cam_bbox(3)]
 
+# Xuong H36M-17 (cha, con), goc tai Pelvis. Thu tu khop: Pelvis, R_Hip, R_Knee, R_Ankle, L_Hip, L_Knee, L_Ankle,
+# Torso, Neck, Nose, Head_top, L_Shoulder, L_Elbow, L_Wrist, R_Shoulder, R_Elbow, R_Wrist
+H36M_BONES = ((0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 6), (0, 7), (7, 8), (8, 9), (9, 10),
+              (8, 11), (11, 12), (12, 13), (8, 14), (14, 15), (15, 16))
+# Cap xuong noi tiep (xuong a ket thuc tai khop ma xuong b bat dau) -> rang buoc goc. 13 cap.
+H36M_BONE_PAIRS = tuple((a, b) for a, (_, ca) in enumerate(H36M_BONES)
+                        for b, (pb, _) in enumerate(H36M_BONES) if pb == ca)
+
+
+def h36m_adjacency(num_joints=17):
+    adj = torch.zeros(num_joints, num_joints, dtype=torch.bool)
+    for p, c in H36M_BONES:
+        adj[p, c] = adj[c, p] = True
+    return adj
+
+
+def bone_angle_losses(pred, gt):
+    """pred, gt (B,17,3) met -> (bone (B,) L1 do dai xuong trung binh, met; angle (B,) sai cos^2 trung binh)."""
+    pi = torch.tensor([p for p, _ in H36M_BONES], device=pred.device)
+    ci = torch.tensor([c for _, c in H36M_BONES], device=pred.device)
+    vp, vg = pred[:, ci] - pred[:, pi], gt[:, ci] - gt[:, pi]               # (B,16,3)
+    lp, lg = vp.norm(dim=-1), vg.norm(dim=-1)
+    bone = (lp - lg).abs().mean(-1)
+    a = torch.tensor([x for x, _ in H36M_BONE_PAIRS], device=pred.device)
+    b = torch.tensor([y for _, y in H36M_BONE_PAIRS], device=pred.device)
+    up, ug = vp / lp.clamp_min(1e-6)[..., None], vg / lg.clamp_min(1e-6)[..., None]
+    cos_p, cos_g = (up[:, a] * up[:, b]).sum(-1), (ug[:, a] * ug[:, b]).sum(-1)
+    angle = ((cos_p - cos_g) ** 2).mean(-1)
+    return bone, angle
+
+
+class MarkovLayer(nn.Module):
+    """Truyen tin theo xuong giua 17 token khop (xem docstring dau file). h (N,17,D) da norm; log_b (N,17) / None."""
+
+    def __init__(self, dim, num_joints=17, msg_dim=256, gate_b=False):
+        super().__init__()
+        self.register_buffer('adj', h36m_adjacency(num_joints), persistent=False)
+        self.psi = nn.Linear(dim, msg_dim)                                  # node potential: h_i W_n
+        self.phi_i = nn.Linear(dim, msg_dim)                                # edge potential [h_i; h_j] W_e
+        self.phi_j = nn.Linear(dim, msg_dim, bias=False)                    #   = h_i W_e1 + h_j W_e2
+        self.out = nn.Linear(msg_dim, dim)
+        nn.init.zeros_(self.out.weight)                                     # luc dau = identity
+        nn.init.zeros_(self.out.bias)
+        self.gate_b = bool(gate_b)
+        if self.gate_b:
+            self.gate_a = nn.Parameter(torch.tensor(1.0))
+            self.gate_c = nn.Parameter(torch.tensor(0.0))
+
+    def forward(self, h, log_b=None):
+        psi = self.psi(h)                                                   # (N,J,M)
+        phi = self.phi_i(h)[:, :, None] + self.phi_j(h)[:, None, :]         # (N,J,J,M): [i, j]
+        msg = psi[:, :, None] * phi                                         # tin j -> i
+        msg = msg.masked_fill(~self.adj[None, :, :, None], float('-inf'))
+        agg = torch.logsumexp(msg, dim=2)                                   # gop tren khop ke j
+        out = self.out(agg)
+        if self.gate_b:
+            assert log_b is not None, 'markov_gate_b can log_b'
+            out = out * torch.sigmoid(self.gate_a * (log_b - self.gate_c))[..., None]
+        return out
+
 
 def modulate(x, shift, scale):
     return x * (1 + scale) + shift
@@ -31,10 +100,17 @@ def modulate(x, shift, scale):
 class ImgLifterBlock(nn.Module):
     """adaLN-Zero (theo tung khop) -> self-attn khop | cross-attn anh | FFN."""
 
-    def __init__(self, dim, num_heads, mlp_ratio=2.0, drop_path=0.0):
+    def __init__(self, dim, num_heads, mlp_ratio=2.0, drop_path=0.0, markov=False, markov_gate_b=False,
+                 num_joints=17):
         super().__init__()
+        self.num_joints = num_joints
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.self_attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
+        if markov:                                                          # sau self-attn, chi 17 token khop
+            self.norm_m = nn.LayerNorm(dim, eps=1e-6)
+            self.markov = MarkovLayer(dim, num_joints, gate_b=markov_gate_b)
+        else:
+            self.markov = None
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.cross_attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
         self.norm3 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
@@ -44,11 +120,16 @@ class ImgLifterBlock(nn.Module):
         nn.init.zeros_(self.ada[-1].weight)      # adaLN-Zero: luc dau moi block = identity
         nn.init.zeros_(self.ada[-1].bias)
 
-    def forward(self, x, cond, img_tok):
-        """x (N,17,D) token khop; cond (N,17,D) dieu kien tung khop (+ t); img_tok (N,64,D)."""
+    def forward(self, x, cond, img_tok, log_b=None):
+        """x (N,P,D) token (17 khop + ngu canh); cond (N,P,D) dieu kien tung token (+ t); img_tok (N,64,D);
+        log_b (N,17) chi can khi markov_gate_b."""
         s1, c1, g1, s2, c2, g2, s3, c3, g3 = self.ada(cond).chunk(9, dim=-1)
         h = modulate(self.norm1(x), s1, c1)
         x = x + self.drop_path(g1 * self.self_attn(h, h, h, need_weights=False)[0])
+        if self.markov is not None:
+            J = self.num_joints
+            xj = x[:, :J] + self.drop_path(self.markov(self.norm_m(x[:, :J]), log_b))
+            x = torch.cat([xj, x[:, J:]], dim=1)
         h = modulate(self.norm2(x), s2, c2)
         x = x + self.drop_path(g2 * self.cross_attn(h, img_tok, img_tok, need_weights=False)[0])
         h = modulate(self.norm3(x), s3, c3)
@@ -58,7 +139,7 @@ class ImgLifterBlock(nn.Module):
 
 class ImgLifterDenoiser(nn.Module):
     def __init__(self, num_joints=17, dim=512, depth=8, num_heads=8, mlp_ratio=2.0, drop_path=0.1,
-                 img_ch=2048, feat_j_ch=256, img_tokens=64, num_ctx=0):
+                 img_ch=2048, feat_j_ch=256, img_tokens=64, num_ctx=0, markov=False, markov_gate_b=False):
         """num_ctx > 0 (ImgLifter day, 2026-11-04): them num_ctx token NGU CANH 2D (diem day cua Refiner day, sau 17
         khop) vao chuoi self-attn: chi mang dieu kien [x, y, log_b, det=0, cam] + dac trung anh, KHONG co x_t va
         KHONG co dau ra 3D. num_ctx = 0 -> y het ban 17 khop (cung shape tham so)."""
@@ -74,7 +155,8 @@ class ImgLifterDenoiser(nn.Module):
         self.time_mlp = nn.Sequential(SinusoidalPositionEmbeddings(dim), nn.Linear(dim, dim * 2), nn.GELU(),
                                       nn.Linear(dim * 2, dim))
         dpr = [v.item() for v in torch.linspace(0, drop_path, depth)]
-        self.blocks = nn.ModuleList([ImgLifterBlock(dim, num_heads, mlp_ratio, dpr[i]) for i in range(depth)])
+        self.blocks = nn.ModuleList([ImgLifterBlock(dim, num_heads, mlp_ratio, dpr[i], markov, markov_gate_b,
+                                                    num_joints) for i in range(depth)])
         self.final_norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.final_ada = nn.Sequential(nn.SiLU(), nn.Linear(dim, 2 * dim))
         self.head = nn.Linear(dim, 3)
@@ -93,15 +175,15 @@ class ImgLifterDenoiser(nn.Module):
         img_tok = self.img_embed(img) + self.img_pos
         return c_j, img_tok
 
-    def forward(self, x_t, t, c_j, img_tok):
-        """x_t (N,17,3) da chia scale; t (N,); c_j (N,P,D); img_tok (N,64,D) -> x0 (N,17,3) met."""
+    def forward(self, x_t, t, c_j, img_tok, log_b=None):
+        """x_t (N,17,3) da chia scale; t (N,); c_j (N,P,D); img_tok (N,64,D); log_b (N,17) -> x0 (N,17,3) met."""
         J = self.num_joints
         x = self.x_embed(x_t) + c_j[:, :J] + self.joint_pos[:, :J]          # [1] dieu kien o dau vao
         if self.num_ctx:                                                    # token ngu canh: chi dieu kien 2D / anh
             x = torch.cat([x, c_j[:, J:] + self.joint_pos[:, J:]], dim=1)
         cond = c_j + self.time_mlp(t)[:, None, :]                           # [2] adaLN: dieu kien tung token + t
         for blk in self.blocks:
-            x = blk(x, cond, img_tok)                                       # [3] cross-attn anh trong blk
+            x = blk(x, cond, img_tok, log_b)                                # [3] cross-attn anh trong blk
         x, cond = x[:, :J], cond[:, :J]                                     # chi 17 khop co dau ra 3D
         shift, scale = self.final_ada(cond).chunk(2, dim=-1)
         return self.head(modulate(self.final_norm(x), shift, scale))
@@ -109,13 +191,14 @@ class ImgLifterDenoiser(nn.Module):
 
 class ImgLifter(nn.Module):
     def __init__(self, num_joints=17, dim=512, depth=8, num_heads=8, mlp_ratio=2.0, drop_path=0.1,
-                 timesteps=1000, scale=3.0, feat_j_ch=256, num_ctx=0):
+                 timesteps=1000, scale=3.0, feat_j_ch=256, num_ctx=0, markov=False, markov_gate_b=False):
         super().__init__()
         self.num_joints = num_joints
         self.num_ctx = int(num_ctx)
         self.scale = float(scale)
         self.denoiser = ImgLifterDenoiser(num_joints, dim, depth, num_heads, mlp_ratio, drop_path,
-                                          feat_j_ch=feat_j_ch, num_ctx=num_ctx)
+                                          feat_j_ch=feat_j_ch, num_ctx=num_ctx, markov=markov,
+                                          markov_gate_b=markov_gate_b)
         betas = cosine_beta_schedule(timesteps)
         ac = torch.cumprod(1. - betas, dim=0)
         self.num_timesteps = int(betas.shape[0])
@@ -130,12 +213,13 @@ class ImgLifter(nn.Module):
         return torch.cat([xy, log_b.unsqueeze(-1), det.float().unsqueeze(-1),
                           cam_bbox[:, None, :].expand(-1, J, -1)], dim=-1)
 
-    def _x0(self, x_t_scaled, t, c_j, img_tok):
-        p = self.denoiser(x_t_scaled, t, c_j, img_tok)
+    def _x0(self, x_t_scaled, t, c_j, img_tok, log_b=None):
+        p = self.denoiser(x_t_scaled, t, c_j, img_tok, log_b)
         return p - p[:, 0:1, :]                                             # root-relative, met
 
-    def loss(self, pose_3d, cond7, feat_j, f8, valid=None):
-        """pose_3d (B,17,3) GT met root-relative. valid (B,) 0/1. Tra (loss MPJPE met, pred_x0)."""
+    def loss(self, pose_3d, cond7, feat_j, f8, valid=None, w_bone=0.0, w_angle=0.0):
+        """pose_3d (B,17,3) GT met root-relative. valid (B,) 0/1. Tra (loss tong, pred_x0).
+        Tung thanh phan (MPJPE / bone / angle, chua nhan trong so) luu o self.last_terms de log."""
         B = pose_3d.shape[0]
         x0 = ((pose_3d - pose_3d[:, 0:1]) * self.scale).clamp(-1.1 * self.scale, 1.1 * self.scale)
         t = torch.randint(0, self.num_timesteps, (B,), device=pose_3d.device).long()
@@ -143,12 +227,20 @@ class ImgLifter(nn.Module):
         x_t = extract(self.sqrt_alphas_cumprod, t, x0.shape) * x0 + \
             extract(self.sqrt_one_minus_alphas_cumprod, t, x0.shape) * noise
         c_j, img_tok = self.denoiser.encode_cond(cond7, feat_j, f8)
-        pred = self._x0(x_t.clamp(-1.1 * self.scale, 1.1 * self.scale) / self.scale, t, c_j, img_tok)
-        err = torch.norm(pred - (pose_3d - pose_3d[:, 0:1]), dim=-1).mean(-1)   # (B,)
-        if valid is None:
-            return err.mean(), pred
-        v = valid.float()
-        return (err * v).sum() / v.sum().clamp_min(1.0), pred
+        log_b = cond7[:, :self.num_joints, 2]
+        pred = self._x0(x_t.clamp(-1.1 * self.scale, 1.1 * self.scale) / self.scale, t, c_j, img_tok, log_b)
+        gt = pose_3d - pose_3d[:, 0:1]
+        v = torch.ones(B, device=pose_3d.device) if valid is None else valid.float()
+        vs = v.sum().clamp_min(1.0)
+        err = torch.norm(pred - gt, dim=-1).mean(-1)                        # (B,)
+        terms = {'mpjpe': (err * v).sum() / vs}
+        total = terms['mpjpe']
+        if w_bone > 0 or w_angle > 0:
+            bone, angle = bone_angle_losses(pred, gt)
+            terms['bone'], terms['angle'] = (bone * v).sum() / vs, (angle * v).sum() / vs
+            total = total + float(w_bone) * terms['bone'] + float(w_angle) * terms['angle']
+        self.last_terms = {k: float(x.detach()) for k, x in terms.items()}
+        return total, pred
 
     @torch.no_grad()
     def sample(self, cond7, feat_j, f8, K=10, S=4, eta=1.0, generator=None):
@@ -156,15 +248,16 @@ class ImgLifter(nn.Module):
         B, J = cond7.shape[0], self.num_joints                              # cond7 co the co 17 + num_ctx diem
         dev = cond7.device
         c_j, img_tok = self.denoiser.encode_cond(cond7, feat_j, f8)
-        c_j = c_j.repeat_interleave(K, dim=0)                               # (B*K,17,D)
+        c_j = c_j.repeat_interleave(K, dim=0)                               # (B*K,P,D)
         img_tok = img_tok.repeat_interleave(K, dim=0)
+        log_b = cond7[:, :J, 2].repeat_interleave(K, dim=0)                 # (B*K,17) cho cong Markov
         T = self.num_timesteps
         times = list(reversed(torch.linspace(-1, T - 1, steps=S + 1).int().tolist()))
         x = torch.randn(B * K, J, 3, device=dev, generator=generator)
         sc = self.scale
         for time, time_next in zip(times[:-1], times[1:]):
             t = torch.full((B * K,), time, device=dev, dtype=torch.long)
-            x0 = (self._x0(x.clamp(-1.1 * sc, 1.1 * sc) / sc, t, c_j, img_tok) * sc).clamp(-1.1 * sc, 1.1 * sc)
+            x0 = (self._x0(x.clamp(-1.1 * sc, 1.1 * sc) / sc, t, c_j, img_tok, log_b) * sc).clamp(-1.1 * sc, 1.1 * sc)
             if time_next < 0:
                 x = x0
                 break

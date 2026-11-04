@@ -442,6 +442,13 @@ cfg.IMGLIFT.jpma_max_b = 3.0           # gop jpma: chi chon theo 2D o khop co b 
 # Can IMGLIFT.refiner_ckpt la Refiner co num_dense >= num_ctx. Token ngu canh chi mang dieu kien, khong co dau ra 3D.
 # 0 = TAT (ImgLifter 17 khop nhu cu).
 cfg.IMGLIFT.num_ctx = 0
+# Lop Markov (2026-11-05, y tuong DiffusionPose AAAI-26): moi block truyen tin giua 17 token khop theo 16 xuong
+# H36M (sau self-attn). markov_gate_b: nhan cong sigmoid(a (log_b - c)) -> khop mo ho nhan nhieu tu khop ke.
+# Loss giai phau tren x0: w_bone x L1 do dai xuong (met) + w_angle x (cos goc 2 xuong noi tiep)^2. Tat ca TAT mac dinh.
+cfg.IMGLIFT.markov_layer = False
+cfg.IMGLIFT.markov_gate_b = False
+cfg.IMGLIFT.w_bone = 0.0
+cfg.IMGLIFT.w_angle = 0.0
 
 """ Test Detail """
 cfg.TEST = edict()
