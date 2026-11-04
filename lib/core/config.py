@@ -123,6 +123,9 @@ cfg.DATASET.dense2d_vertex_file = ''
 # CHI DE VE KIEM TRA (tools/vis_dense2d.py): mau fusekin_unified / 3DPW test (pw3d_test_gt2d) tra them
 # targets['mesh_img'] (6890, 2) = toan bo mesh GT chieu vao crop. Mac dinh TAT (khong dung khi train).
 cfg.DATASET.debug_mesh2d = False
+# Bo meta 'raw_smpl_*' (chi PW3D train tra) de tron 3dpw-train voi 4 bo fusekin_unified ma collate khong loi
+# (2026-11-04, ImgLifter day). Mac dinh TAT.
+cfg.DATASET.drop_raw_smpl_stats = False
 # Tat augmentation xoay (giu scale/flip). Chi dung cho chan doan lifter.
 cfg.DATASET.no_rot_aug = False
 # Mask khop Halpe SAI bang GT 2D (chi tap TRAIN Human36M / MuCo / MSCOCO / CrowdPose): khop Halpe hop le lech
@@ -435,6 +438,10 @@ cfg.IMGLIFT.eval_K = 5                 # so gia thuyet / buoc DDIM khi danh gia 
 cfg.IMGLIFT.eval_S = 2
 cfg.IMGLIFT.eta = 1.0                  # DDIM eta
 cfg.IMGLIFT.jpma_max_b = 3.0           # gop jpma: chi chon theo 2D o khop co b <= nguong (o luoi 64)
+# ImgLifter day (2026-11-04): so token NGU CANH 2D lay tu diem day cua Refiner day (sau 17 khop), vd 48.
+# Can IMGLIFT.refiner_ckpt la Refiner co num_dense >= num_ctx. Token ngu canh chi mang dieu kien, khong co dau ra 3D.
+# 0 = TAT (ImgLifter 17 khop nhu cu).
+cfg.IMGLIFT.num_ctx = 0
 
 """ Test Detail """
 cfg.TEST = edict()

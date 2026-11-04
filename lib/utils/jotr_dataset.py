@@ -168,6 +168,9 @@ class Human36M17Dataset(Dataset):
             targets = {k: v for k, v in targets.items() if k in target_keys}
             meta_keys = self.LIFT_META_KEYS | (self.VIS_META_KEYS if self.keep_vis_info else set())
             meta = {k: v for k, v in meta.items() if k in meta_keys}
+        if cfg.DATASET.get('drop_raw_smpl_stats', False):
+            # Bo meta raw_smpl_* (chi PW3D train co) -> cung bo key voi mau fusekin_unified khi tron 3dpw-train
+            meta = {k: v for k, v in meta.items() if not k.startswith('raw_smpl_')}
         return inputs, targets, meta
 
 

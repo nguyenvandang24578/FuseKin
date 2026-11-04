@@ -18,14 +18,14 @@ def imglift_arch():
     L = cfg.IMGLIFT
     return {'dim': int(L.embed_dim), 'depth': int(L.depth), 'num_heads': int(L.num_heads),
             'mlp_ratio': float(L.mlp_ratio), 'drop_path': float(L.drop_path), 'timesteps': int(L.timesteps),
-            'scale': float(L.scale), 'feat_j_ch': int(cfg.REFINE2D.deconv_ch)}
+            'scale': float(L.scale), 'feat_j_ch': int(cfg.REFINE2D.deconv_ch), 'num_ctx': int(L.num_ctx)}
 
 
 def build_img_lifter(arch=None):
     a = dict(arch or imglift_arch())
     return ImgLifter(num_joints=17, dim=a['dim'], depth=a['depth'], num_heads=a['num_heads'],
                      mlp_ratio=a['mlp_ratio'], drop_path=a['drop_path'], timesteps=a['timesteps'],
-                     scale=a['scale'], feat_j_ch=a['feat_j_ch'])
+                     scale=a['scale'], feat_j_ch=a['feat_j_ch'], num_ctx=int(a.get('num_ctx', 0)))   # ckpt cu: 0
 
 
 def load_img_lifter(path, dev):
@@ -46,12 +46,21 @@ def load_frozen_refiner(path, dev):
 
 
 @torch.no_grad()
-def refiner_inputs(refiner, img, j2, jm):
-    """j2 (B,17,2) [-1,1], jm (B,17) -> xy (B,17,2), log_b (B,17), f8 (B,2048,8,8), feat_j (B,17,C)."""
+def refiner_inputs(refiner, img, j2, jm, n_points=17):
+    """j2 (B,17,2) [-1,1], jm (B,17) -> xy (B,P,2), log_b (B,P), f8 (B,2048,8,8), feat_j (B,P,C), P = n_points.
+    n_points = 17: chi 17 khop. n_points = 17 + num_ctx: them diem day cua Refiner day (lam token ngu canh)."""
     out = refiner(img, j2 * (jm > 0).unsqueeze(-1).float(), jm.unsqueeze(-1), return_feats=True)
-    # Chi 17 khop (Refiner day co them diem sau 17 khop; ImgLifter 17 diem chua dung diem day)
-    return (out['xy'].float()[:, :17], out['log_b'].float()[:, :17], out['f8'].float(),
-            out['feat_j'].float()[:, :17])
+    assert out['xy'].shape[1] >= n_points, f'Refiner chi co {out["xy"].shape[1]} diem, ImgLifter can {n_points}'
+    return (out['xy'].float()[:, :n_points], out['log_b'].float()[:, :n_points], out['f8'].float(),
+            out['feat_j'].float()[:, :n_points])
+
+
+def lifter_det(jm, num_ctx=0):
+    """Co phat hien cho cond7: 17 khop = (jm > 0); diem day khong co OpenPose -> 0. jm (B,17) -> (B,17+num_ctx)."""
+    det = jm > 0
+    if num_ctx:
+        det = torch.cat([det, det.new_zeros(det.shape[0], int(num_ctx))], dim=1)
+    return det
 
 
 def pa_errors(pred, gt):
@@ -121,10 +130,11 @@ def eval_img_lifter(lifter, refiner, loader, dev, regressor, K=10, S=4, eta=1.0,
             gin = meta['orig_joint_trunc'].to(dev).float().reshape(B, 17) > 0
             add('gt3d_san', gt17, gt17, g2, gin)       # san: GT 3D (weak-perspective) vs GT 2D (phoi canh)
 
-        xy, log_b, f8, fj = refiner_inputs(refiner, img, j2, jm)
+        nc = int(getattr(lifter, 'num_ctx', 0))
+        xy, log_b, f8, fj = refiner_inputs(refiner, img, j2, jm, 17 + nc)
         if ablate_img:
             f8, fj = torch.zeros_like(f8), torch.zeros_like(fj)
-        cond7 = ImgLifter.make_cond7(xy, log_b, jm > 0, cam)
+        cond7 = ImgLifter.make_cond7(xy, log_b, lifter_det(jm, nc), cam)
         gen = torch.Generator(device=dev)
         gen.manual_seed(int(seed) + bi)                                     # nhieu co dinh -> lap lai duoc
         hyp = lifter.sample(cond7, fj, f8, K=K, S=S, eta=eta, generator=gen)   # (B,K,17,3)

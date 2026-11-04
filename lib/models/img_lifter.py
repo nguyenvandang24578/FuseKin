@@ -58,13 +58,17 @@ class ImgLifterBlock(nn.Module):
 
 class ImgLifterDenoiser(nn.Module):
     def __init__(self, num_joints=17, dim=512, depth=8, num_heads=8, mlp_ratio=2.0, drop_path=0.1,
-                 img_ch=2048, feat_j_ch=256, img_tokens=64):
+                 img_ch=2048, feat_j_ch=256, img_tokens=64, num_ctx=0):
+        """num_ctx > 0 (ImgLifter day, 2026-11-04): them num_ctx token NGU CANH 2D (diem day cua Refiner day, sau 17
+        khop) vao chuoi self-attn: chi mang dieu kien [x, y, log_b, det=0, cam] + dac trung anh, KHONG co x_t va
+        KHONG co dau ra 3D. num_ctx = 0 -> y het ban 17 khop (cung shape tham so)."""
         super().__init__()
         self.num_joints = num_joints
+        self.num_ctx = int(num_ctx)
         self.x_embed = nn.Linear(3, dim)
         self.cond_embed = nn.Sequential(nn.Linear(COND_DIM, dim), nn.GELU(), nn.Linear(dim, dim))
         self.featj_embed = nn.Sequential(nn.LayerNorm(feat_j_ch), nn.Linear(feat_j_ch, dim))
-        self.joint_pos = nn.Parameter(torch.zeros(1, num_joints, dim))
+        self.joint_pos = nn.Parameter(torch.zeros(1, num_joints + self.num_ctx, dim))   # vi tri khop (+ diem day)
         self.img_embed = nn.Sequential(nn.LayerNorm(img_ch), nn.Linear(img_ch, dim))
         self.img_pos = nn.Parameter(torch.zeros(1, img_tokens, dim))
         self.time_mlp = nn.Sequential(SinusoidalPositionEmbeddings(dim), nn.Linear(dim, dim * 2), nn.GELU(),
@@ -81,30 +85,37 @@ class ImgLifterDenoiser(nn.Module):
 
     def encode_cond(self, cond7, feat_j, f8):
         """Tinh 1 lan cho moi anh (dung lai o moi buoc DDIM / moi gia thuyet).
-        cond7 (B,17,7), feat_j (B,17,C), f8 (B,2048,8,8) -> c_j (B,17,D), img_tok (B,64,D)."""
+        cond7 (B,P,7), feat_j (B,P,C) voi P = 17 (+ num_ctx), f8 (B,2048,8,8) -> c_j (B,P,D), img_tok (B,64,D)."""
+        P = self.num_joints + self.num_ctx
+        assert cond7.shape[1] == P and feat_j.shape[1] == P, f'can {P} diem dieu kien, nhan {cond7.shape[1]}'
         c_j = self.cond_embed(cond7) + self.featj_embed(feat_j)
         img = f8.flatten(2).transpose(1, 2)                                 # (B, 64, 2048)
         img_tok = self.img_embed(img) + self.img_pos
         return c_j, img_tok
 
     def forward(self, x_t, t, c_j, img_tok):
-        """x_t (N,17,3) da chia scale; t (N,); c_j (N,17,D); img_tok (N,64,D) -> x0 (N,17,3) met."""
-        x = self.x_embed(x_t) + c_j + self.joint_pos                        # [1] dieu kien o dau vao
-        cond = c_j + self.time_mlp(t)[:, None, :]                           # [2] adaLN: dieu kien khop + t
+        """x_t (N,17,3) da chia scale; t (N,); c_j (N,P,D); img_tok (N,64,D) -> x0 (N,17,3) met."""
+        J = self.num_joints
+        x = self.x_embed(x_t) + c_j[:, :J] + self.joint_pos[:, :J]          # [1] dieu kien o dau vao
+        if self.num_ctx:                                                    # token ngu canh: chi dieu kien 2D / anh
+            x = torch.cat([x, c_j[:, J:] + self.joint_pos[:, J:]], dim=1)
+        cond = c_j + self.time_mlp(t)[:, None, :]                           # [2] adaLN: dieu kien tung token + t
         for blk in self.blocks:
             x = blk(x, cond, img_tok)                                       # [3] cross-attn anh trong blk
+        x, cond = x[:, :J], cond[:, :J]                                     # chi 17 khop co dau ra 3D
         shift, scale = self.final_ada(cond).chunk(2, dim=-1)
         return self.head(modulate(self.final_norm(x), shift, scale))
 
 
 class ImgLifter(nn.Module):
     def __init__(self, num_joints=17, dim=512, depth=8, num_heads=8, mlp_ratio=2.0, drop_path=0.1,
-                 timesteps=1000, scale=3.0, feat_j_ch=256):
+                 timesteps=1000, scale=3.0, feat_j_ch=256, num_ctx=0):
         super().__init__()
         self.num_joints = num_joints
+        self.num_ctx = int(num_ctx)
         self.scale = float(scale)
         self.denoiser = ImgLifterDenoiser(num_joints, dim, depth, num_heads, mlp_ratio, drop_path,
-                                          feat_j_ch=feat_j_ch)
+                                          feat_j_ch=feat_j_ch, num_ctx=num_ctx)
         betas = cosine_beta_schedule(timesteps)
         ac = torch.cumprod(1. - betas, dim=0)
         self.num_timesteps = int(betas.shape[0])
@@ -142,7 +153,7 @@ class ImgLifter(nn.Module):
     @torch.no_grad()
     def sample(self, cond7, feat_j, f8, K=10, S=4, eta=1.0, generator=None):
         """DDIM, K gia thuyet song song. Tra all_preds (B,K,17,3) met root-relative."""
-        B, J = cond7.shape[:2]
+        B, J = cond7.shape[0], self.num_joints                              # cond7 co the co 17 + num_ctx diem
         dev = cond7.device
         c_j, img_tok = self.denoiser.encode_cond(cond7, feat_j, f8)
         c_j = c_j.repeat_interleave(K, dim=0)                               # (B*K,17,D)
@@ -170,6 +181,8 @@ def aggregate(all_preds, xy, log_b, mode='mean', jpma_max_b=3.0):
     """all_preds (B,K,17,3); xy (B,17,2) [-1,1] (2D Refiner); log_b (B,17).
     'mean': trung binh K. 'jpma': fit weak-perspective (s, t) tu XY cua pose trung binh sang xy (trong so 1 / b^2),
     moi khop co b <= jpma_max_b chon gia thuyet co loi chieu 2D nho nhat; con lai giu trung binh."""
+    J0 = all_preds.shape[2]
+    xy, log_b = xy[:, :J0], log_b[:, :J0]                                   # bo diem day (neu co), chi 17 khop
     mean = all_preds.mean(1)
     if mode == 'mean' or all_preds.shape[1] == 1:
         return mean - mean[:, 0:1]

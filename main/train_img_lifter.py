@@ -47,7 +47,7 @@ from core.base import get_dataloader
 from models.img_lifter import ImgLifter
 from utils.jotr_dataset import get_test_dataset
 from utils.img_lifter_tools import (build_img_lifter, imglift_arch, load_frozen_refiner, refiner_inputs,
-                                    eval_img_lifter, format_eval)
+                                    lifter_det, eval_img_lifter, format_eval)
 
 random.seed(args.seed)
 np.random.seed(args.seed)
@@ -111,11 +111,12 @@ def main():
             valid = meta['is_valid_fit'].to(DEVICE).float().reshape(B)
             drop = (torch.rand_like(jm) < float(L.input_drop_prob)).float() * (jm > 0).float()
             jm_in = jm * (1 - drop)                                               # detector "bo sot"
-            xy, log_b, f8, fj = refiner_inputs(refiner, img, j2, jm_in)
+            NC = int(L.num_ctx)                                                   # >0: them diem day lam ngu canh
+            xy, log_b, f8, fj = refiner_inputs(refiner, img, j2, jm_in, 17 + NC)
             if float(L.train_xy_noise) > 0:                                       # b: o luoi 64 -> [-1,1] = / 32
                 b = torch.exp(log_b).clamp(max=8.0)                               # chan 8 o (32 px): log_b toi da 6
                 xy = xy + torch.randn_like(xy) * (b / 32.0 * float(L.train_xy_noise)).unsqueeze(-1)
-            cond7 = ImgLifter.make_cond7(xy, log_b, jm_in > 0, cam)
+            cond7 = ImgLifter.make_cond7(xy, log_b, lifter_det(jm_in, NC), cam)
             loss, _ = model.loss(gt3d, cond7, fj, f8, valid)
             opt.zero_grad()
             loss.backward()
@@ -128,7 +129,7 @@ def main():
                 g2 = targets['orig_joint_img'].to(DEVICE).float()[..., :2]
                 g2 = g2 / torch.tensor([cfg.output_hm_shape[2], cfg.output_hm_shape[1]], device=DEVICE) * 2 - 1
                 gv = meta['orig_joint_trunc'].to(DEVICE).float().reshape(B, 17)
-                xy_err = (torch.norm(xy - g2, dim=-1) * gv).sum() / gv.sum().clamp_min(1) * 128.0
+                xy_err = (torch.norm(xy[:, :17] - g2, dim=-1) * gv).sum() / gv.sum().clamp_min(1) * 128.0
             run['loss_mm'] += float(loss) * 1000
             run['xy_err_px'] += float(xy_err)
             nb += 1

@@ -1,0 +1,71 @@
+# =====================================================================
+# train_img_lifter_dense48_3dpw (2026-11-04, nguoi dung xac nhan): ImgLifter DAY + tron 3dpw-train.
+#   - Refiner DAY dong bang (refiner2d_dense48_scratch, epoch cuoi): 17 khop + 48 diem day (dinh SMPL, FPS)
+#   - ImgLifter: 17 token khop (khu nhieu -> 3D) + 48 token NGU CANH (chi dieu kien 2D / anh, khong dau ra 3D)
+#   - train 5 bo, ty le 0.2 moi bo: Human36M, MuCo, MSCOCO, CrowdPose (GT + PoseFix), 3dpw-train (OpenPose)
+#   - doi 2 yeu to so voi img_lifter_jotr (day + 3dpw-train) -> khong tach duoc dong gop tung yeu to
+#   - 3dpw-train: OC / PC co trung voi 3DPW train -> bao them OC / PC chi phan test (--ocpc_mode test)
+#   - KHONG bat dense2d_vertex_file / return_clean_2d / debug_mesh2d (giu cung bo key voi mau 3dpw-train)
+# Chay:
+#   python main/train_img_lifter.py --cfg config/train_img_lifter_dense48_3dpw.yaml --exp_name img_lifter_dense48_3dpw --gpu 0
+#   python main/eval_img_lifter.py --cfg config/train_img_lifter_dense48_3dpw.yaml \
+#     --ckpt experiment/img_lifter_dense48_3dpw/checkpoint/last.pth.tar \
+#     --old_lifter_ckpt experiment/finetune_difflifter_d512_e15_jotr_pf05_3dpw/best_epoch.bin \
+#     --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --gpu 0
+# =====================================================================
+
+update_bbox: True          # giong JOTR yml (va luc train Refiner)
+DATASET:
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose', '3dpw-train']
+  workers: 8
+  pw3d_2d_source: 'openpose'     # danh gia: OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd)
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: False
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  posefix_scale: 1.0       # cung phan bo dau vao voi luc train Refiner
+  posefix_fast: True
+  fusekin_unified: True    # mau train thong nhat 4 bo: anh + 2D + GT 3D tu mesh
+  drop_raw_smpl_stats: True   # bo meta raw_smpl_* cua 3dpw-train -> collate duoc
+
+TRAIN:
+  print_freq: 20
+  batch_size: 64
+  shuffle: True
+  dataset_ratio: [0.2, 0.2, 0.2, 0.2, 0.2]   # Human36M, MuCo, MSCOCO, CrowdPose, 3dpw-train
+  samples_per_epoch: 64000                   # 1000 iter / epoch voi batch 64
+  end_epoch: 25
+  lr: 0.0002
+  lr_step: [18, 23]
+  lr_factor: 0.1
+
+TEST:
+  batch_size: 64
+  shuffle: False
+
+REFINE2D:
+  deconv_ch: 256           # phai khop Refiner (so kenh feat_j)
+
+IMGLIFT:
+  refiner_ckpt: 'experiment/refiner2d_dense48_scratch/checkpoint/last.pth.tar'
+  num_ctx: 48              # 48 diem day cua Refiner -> token ngu canh
+  embed_dim: 512
+  depth: 8
+  num_heads: 8
+  mlp_ratio: 2.0
+  drop_path: 0.1
+  timesteps: 1000
+  scale: 3.0
+  train_xy_noise: 0.5
+  input_drop_prob: 0.1
+  weight_decay: 0.01
+  ema_decay: 0.999
+  eval_sets: ['3dpw', '3dpw-pc', '3dpw-crowd']
+  eval_max_samples: 3000
+  eval_K: 5
+  eval_S: 2
+  eta: 1.0
+  jpma_max_b: 3.0

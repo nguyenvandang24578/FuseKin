@@ -134,3 +134,9 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - Refiner: `num_dense` kênh thêm sau 17 khớp; `init_ckpt` chép từ `refiner2d_jotr_mesh` (17 kênh đầu của lớp final). ImgLifter hiện tại chỉ lấy 17 khớp đầu.
 - Trình tự: (1) `python tools/select_dense_vertices.py --n 48 --out config/dense48_fps.json` (xem hình .png); (2) `python tools/vis_dense2d.py --cfg config/train_refiner2d_jotr_mesh_dense48.yaml --n 8` (người dùng kiểm tra hình); (3) `python main/train_refiner2d.py --cfg config/train_refiner2d_jotr_mesh_dense48.yaml --exp_name refiner2d_dense48 --gpu 0`.
 - Kiểm tra sau train: 17 khớp không tệ hơn bản mesh (3DPW 4.67%), và lỗi điểm dày. Kết quả: chưa có.
+
+## 12. ImgLifter DÀY + trộn 3dpw-train (2026-11-04, người dùng xác nhận, đã code, chưa chạy)
+- Refiner dày đóng băng `refiner2d_dense48_scratch` (last). ImgLifter: 17 token khớp (khử nhiễu → 3D) + 48 token ngữ cảnh (chỉ điều kiện 2D/ảnh, det = 0, không đầu ra 3D). Key `IMGLIFT.num_ctx` (0 = tắt, ckpt cũ vẫn nạp được).
+- Train 5 bộ, tỷ lệ 0.2 mỗi bộ: Human36M, MuCo, MSCOCO, CrowdPose (GT + PoseFix) + 3dpw-train (OpenPose). Key `DATASET.drop_raw_smpl_stats` để collate được.
+- Đổi 2 yếu tố so với `img_lifter_jotr` (dày + 3dpw-train) → không tách được đóng góp. 3dpw-train phá giao thức JOTR với OC/PC → báo thêm `--ocpc_mode test`.
+- Config `config/train_img_lifter_dense48_3dpw.yaml`, exp `img_lifter_dense48_3dpw`. Kết quả: chưa có.
