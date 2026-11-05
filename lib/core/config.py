@@ -452,6 +452,7 @@ cfg.IMGLIFT.w_angle = 0.0
 # Ban sua theo DiffusionPose; mac dinh TAT de giu ket qua cua YAML/checkpoint cu.
 cfg.IMGLIFT.markov_iters = 0             # 0: duong cu; >0: so vong thong diep co huong, khoi tao bang 1
 cfg.IMGLIFT.markov_gate_positive = False # True: a = softplus(a_raw) + 1e-6, cong luon tang theo log_b
+cfg.IMGLIFT.markov_msg_norm = False     # True: chuan hoa RMS tin nhan moi vong (can markov_iters > 0)
 cfg.IMGLIFT.bone_paper = False           # True: cong thuc (4), var GT tren 16 xuong tung pose; khong don vi
 
 """ Test Detail """

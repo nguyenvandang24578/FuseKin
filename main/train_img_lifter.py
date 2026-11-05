@@ -92,7 +92,8 @@ def main():
         # Cac co moi khong doi shape tham so: phai kiem tra metadata, strict=True chua du.
         saved_arch = dict(ck['imglift_arch'])
         for key, default in (('num_ctx', 0), ('markov', False), ('markov_gate_b', False),
-                             ('markov_iters', 0), ('markov_gate_positive', False), ('bone_paper', False)):
+                             ('markov_iters', 0), ('markov_gate_positive', False), ('bone_paper', False),
+                             ('markov_msg_norm', False)):
             saved_arch.setdefault(key, default)
         if saved_arch != imglift_arch():
             raise ValueError('YAML khac kien truc/quy uoc Markov cua checkpoint; hay tao run moi')

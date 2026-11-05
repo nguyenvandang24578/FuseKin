@@ -21,7 +21,7 @@ def imglift_arch():
             'scale': float(L.scale), 'feat_j_ch': int(cfg.REFINE2D.deconv_ch), 'num_ctx': int(L.num_ctx),
             'markov': bool(L.markov_layer), 'markov_gate_b': bool(L.markov_gate_b),
             'markov_iters': int(L.markov_iters), 'markov_gate_positive': bool(L.markov_gate_positive),
-            'bone_paper': bool(L.bone_paper)}
+            'bone_paper': bool(L.bone_paper), 'markov_msg_norm': bool(L.markov_msg_norm)}
 
 
 def build_img_lifter(arch=None):
@@ -32,7 +32,8 @@ def build_img_lifter(arch=None):
                      markov=bool(a.get('markov', False)), markov_gate_b=bool(a.get('markov_gate_b', False)),
                      markov_iters=int(a.get('markov_iters', 0)),
                      markov_gate_positive=bool(a.get('markov_gate_positive', False)),
-                     bone_paper=bool(a.get('bone_paper', False)))
+                     bone_paper=bool(a.get('bone_paper', False)),
+                     markov_msg_norm=bool(a.get('markov_msg_norm', False)))
 
 
 def load_img_lifter(path, dev):

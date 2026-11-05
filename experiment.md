@@ -156,3 +156,8 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - Train: `python main/train_img_lifter.py --cfg config/train_img_lifter_dense48_3dpw_markov_v2.yaml --exp_name img_lifter_dense48_3dpw_markov_v2 --gpu 0`.
 - Eval sau khi hoàn tất lịch train: `python main/eval_img_lifter.py --cfg config/train_img_lifter_dense48_3dpw_markov_v2.yaml --ckpt experiment/img_lifter_dense48_3dpw_markov_v2/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --ocpc_mode test --gpu 0`. Dùng epoch cuối theo giao thức ImgLifter; không tự chọn theo log test. Có 3DPW-train nên không báo là giao thức JOTR; OC/PC toàn bộ chỉ để tham khảo.
 - Bước tiếp: người dùng chạy trên server, gửi log loss/train và kết quả eval MPJPE17 cùng K/S/seed. Chưa có bằng chứng để kết luận cải thiện.
+
+## 15. ImgLifter Markov v3 (2026-11-05, người dùng xác nhận, đã code, chưa chạy)
+- Người dùng báo: run v2 có sai số train lớn. Giả thuyết (chưa kiểm chứng): tích 8 vòng tin nhắn có dấu, không chuẩn hóa → triệt tiêu/bùng nổ.
+- Sửa: `IMGLIFT.markov_msg_norm` (mặc định tắt) chuẩn hóa RMS tin nhắn sau mỗi vòng (dấu "∝" của công thức (1)). Bỏ `pw3d_ocpc_test_only` khỏi YAML để eval nhanh PC so được với §12/§13.
+- Config `config/train_img_lifter_dense48_3dpw_markov_v3.yaml`, run mới (không resume v2). Kết quả: chưa có.

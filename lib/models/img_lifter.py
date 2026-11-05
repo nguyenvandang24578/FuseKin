@@ -17,6 +17,8 @@ Tuy chon (2026-11-05, y tuong Markov Optimization Layer cua DiffusionPose AAAI-2
     tren cac khop ke j, chieu ve D (khoi tao 0 -> luc dau la identity), cong residual.
     markov_iters = 0: giu ban cu bo tich thong diep. > 0: cap nhat dong bo tren 32 canh co huong,
     msg_{j->i}^{r} = psi(h_i) * phi(h_i,h_j) * prod_{k ke j, k != i} msg_{k->j}^{r-1}, khoi tao msg^0 = 1.
+    markov_msg_norm (2026-11-05): chuan hoa RMS moi vong (dau "ty le voi" cua cong thuc (1)) -> tich nhieu vong
+    khong bung no / triet tieu (dac trung co dau, khong chan). Chi dung khi markov_iters > 0.
   markov_gate_b: phan tin cong vao nhan cong g = sigmoid(a * (log_b - c)) (a, c hoc duoc) -> khop mo ho (b lon,
     bi che / detector sot). markov_gate_positive: a = softplus(a_raw) + 1e-6 de cong luon tang theo log_b.
   loss: w_bone x do dai xuong + w_angle x (cos goc 2 xuong noi tiep: du doan - GT)^2, tren x0 du doan.
@@ -79,8 +81,12 @@ def bone_angle_losses(pred, gt, paper=False):
 class MarkovLayer(nn.Module):
     """Truyen tin theo xuong giua 17 token khop (xem docstring dau file). h (N,17,D) da norm; log_b (N,17) / None."""
 
-    def __init__(self, dim, num_joints=17, msg_dim=256, gate_b=False, iters=0, gate_positive=False):
+    def __init__(self, dim, num_joints=17, msg_dim=256, gate_b=False, iters=0, gate_positive=False,
+                 msg_norm=False):
         super().__init__()
+        if msg_norm and not int(iters):
+            raise ValueError('markov_msg_norm can markov_iters > 0')
+        self.msg_norm = bool(msg_norm)
         if num_joints != 17 or int(iters) < 0:
             raise ValueError('MarkovLayer can H36M-17 va markov_iters >= 0')
         if gate_positive and not gate_b:
@@ -114,17 +120,23 @@ class MarkovLayer(nn.Module):
             self.gate_a = nn.Parameter(torch.tensor(init_a))
             self.gate_c = nn.Parameter(torch.tensor(0.0))
 
+    def _norm(self, m):
+        # Chuan hoa RMS tren chieu dac trung (giu dau), moi canh rieng; tat -> giu nguyen nhu ban v2
+        if not self.msg_norm:
+            return m
+        return m / (m.pow(2).mean(-1, keepdim=True) + 1e-6).sqrt()
+
     def forward(self, h, log_b=None):
         psi = self.psi(h)                                                   # (N,J,M)
         if self.iters:
             # Canh e = j -> i; node potential van dung khop NHAN i theo cong thuc (1).
             phi = self.phi_i(h)[:, self.edge_dst] + self.phi_j(h)[:, self.edge_src]
             base = psi[:, self.edge_dst] * phi                              # (N,32,M)
-            msg = base                                                     # vong 1: cac thong diep truoc = 1
+            msg = self._norm(base)                                          # vong 1: cac thong diep truoc = 1
             for _ in range(1, self.iters):
                 previous = msg[:, self.incoming]                            # (N,32,max_ke,M)
                 previous = previous.masked_fill(~self.incoming_mask[None, :, :, None], 1.0)
-                msg = base * previous.prod(dim=2)                           # chi k -> j voi k != i
+                msg = self._norm(base * previous.prod(dim=2))               # chi k -> j voi k != i
             received = msg[:, self.node_incoming]                           # (N,17,max_bac,M)
             received = received.masked_fill(~self.node_incoming_mask[None, :, :, None], float('-inf'))
             agg = torch.logsumexp(received, dim=2)
@@ -150,7 +162,7 @@ class ImgLifterBlock(nn.Module):
     """adaLN-Zero (theo tung khop) -> self-attn khop | cross-attn anh | FFN."""
 
     def __init__(self, dim, num_heads, mlp_ratio=2.0, drop_path=0.0, markov=False, markov_gate_b=False,
-                 num_joints=17, markov_iters=0, markov_gate_positive=False):
+                 num_joints=17, markov_iters=0, markov_gate_positive=False, markov_msg_norm=False):
         super().__init__()
         self.num_joints = num_joints
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
@@ -158,7 +170,7 @@ class ImgLifterBlock(nn.Module):
         if markov:                                                          # sau self-attn, chi 17 token khop
             self.norm_m = nn.LayerNorm(dim, eps=1e-6)
             self.markov = MarkovLayer(dim, num_joints, gate_b=markov_gate_b, iters=markov_iters,
-                                      gate_positive=markov_gate_positive)
+                                      gate_positive=markov_gate_positive, msg_norm=markov_msg_norm)
         else:
             self.markov = None
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
@@ -190,7 +202,7 @@ class ImgLifterBlock(nn.Module):
 class ImgLifterDenoiser(nn.Module):
     def __init__(self, num_joints=17, dim=512, depth=8, num_heads=8, mlp_ratio=2.0, drop_path=0.1,
                  img_ch=2048, feat_j_ch=256, img_tokens=64, num_ctx=0, markov=False, markov_gate_b=False,
-                 markov_iters=0, markov_gate_positive=False):
+                 markov_iters=0, markov_gate_positive=False, markov_msg_norm=False):
         """num_ctx > 0 (ImgLifter day, 2026-11-04): them num_ctx token NGU CANH 2D (diem day cua Refiner day, sau 17
         khop) vao chuoi self-attn: chi mang dieu kien [x, y, log_b, det=0, cam] + dac trung anh, KHONG co x_t va
         KHONG co dau ra 3D. num_ctx = 0 -> y het ban 17 khop (cung shape tham so)."""
@@ -207,7 +219,8 @@ class ImgLifterDenoiser(nn.Module):
                                       nn.Linear(dim * 2, dim))
         dpr = [v.item() for v in torch.linspace(0, drop_path, depth)]
         self.blocks = nn.ModuleList([ImgLifterBlock(dim, num_heads, mlp_ratio, dpr[i], markov, markov_gate_b,
-                                                    num_joints, markov_iters, markov_gate_positive)
+                                                    num_joints, markov_iters, markov_gate_positive,
+                                                    markov_msg_norm)
                                      for i in range(depth)])
         self.final_norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.final_ada = nn.Sequential(nn.SiLU(), nn.Linear(dim, 2 * dim))
@@ -244,7 +257,7 @@ class ImgLifterDenoiser(nn.Module):
 class ImgLifter(nn.Module):
     def __init__(self, num_joints=17, dim=512, depth=8, num_heads=8, mlp_ratio=2.0, drop_path=0.1,
                  timesteps=1000, scale=3.0, feat_j_ch=256, num_ctx=0, markov=False, markov_gate_b=False,
-                 markov_iters=0, markov_gate_positive=False, bone_paper=False):
+                 markov_iters=0, markov_gate_positive=False, bone_paper=False, markov_msg_norm=False):
         super().__init__()
         if int(markov_iters) < 0 or (markov_iters and not markov):
             raise ValueError('markov_iters > 0 can markov_layer=True; khong dung so am')
@@ -257,7 +270,8 @@ class ImgLifter(nn.Module):
         self.denoiser = ImgLifterDenoiser(num_joints, dim, depth, num_heads, mlp_ratio, drop_path,
                                           feat_j_ch=feat_j_ch, num_ctx=num_ctx, markov=markov,
                                           markov_gate_b=markov_gate_b, markov_iters=markov_iters,
-                                          markov_gate_positive=markov_gate_positive)
+                                          markov_gate_positive=markov_gate_positive,
+                                          markov_msg_norm=markov_msg_norm)
         betas = cosine_beta_schedule(timesteps)
         ac = torch.cumprod(1. - betas, dim=0)
         self.num_timesteps = int(betas.shape[0])
