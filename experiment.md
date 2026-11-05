@@ -146,3 +146,13 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - Loss trên x0: `w_bone` × L1 độ dài xương + `w_angle` × (Δcos góc 2 xương nối tiếp)². Key `IMGLIFT.markov_layer / markov_gate_b / w_bone / w_angle`, mặc định tắt.
 - Eval thêm MPJPE tách khớp detector sót / có.
 - Config `config/train_img_lifter_dense48_3dpw_markov.yaml`, so với §12. Đổi 2 thành phần cùng lúc; ablation chạy sau. Kết quả: chưa có.
+
+## 14. ImgLifter Markov v2 (2026-11-05, người dùng duyệt sửa gộp 3 điểm, đã code/chờ chạy)
+
+- Mốc so sánh: bản Markov §13, cùng 5 bộ train, Refiner dày, lịch 25 epoch và trọng số `w_bone=0.5 / w_angle=0.1`. Chưa có kết quả thực nghiệm được cung cấp cho hai bản.
+- Sửa tích thông điệp theo cạnh có hướng, loại cạnh quay lại (8 vòng/block); length loss đổi từ L1 sang công thức (4) của DiffusionPose; cổng bất định dùng hệ số dương. Chi tiết và lựa chọn `L_std`/số vòng nằm ở `01_PROJECT_CONTEXT.md` §11. Giữ nguyên 13 cặp góc, MPJPE L2, đơn vị/root của pose.
+- Đây là run gộp theo phạm vi người dùng đã duyệt, **không tách được đóng góp ba thay đổi**. Length loss mới khác thang đo L1 cũ; không coi trọng số giữ nguyên là đóng góp gradient giữ nguyên. Log thêm loss đã nhân trọng số và total để theo dõi. Chưa chạy code, train/test hoặc kiểm cú pháp bằng Python tại máy local.
+- Config mới `config/train_img_lifter_dense48_3dpw_markov_v2.yaml`, kết quả mới `experiment/img_lifter_dense48_3dpw_markov_v2/`; không sửa YAML/run cũ và không resume checkpoint Markov cũ bằng YAML v2. Các key mới mặc định tắt, builder và checkpoint có lưu chế độ; resume từ metadata khác bị từ chối.
+- Train: `python main/train_img_lifter.py --cfg config/train_img_lifter_dense48_3dpw_markov_v2.yaml --exp_name img_lifter_dense48_3dpw_markov_v2 --gpu 0`.
+- Eval sau khi hoàn tất lịch train: `python main/eval_img_lifter.py --cfg config/train_img_lifter_dense48_3dpw_markov_v2.yaml --ckpt experiment/img_lifter_dense48_3dpw_markov_v2/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --ocpc_mode test --gpu 0`. Dùng epoch cuối theo giao thức ImgLifter; không tự chọn theo log test. Có 3DPW-train nên không báo là giao thức JOTR; OC/PC toàn bộ chỉ để tham khảo.
+- Bước tiếp: người dùng chạy trên server, gửi log loss/train và kết quả eval MPJPE17 cùng K/S/seed. Chưa có bằng chứng để kết luận cải thiện.

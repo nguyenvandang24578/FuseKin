@@ -15,13 +15,19 @@ Tuy chon (2026-11-05, y tuong Markov Optimization Layer cua DiffusionPose AAAI-2
   markov_layer: moi block them 1 lop truyen tin giua 17 token khop THEO XUONG (16 canh H36M), sau self-attn.
     msg_{j->i} = psi(h_i) * phi(h_i, h_j) (psi = h_i W_n, phi = [h_i; h_j] W_e, nhan tung phan tu), gop logsumexp
     tren cac khop ke j, chieu ve D (khoi tao 0 -> luc dau la identity), cong residual.
-    Ban don gian: 1 vong / block (bo tich tin nhan bac 2 cua cong thuc (1)); 8 block -> truyen xa nhieu bac.
+    markov_iters = 0: giu ban cu bo tich thong diep. > 0: cap nhat dong bo tren 32 canh co huong,
+    msg_{j->i}^{r} = psi(h_i) * phi(h_i,h_j) * prod_{k ke j, k != i} msg_{k->j}^{r-1}, khoi tao msg^0 = 1.
   markov_gate_b: phan tin cong vao nhan cong g = sigmoid(a * (log_b - c)) (a, c hoc duoc) -> khop mo ho (b lon,
-    bi che / detector sot) nhan nhieu tu khop ke, khop ro giu dac trung cua minh. (Diem moi so voi paper.)
-  loss: w_bone x L1 do dai 16 xuong + w_angle x (cos goc 2 xuong noi tiep: du doan - GT)^2, tren x0 du doan.
+    bi che / detector sot). markov_gate_positive: a = softplus(a_raw) + 1e-6 de cong luon tang theo log_b.
+  loss: w_bone x do dai xuong + w_angle x (cos goc 2 xuong noi tiep: du doan - GT)^2, tren x0 du doan.
+    bone_paper = False: L1 (met) nhu cu. True: -log(mean(exp(-sai_so^2 / (2 * var_GT + 1e-8)))),
+    var_GT tren 16 xuong cua TUNG pose, unbiased=False; loss nay khong co don vi. Giu 13 cap goc nhu cu.
 """
+import math
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from models.diff_lifter import cosine_beta_schedule, extract, Mlp, SinusoidalPositionEmbeddings
 
@@ -48,13 +54,20 @@ def h36m_adjacency(num_joints=17):
     return adj
 
 
-def bone_angle_losses(pred, gt):
-    """pred, gt (B,17,3) met -> (bone (B,) L1 do dai xuong trung binh, met; angle (B,) sai cos^2 trung binh)."""
+def bone_angle_losses(pred, gt, paper=False):
+    """Tra bone, angle (B,). Bone L1 (met) hoac cong thuc (4) (khong don vi); angle la sai cos^2."""
     pi = torch.tensor([p for p, _ in H36M_BONES], device=pred.device)
     ci = torch.tensor([c for _, c in H36M_BONES], device=pred.device)
     vp, vg = pred[:, ci] - pred[:, pi], gt[:, ci] - gt[:, pi]               # (B,16,3)
     lp, lg = vp.norm(dim=-1), vg.norm(dim=-1)
-    bone = (lp - lg).abs().mean(-1)
+    if paper:
+        # Chon L_std rieng tung pose, tren 16 xuong; khong phu thuoc mau khac trong batch.
+        var_gt = lg.var(dim=-1, unbiased=False, keepdim=True)
+        score = -(lp - lg).square() / (2.0 * var_gt + 1e-8)
+        # -log(mean(exp(score))) tinh on dinh, tranh exp bi hut ve 0.
+        bone = math.log(len(H36M_BONES)) - torch.logsumexp(score, dim=-1)
+    else:
+        bone = (lp - lg).abs().mean(-1)
     a = torch.tensor([x for x, _ in H36M_BONE_PAIRS], device=pred.device)
     b = torch.tensor([y for _, y in H36M_BONE_PAIRS], device=pred.device)
     up, ug = vp / lp.clamp_min(1e-6)[..., None], vg / lg.clamp_min(1e-6)[..., None]
@@ -66,9 +79,29 @@ def bone_angle_losses(pred, gt):
 class MarkovLayer(nn.Module):
     """Truyen tin theo xuong giua 17 token khop (xem docstring dau file). h (N,17,D) da norm; log_b (N,17) / None."""
 
-    def __init__(self, dim, num_joints=17, msg_dim=256, gate_b=False):
+    def __init__(self, dim, num_joints=17, msg_dim=256, gate_b=False, iters=0, gate_positive=False):
         super().__init__()
+        if num_joints != 17 or int(iters) < 0:
+            raise ValueError('MarkovLayer can H36M-17 va markov_iters >= 0')
+        if gate_positive and not gate_b:
+            raise ValueError('markov_gate_positive can markov_gate_b')
+        self.iters = int(iters)
+        self.gate_positive = bool(gate_positive)
         self.register_buffer('adj', h36m_adjacency(num_joints), persistent=False)
+        if self.iters:
+            edges = [(p, c) for p, c in H36M_BONES] + [(c, p) for p, c in H36M_BONES]
+            src, dst = zip(*edges)
+            incoming = [[k for k, (u, v) in enumerate(edges) if v == j and u != i] for j, i in edges]
+            node_incoming = [[k for k, (_, v) in enumerate(edges) if v == i] for i in range(num_joints)]
+            # Dem canh thieu bang chi so 0 va mask; tich rong = 1, khong dung phep chia thong diep.
+            for name, rows in (('incoming', incoming), ('node_incoming', node_incoming)):
+                width = max(len(row) for row in rows)
+                indices = torch.tensor([row + [0] * (width - len(row)) for row in rows], dtype=torch.long)
+                mask = torch.tensor([[True] * len(row) + [False] * (width - len(row)) for row in rows])
+                self.register_buffer(name, indices, persistent=False)
+                self.register_buffer(name + '_mask', mask, persistent=False)
+            self.register_buffer('edge_src', torch.tensor(src, dtype=torch.long), persistent=False)
+            self.register_buffer('edge_dst', torch.tensor(dst, dtype=torch.long), persistent=False)
         self.psi = nn.Linear(dim, msg_dim)                                  # node potential: h_i W_n
         self.phi_i = nn.Linear(dim, msg_dim)                                # edge potential [h_i; h_j] W_e
         self.phi_j = nn.Linear(dim, msg_dim, bias=False)                    #   = h_i W_e1 + h_j W_e2
@@ -77,19 +110,35 @@ class MarkovLayer(nn.Module):
         nn.init.zeros_(self.out.bias)
         self.gate_b = bool(gate_b)
         if self.gate_b:
-            self.gate_a = nn.Parameter(torch.tensor(1.0))
+            init_a = math.log(math.expm1(1.0)) if self.gate_positive else 1.0
+            self.gate_a = nn.Parameter(torch.tensor(init_a))
             self.gate_c = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, h, log_b=None):
         psi = self.psi(h)                                                   # (N,J,M)
-        phi = self.phi_i(h)[:, :, None] + self.phi_j(h)[:, None, :]         # (N,J,J,M): [i, j]
-        msg = psi[:, :, None] * phi                                         # tin j -> i
-        msg = msg.masked_fill(~self.adj[None, :, :, None], float('-inf'))
-        agg = torch.logsumexp(msg, dim=2)                                   # gop tren khop ke j
+        if self.iters:
+            # Canh e = j -> i; node potential van dung khop NHAN i theo cong thuc (1).
+            phi = self.phi_i(h)[:, self.edge_dst] + self.phi_j(h)[:, self.edge_src]
+            base = psi[:, self.edge_dst] * phi                              # (N,32,M)
+            msg = base                                                     # vong 1: cac thong diep truoc = 1
+            for _ in range(1, self.iters):
+                previous = msg[:, self.incoming]                            # (N,32,max_ke,M)
+                previous = previous.masked_fill(~self.incoming_mask[None, :, :, None], 1.0)
+                msg = base * previous.prod(dim=2)                           # chi k -> j voi k != i
+            received = msg[:, self.node_incoming]                           # (N,17,max_bac,M)
+            received = received.masked_fill(~self.node_incoming_mask[None, :, :, None], float('-inf'))
+            agg = torch.logsumexp(received, dim=2)
+        else:
+            # Giu nguyen duong tinh cu cho YAML va checkpoint chua bat markov_iters.
+            phi = self.phi_i(h)[:, :, None] + self.phi_j(h)[:, None, :]      # (N,J,J,M): [i, j]
+            msg = psi[:, :, None] * phi
+            msg = msg.masked_fill(~self.adj[None, :, :, None], float('-inf'))
+            agg = torch.logsumexp(msg, dim=2)
         out = self.out(agg)
         if self.gate_b:
             assert log_b is not None, 'markov_gate_b can log_b'
-            out = out * torch.sigmoid(self.gate_a * (log_b - self.gate_c))[..., None]
+            a = F.softplus(self.gate_a) + 1e-6 if self.gate_positive else self.gate_a
+            out = out * torch.sigmoid(a * (log_b - self.gate_c))[..., None]
         return out
 
 
@@ -101,14 +150,15 @@ class ImgLifterBlock(nn.Module):
     """adaLN-Zero (theo tung khop) -> self-attn khop | cross-attn anh | FFN."""
 
     def __init__(self, dim, num_heads, mlp_ratio=2.0, drop_path=0.0, markov=False, markov_gate_b=False,
-                 num_joints=17):
+                 num_joints=17, markov_iters=0, markov_gate_positive=False):
         super().__init__()
         self.num_joints = num_joints
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.self_attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
         if markov:                                                          # sau self-attn, chi 17 token khop
             self.norm_m = nn.LayerNorm(dim, eps=1e-6)
-            self.markov = MarkovLayer(dim, num_joints, gate_b=markov_gate_b)
+            self.markov = MarkovLayer(dim, num_joints, gate_b=markov_gate_b, iters=markov_iters,
+                                      gate_positive=markov_gate_positive)
         else:
             self.markov = None
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
@@ -139,7 +189,8 @@ class ImgLifterBlock(nn.Module):
 
 class ImgLifterDenoiser(nn.Module):
     def __init__(self, num_joints=17, dim=512, depth=8, num_heads=8, mlp_ratio=2.0, drop_path=0.1,
-                 img_ch=2048, feat_j_ch=256, img_tokens=64, num_ctx=0, markov=False, markov_gate_b=False):
+                 img_ch=2048, feat_j_ch=256, img_tokens=64, num_ctx=0, markov=False, markov_gate_b=False,
+                 markov_iters=0, markov_gate_positive=False):
         """num_ctx > 0 (ImgLifter day, 2026-11-04): them num_ctx token NGU CANH 2D (diem day cua Refiner day, sau 17
         khop) vao chuoi self-attn: chi mang dieu kien [x, y, log_b, det=0, cam] + dac trung anh, KHONG co x_t va
         KHONG co dau ra 3D. num_ctx = 0 -> y het ban 17 khop (cung shape tham so)."""
@@ -156,7 +207,8 @@ class ImgLifterDenoiser(nn.Module):
                                       nn.Linear(dim * 2, dim))
         dpr = [v.item() for v in torch.linspace(0, drop_path, depth)]
         self.blocks = nn.ModuleList([ImgLifterBlock(dim, num_heads, mlp_ratio, dpr[i], markov, markov_gate_b,
-                                                    num_joints) for i in range(depth)])
+                                                    num_joints, markov_iters, markov_gate_positive)
+                                     for i in range(depth)])
         self.final_norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.final_ada = nn.Sequential(nn.SiLU(), nn.Linear(dim, 2 * dim))
         self.head = nn.Linear(dim, 3)
@@ -191,14 +243,21 @@ class ImgLifterDenoiser(nn.Module):
 
 class ImgLifter(nn.Module):
     def __init__(self, num_joints=17, dim=512, depth=8, num_heads=8, mlp_ratio=2.0, drop_path=0.1,
-                 timesteps=1000, scale=3.0, feat_j_ch=256, num_ctx=0, markov=False, markov_gate_b=False):
+                 timesteps=1000, scale=3.0, feat_j_ch=256, num_ctx=0, markov=False, markov_gate_b=False,
+                 markov_iters=0, markov_gate_positive=False, bone_paper=False):
         super().__init__()
+        if int(markov_iters) < 0 or (markov_iters and not markov):
+            raise ValueError('markov_iters > 0 can markov_layer=True; khong dung so am')
+        if markov_gate_positive and not (markov and markov_gate_b):
+            raise ValueError('markov_gate_positive can markov_layer va markov_gate_b')
         self.num_joints = num_joints
         self.num_ctx = int(num_ctx)
         self.scale = float(scale)
+        self.bone_paper = bool(bone_paper)
         self.denoiser = ImgLifterDenoiser(num_joints, dim, depth, num_heads, mlp_ratio, drop_path,
                                           feat_j_ch=feat_j_ch, num_ctx=num_ctx, markov=markov,
-                                          markov_gate_b=markov_gate_b)
+                                          markov_gate_b=markov_gate_b, markov_iters=markov_iters,
+                                          markov_gate_positive=markov_gate_positive)
         betas = cosine_beta_schedule(timesteps)
         ac = torch.cumprod(1. - betas, dim=0)
         self.num_timesteps = int(betas.shape[0])
@@ -236,10 +295,11 @@ class ImgLifter(nn.Module):
         terms = {'mpjpe': (err * v).sum() / vs}
         total = terms['mpjpe']
         if w_bone > 0 or w_angle > 0:
-            bone, angle = bone_angle_losses(pred, gt)
+            bone, angle = bone_angle_losses(pred, gt, paper=self.bone_paper)
             terms['bone'], terms['angle'] = (bone * v).sum() / vs, (angle * v).sum() / vs
             total = total + float(w_bone) * terms['bone'] + float(w_angle) * terms['angle']
         self.last_terms = {k: float(x.detach()) for k, x in terms.items()}
+        self.last_terms['total'] = float(total.detach())
         return total, pred
 
     @torch.no_grad()

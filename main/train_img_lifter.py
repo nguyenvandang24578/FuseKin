@@ -3,7 +3,7 @@ main/train_img_lifter.py -- Train ImgLifter (lib/models/img_lifter.py): diffusio
 
 Moi batch: anh + 2D (GT + PoseFix kieu JOTR, giong luc train Refiner) -> Refiner 2D DONG BANG -> xy, log_b, f8, feat_j
 -> ImgLifter hoc khu nhieu x0. Muc tieu = orig_joint_cam cua mau fusekin_unified = H36M-17 tinh tu mesh (met,
-root-relative) cho ca 4 bo -> cung dinh nghia khop mesh voi GT 3DPW. Khong dung 3DPW-train (giao thuc JOTR).
+root-relative) -> cung dinh nghia khop mesh voi GT 3DPW. Tap train theo DATASET.train_list; co the them 3dpw-train.
   - IMGLIFT.input_drop_prob: bo ngau nhien khop dau vao Refiner (det = 0) giong detector bo sot luc test.
   - IMGLIFT.train_xy_noise: cong nhieu Gauss std = train_xy_noise x b vao xy Refiner (Refiner chay tren anh no
     da hoc -> loi nho hon test; nhieu bu khoang cach).
@@ -89,6 +89,13 @@ def main():
     last_path = os.path.join(cfg.checkpoint_dir, 'last.pth.tar')
     if args.resume_training:
         ck = torch.load(last_path, map_location='cpu', weights_only=False)
+        # Cac co moi khong doi shape tham so: phai kiem tra metadata, strict=True chua du.
+        saved_arch = dict(ck['imglift_arch'])
+        for key, default in (('num_ctx', 0), ('markov', False), ('markov_gate_b', False),
+                             ('markov_iters', 0), ('markov_gate_positive', False), ('bone_paper', False)):
+            saved_arch.setdefault(key, default)
+        if saved_arch != imglift_arch():
+            raise ValueError('YAML khac kien truc/quy uoc Markov cua checkpoint; hay tao run moi')
         model.load_state_dict(ck['raw_model_state'], strict=True)
         ema.load_state_dict(ck['model_state'], strict=True)
         opt.load_state_dict(ck['optim_state'])
@@ -99,7 +106,7 @@ def main():
     decay = float(L.ema_decay)
     for epoch in range(begin, cfg.TRAIN.end_epoch + 1):
         model.train()
-        run, nb = {'loss_mm': 0.0, 'xy_err_px': 0.0, 'bone_mm': 0.0, 'angle': 0.0}, 0
+        run, nb = {'loss_mm': 0.0, 'xy_err_px': 0.0, 'bone': 0.0, 'angle': 0.0, 'total': 0.0}, 0
         pbar = tqdm(train_loader, desc=f'Epoch {epoch}')
         for i, (inputs, targets, meta) in enumerate(pbar):
             img = inputs['img'].to(DEVICE).float()
@@ -133,17 +140,23 @@ def main():
                 xy_err = (torch.norm(xy[:, :17] - g2, dim=-1) * gv).sum() / gv.sum().clamp_min(1) * 128.0
             tm = model.last_terms                                                 # tung thanh phan, chua nhan trong so
             run['loss_mm'] += tm['mpjpe'] * 1000
-            run['bone_mm'] += tm.get('bone', 0.0) * 1000
+            run['bone'] += tm.get('bone', 0.0)
             run['angle'] += tm.get('angle', 0.0)
+            run['total'] += tm['total']
             run['xy_err_px'] += float(xy_err)
             nb += 1
             if i % cfg.TRAIN.print_freq == 0:
                 pbar.set_postfix_str(f'MPJPE x0 {run["loss_mm"] / nb:.1f} mm | loi 2D Refiner (+nhieu) '
                                      f'{run["xy_err_px"] / nb:.1f} px')
         sched.step()
+        count = max(nb, 1)
+        bone_log = (f' | bone paper {run["bone"] / count:.4f} (khong don vi)' if model.bone_paper else
+                    f' | bone {run["bone"] / count * 1000:.2f} mm')
         log(f'Epoch {epoch} | lr {opt.param_groups[0]["lr"]:.2e} | MPJPE x0 (train, moi t) '
-            f'{run["loss_mm"] / max(nb, 1):.2f} mm | loi 2D Refiner {run["xy_err_px"] / max(nb, 1):.2f} px'
-            + (f' | bone {run["bone_mm"] / max(nb, 1):.2f} mm | angle (cos^2) {run["angle"] / max(nb, 1):.4f}'
+            f'{run["loss_mm"] / count:.2f} mm | loi 2D Refiner {run["xy_err_px"] / count:.2f} px'
+            + (bone_log + f' | angle (cos^2) {run["angle"] / count:.4f}'
+               f' | w*bone {float(L.w_bone) * run["bone"] / count:.5f}'
+               f' | w*angle {float(L.w_angle) * run["angle"] / count:.5f} | total {run["total"] / count:.5f}'
                if float(L.w_bone) > 0 or float(L.w_angle) > 0 else ''))
 
         ck = {'epoch': epoch, 'model_state': ema.state_dict(), 'imglift_arch': imglift_arch(),

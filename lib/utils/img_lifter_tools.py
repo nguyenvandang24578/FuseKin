@@ -19,7 +19,9 @@ def imglift_arch():
     return {'dim': int(L.embed_dim), 'depth': int(L.depth), 'num_heads': int(L.num_heads),
             'mlp_ratio': float(L.mlp_ratio), 'drop_path': float(L.drop_path), 'timesteps': int(L.timesteps),
             'scale': float(L.scale), 'feat_j_ch': int(cfg.REFINE2D.deconv_ch), 'num_ctx': int(L.num_ctx),
-            'markov': bool(L.markov_layer), 'markov_gate_b': bool(L.markov_gate_b)}
+            'markov': bool(L.markov_layer), 'markov_gate_b': bool(L.markov_gate_b),
+            'markov_iters': int(L.markov_iters), 'markov_gate_positive': bool(L.markov_gate_positive),
+            'bone_paper': bool(L.bone_paper)}
 
 
 def build_img_lifter(arch=None):
@@ -27,7 +29,10 @@ def build_img_lifter(arch=None):
     return ImgLifter(num_joints=17, dim=a['dim'], depth=a['depth'], num_heads=a['num_heads'],
                      mlp_ratio=a['mlp_ratio'], drop_path=a['drop_path'], timesteps=a['timesteps'],
                      scale=a['scale'], feat_j_ch=a['feat_j_ch'], num_ctx=int(a.get('num_ctx', 0)),   # ckpt cu: 0
-                     markov=bool(a.get('markov', False)), markov_gate_b=bool(a.get('markov_gate_b', False)))
+                     markov=bool(a.get('markov', False)), markov_gate_b=bool(a.get('markov_gate_b', False)),
+                     markov_iters=int(a.get('markov_iters', 0)),
+                     markov_gate_positive=bool(a.get('markov_gate_positive', False)),
+                     bone_paper=bool(a.get('bone_paper', False)))
 
 
 def load_img_lifter(path, dev):

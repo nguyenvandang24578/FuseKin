@@ -1,6 +1,6 @@
 # FuseKin — bối cảnh kỹ thuật hiện tại (FuseKin-v3)
 
-Cập nhật **2026-11-03**. Nội dung kỹ thuật đối chiếu với code/YAML local; đây không phải xác nhận trạng thái môi trường hoặc file trên server. Kết quả và tiến độ nằm trong [experiment.md](experiment.md), lệnh thường dùng trong [README.md](README.md).
+Cập nhật **2026-11-05**. Nội dung kỹ thuật đối chiếu với code/YAML local; đây không phải xác nhận trạng thái môi trường hoặc file trên server. Kết quả và tiến độ nằm trong [experiment.md](experiment.md), lệnh thường dùng trong [README.md](README.md).
 
 ## 1. Phạm vi
 
@@ -137,3 +137,12 @@ Mục tiêu: dùng ảnh sửa 2D detector **trước** khi lift (nhầm ngườ
 - Train (`main/train_img_lifter.py`): 4 bộ, không 3DPW; 2D vào Refiner = GT + PoseFix 1.0; bỏ ngẫu nhiên khớp vào (`input_drop_prob`); nhiễu thêm vào xy theo b (`train_xy_noise`, b chặn 8 ô); mục tiêu `orig_joint_cam` (H36M-17 từ mesh, mét, root-relative); EMA 0.999.
 - Suy luận: K giả thuyết × S bước DDIM; gộp `mean` hoặc `jpma` (fit weak-perspective trọng số 1/b², chọn giả thuyết theo từng khớp khi b ≤ `jpma_max_b`). Eval (`main/eval_img_lifter.py`, `lib/utils/img_lifter_tools.py`): MPJPE17/PA, oracle min-K, `--ablate_img`, so với lifter cũ trên cùng mẫu.
 - Config `cfg.IMGLIFT.*`, YAML `config/train_img_lifter_jotr.yaml`. Chưa ghép vào Student.
+
+## 11. ImgLifter Markov v2 (2026-11-05, đã code, chờ chạy)
+
+- `MarkovLayer` trong `lib/models/img_lifter.py`: sau self-attention, chỉ xử lý 17 token khớp theo 16 xương H36M. `IMGLIFT.markov_iters > 0` dùng 32 cạnh có hướng, cập nhật đồng bộ `m[j->i] = psi(h_i) * phi(h_i,h_j) * prod(m[k->j], k != i)`, nhân từng kênh, khởi tạo thông điệp bằng 1. Không chia cho thông điệp ngược; cạnh thiếu đóng góp 1 vào tích. Gộp `logsumexp` các thông điệp vào khớp i, chiếu về D bằng lớp khởi tạo 0, cộng residual. Mỗi block/bước DDIM tính lại thông điệp từ đặc trưng hiện tại.
+- YAML v2 chọn **8 vòng/block** theo đường kính 8 cạnh của cây H36M-17; số vòng là lựa chọn triển khai, paper không quy định. Vẫn giữ phép chiếu, residual, và cổng riêng của ImgLifter; đây là áp dụng công thức (1)–(3) của DiffusionPose vào token 3D, không phải tái hiện toàn bộ mô hình heatmap 2D/video.
+- `IMGLIFT.markov_gate_positive=True`: cổng `sigmoid(a*(log_b-c))` với `a=softplus(a_raw)+1e-6`, khởi tạo a xấp xỉ 1. Cổng tăng theo bất định của khớp nhận; chưa đánh trọng số riêng theo bất định khớp gửi.
+- `bone_angle_losses(..., paper=True)` / `IMGLIFT.bone_paper=True`: length loss theo công thức (4), `-log(mean(exp(-(l_pred-l_gt)^2/(2*var_gt+1e-8))))`, tính bằng logsumexp để tránh underflow. Chọn `var_gt` trên **16 độ dài GT của từng pose**, `unbiased=False`, epsilon đơn vị m²; đây là cách chốt chiều thống kê vì paper chưa nói rõ. Loss không có đơn vị; L1 cũ mang đơn vị mét. Giữ nguyên loss góc cosine bình phương trên 13 cặp nối tiếp và MPJPE L2 trên x0.
+- Tương thích: ba key mới mặc định `0 / False / False`, giữ đường tính cũ. `imglift_arch` và builder chung train/eval lưu/nạp các cờ mới; checkpoint cũ thiếu cờ dùng mặc định, vẫn nạp `strict=True`. Trainer kiểm tra metadata khi resume, tránh đổi nghĩa Markov/gate/loss dù shape tham số giống nhau. ImgLifter dùng builder riêng; không đổi DiffLifter hoặc đường dựng model của Student/diag DiffLifter.
+- Trainer ghi bone với đơn vị đúng theo chế độ, thêm các loss sau nhân trọng số và tổng loss. YAML mới `config/train_img_lifter_dense48_3dpw_markov_v2.yaml`, thư mục run mới `img_lifter_dense48_3dpw_markov_v2`; YAML cũ được giữ nguyên. Có train 3DPW nên OC/PC dùng chỉ sequence test; báo theo epoch cuối như giao thức ImgLifter hiện tại.

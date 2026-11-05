@@ -1,0 +1,73 @@
+# Ban sua Markov duoc duyet gop (2026-11-05); tao run MOI, khong resume run Markov cu.
+# So voi train_img_lifter_dense48_3dpw_markov.yaml: tich thong diep + loss do dai paper + cong don dieu.
+# markov_iters=8 la lua chon cho cay H36M-17 (duong kinh 8 canh), paper khong an dinh so vong.
+# bone_paper: L_std tren 16 xuong TUNG pose, unbiased=False, epsilon=1e-8 met^2.
+# Giu w_bone/w_angle de khong doi them trong so; bone paper khong cung thang do voi L1 cu.
+# Day la ban ap dung cong thuc cho token/pose 3D, khong phai tai hien toan bo DiffusionPose 2D video.
+# Chay tu goc repo:
+# python main/train_img_lifter.py --cfg config/train_img_lifter_dense48_3dpw_markov_v2.yaml --exp_name img_lifter_dense48_3dpw_markov_v2 --gpu 0
+# python main/eval_img_lifter.py --cfg config/train_img_lifter_dense48_3dpw_markov_v2.yaml --ckpt experiment/img_lifter_dense48_3dpw_markov_v2/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --ocpc_mode test --gpu 0
+
+update_bbox: True
+DATASET:
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose', '3dpw-train']
+  workers: 8
+  pw3d_2d_source: 'openpose'
+  pw3d_ocpc_test_only: True
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: False
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  posefix_scale: 1.0
+  posefix_fast: True
+  fusekin_unified: True
+  drop_raw_smpl_stats: True
+
+TRAIN:
+  print_freq: 20
+  batch_size: 64
+  shuffle: True
+  dataset_ratio: [0.2, 0.2, 0.2, 0.2, 0.2]
+  samples_per_epoch: 64000
+  end_epoch: 25
+  lr: 0.0002
+  lr_step: [18, 23]
+  lr_factor: 0.1
+
+TEST:
+  batch_size: 64
+  shuffle: False
+
+REFINE2D:
+  deconv_ch: 256
+
+IMGLIFT:
+  refiner_ckpt: 'experiment/refiner2d_dense48_scratch/checkpoint/last.pth.tar'
+  num_ctx: 48
+  markov_layer: True
+  markov_gate_b: True
+  markov_iters: 8
+  markov_gate_positive: True
+  bone_paper: True
+  w_bone: 0.5
+  w_angle: 0.1
+  embed_dim: 512
+  depth: 8
+  num_heads: 8
+  mlp_ratio: 2.0
+  drop_path: 0.1
+  timesteps: 1000
+  scale: 3.0
+  train_xy_noise: 0.5
+  input_drop_prob: 0.1
+  weight_decay: 0.01
+  ema_decay: 0.999
+  eval_sets: ['3dpw', '3dpw-pc', '3dpw-crowd']
+  eval_max_samples: 3000
+  eval_K: 5
+  eval_S: 2
+  eta: 1.0
+  jpma_max_b: 3.0
