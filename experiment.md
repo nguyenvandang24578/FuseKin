@@ -139,13 +139,33 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - Refiner dày đóng băng `refiner2d_dense48_scratch` (last). ImgLifter: 17 token khớp (khử nhiễu → 3D) + 48 token ngữ cảnh (chỉ điều kiện 2D/ảnh, det = 0, không đầu ra 3D). Key `IMGLIFT.num_ctx` (0 = tắt, ckpt cũ vẫn nạp được).
 - Train 5 bộ, tỷ lệ 0.2 mỗi bộ: Human36M, MuCo, MSCOCO, CrowdPose (GT + PoseFix) + 3dpw-train (OpenPose). Key `DATASET.drop_raw_smpl_stats` để collate được.
 - Đổi 2 yếu tố so với `img_lifter_jotr` (dày + 3dpw-train) → không tách được đóng góp. 3dpw-train phá giao thức JOTR với OC/PC → báo thêm `--ocpc_mode test`.
-- Config `config/train_img_lifter_dense48_3dpw.yaml`, exp `img_lifter_dense48_3dpw`. Kết quả: chưa có.
+- Config `config/train_img_lifter_dense48_3dpw.yaml`, exp `img_lifter_dense48_3dpw`.
+- Kết quả (người dùng gửi 2026-11-05, `last` = epoch 25, K=10 S=4, mean; OC/PC chỉ seq test), so với Markov v1 §13:
+
+| Tập | Không Markov | Markov v1 | Δ | Khớp sót (không / có Markov) | Khớp có (không / có Markov) |
+|---|---:|---:|---:|---|---|
+| 3DPW | 66.41 | 65.80 | −0.61 | 81.88 / 81.50 | 63.30 / 62.64 |
+| OC (test) | 71.14 | 71.27 | +0.13 | 75.95 / 76.43 | 70.34 / 70.41 |
+| PC (test, n=281) | 49.24 | 54.82 | +5.58 | 18.50 / 30.97 | 53.34 / 58.00 |
+| Crowd | 65.38 | 64.63 | −0.75 | 94.40 / 95.16 | 59.24 / 58.17 |
+
+  Markov v1 (+ loss xương/góc) chỉ hơn < 1 mm trên 3DPW/Crowd, không hơn trên OC, kém trên PC (281 mẫu, nhiễu lớn). Phần giảm nằm ở khớp CÓ, không ở khớp SÓT → chưa ủng hộ giả thuyết "Markov giúp khớp bị che"; chưa tách được Markov vs loss.
 
 ## 13. ImgLifter dày + lớp Markov + loss xương/góc (2026-11-05, người dùng xác nhận gộp, đã code, chưa chạy)
 - Ý tưởng Markov Optimization Layer (DiffusionPose, AAAI-26): mỗi block truyền tin giữa 17 token khớp theo 16 xương H36M, msg = ψ(h_i)·φ(h_i,h_j), gộp logsumexp, khởi tạo 0. Điểm mới: cổng sigmoid(a(log_b − c)) theo độ bất định Refiner → khớp mơ hồ nhận nhiều từ khớp kề.
 - Loss trên x0: `w_bone` × L1 độ dài xương + `w_angle` × (Δcos góc 2 xương nối tiếp)². Key `IMGLIFT.markov_layer / markov_gate_b / w_bone / w_angle`, mặc định tắt.
 - Eval thêm MPJPE tách khớp detector sót / có.
-- Config `config/train_img_lifter_dense48_3dpw_markov.yaml`, so với §12. Đổi 2 thành phần cùng lúc; ablation chạy sau. Kết quả: chưa có.
+- Config `config/train_img_lifter_dense48_3dpw_markov.yaml`, so với §12. Đổi 2 thành phần cùng lúc; ablation chạy sau.
+- Kết quả (người dùng gửi 2026-11-05, `last` = epoch 25, K=10 S=4, gộp mean, MPJPE17 / PA, mm; OC/PC chỉ seq test):
+
+| Tập | n | MPJPE17 | PA | khớp sót / có | Lifter cũ |
+|---|---:|---:|---:|---|---:|
+| 3DPW | 35,515 | 65.80 | 43.78 | 81.5 / 62.6 (sót 16.7%) | 77.47 |
+| OC (test) | 4,157 | 71.27 | 45.83 | 76.4 / 70.4 | |
+| PC (test) | 281 | 54.82 | 56.65 | 31.0 / 58.0 | |
+| Crowd | 1,923 | 64.63 | 47.62 | 95.2 / 58.2 (sót 17.5%) | 69.69 |
+
+  jpma kém mean ở mọi tập; oracle min-K thấp hơn mean ~6–8 mm. PC test chỉ 281 mẫu → không ổn định. Chưa có bản §12 (không Markov) để tách đóng góp Markov.
 
 ## 14. ImgLifter Markov v2 (2026-11-05, người dùng duyệt sửa gộp 3 điểm, đã code/chờ chạy)
 

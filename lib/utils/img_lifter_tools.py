@@ -105,10 +105,13 @@ def reproj_errors(pred, g2, valid):
 
 @torch.no_grad()
 def eval_img_lifter(lifter, refiner, loader, dev, regressor, K=10, S=4, eta=1.0, jpma_max_b=3.0,
-                    ablate_img=False, old_lifter=None, max_samples=0, seed=0):
+                    ablate_img=False, old_lifter=None, max_samples=0, seed=0, train_split=False):
+    """train_split=True (2026-11-05, do loi dau vao tren tap TRAIN): GT = targets['orig_joint_cam'] (muc tieu train
+    lifter, H36M-17 tu mesh, root-relative), bo mau is_valid_fit = 0; regressor khong dung (None)."""
     from models.ARTS import diff_lift
     lifter.eval()
-    reg = torch.as_tensor(regressor, dtype=torch.float32, device=dev)
+    reg = None if train_split else torch.as_tensor(regressor, dtype=torch.float32, device=dev)
+    n_skip = 0
     acc = {}
     cur = {'jm': None}                                                      # mask detector cua batch hien tai
     hm = torch.tensor([cfg.output_hm_shape[2], cfg.output_hm_shape[1]], dtype=torch.float32, device=dev)
@@ -135,13 +138,25 @@ def eval_img_lifter(lifter, refiner, loader, dev, regressor, K=10, S=4, eta=1.0,
         j2 = inputs['joints'].to(dev).float()[..., :2]
         jm = inputs['joints_mask'].to(dev).float().reshape(B, 17)
         cam = inputs['cam_bbox'].to(dev).float()
-        cur['jm'] = jm
-        gt17 = torch.einsum('jk,bkc->bjc', reg, targets['smpl_mesh_cam'].to(dev).float())
+        if train_split:
+            gt17 = targets['orig_joint_cam'].to(dev).float()
+        else:
+            gt17 = torch.einsum('jk,bkc->bjc', reg, targets['smpl_mesh_cam'].to(dev).float())
         gt17 = gt17 - gt17[:, 0:1]
         g2 = gin = None
         if 'orig_joint_img' in targets:                                     # can cfg.DATASET.pw3d_test_gt2d
             g2 = targets['orig_joint_img'].to(dev).float()[..., :2] / hm * 2 - 1
             gin = meta['orig_joint_trunc'].to(dev).float().reshape(B, 17) > 0
+        if train_split:                                                     # bo mau mesh khong tin duoc
+            keep = meta['is_valid_fit'].to(dev).float().reshape(B) > 0
+            n_skip += int((~keep).sum())
+            if not bool(keep.any()):
+                continue
+            img, j2, jm, cam, gt17 = img[keep], j2[keep], jm[keep], cam[keep], gt17[keep]
+            if g2 is not None:
+                g2, gin = g2[keep], gin[keep]
+            B = img.shape[0]
+        cur['jm'] = jm
             add('gt3d_san', gt17, gt17, g2, gin)       # san: GT 3D (weak-perspective) vs GT 2D (phoi canh)
 
         nc = int(getattr(lifter, 'num_ctx', 0))
@@ -172,11 +187,13 @@ def eval_img_lifter(lifter, refiner, loader, dev, regressor, K=10, S=4, eta=1.0,
         d['mpjpe_vis'] = v['vis'][0] / max(v['vis'][1], 1)
         d['miss_ratio'] = v['miss'][1] / max(v['miss'][1] + v['vis'][1], 1)
         return d
-    return {'n': seen, 'K': K, 'S': S, 'ablate_img': bool(ablate_img), 'res': {k: summ(v) for k, v in acc.items()}}
+    return {'n': seen, 'K': K, 'S': S, 'ablate_img': bool(ablate_img), 'n_skip_invalid': n_skip,
+            'res': {k: summ(v) for k, v in acc.items()}}
 
 
 def format_eval(name, r):
-    s = f'[{name}] n={r["n"]} K={r["K"]} S={r["S"]}' + (' | ABLATE anh (f8, feat_j = 0)' if r['ablate_img'] else '')
+    s = f'[{name}] n={r["n"]} K={r["K"]} S={r["S"]}' + (f' | bo {r["n_skip_invalid"]} mau is_valid_fit=0'
+                                                          if r.get('n_skip_invalid') else '') + (' | ABLATE anh (f8, feat_j = 0)' if r['ablate_img'] else '')
     lines = [s]
     for k, v in r['res'].items():
         rp = f' | lech 2D {v["reproj_px"]:5.2f} px' if 'reproj_px' in v else ''
