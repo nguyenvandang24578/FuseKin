@@ -181,3 +181,8 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - Người dùng báo: run v2 có sai số train lớn. Giả thuyết (chưa kiểm chứng): tích 8 vòng tin nhắn có dấu, không chuẩn hóa → triệt tiêu/bùng nổ.
 - Sửa: `IMGLIFT.markov_msg_norm` (mặc định tắt) chuẩn hóa RMS tin nhắn sau mỗi vòng (dấu "∝" của công thức (1)). Bỏ `pw3d_ocpc_test_only` khỏi YAML để eval nhanh PC so được với §12/§13.
 - Config `config/train_img_lifter_dense48_3dpw_markov_v3.yaml`, run mới (không resume v2). Kết quả: chưa có.
+
+## 16. Student v4: Refiner dày + ImgLifter Markov v1 (2026-11-05, người dùng xác nhận, đã code, chưa chạy)
+- Giữ kiến trúc Student v3 [A]–[E]. Đổi: (1) pose 3D đầu vào = Refiner dày + ImgLifter Markov v1 đóng băng (K=5, S=2, mean) thay DiffLifter cũ; (2) 2D cho Student ([A], PE, [B], [D]) = 17 khớp 2D Refiner, mask 1; (3) bỏ KD/Teacher; (4) PoseFix 1.0. Student train 4 bộ, không 3dpw-train (lifter có).
+- Key: `MODEL.imglift_checkpoint` ('' = DiffLifter cũ), `imglift_refiner_checkpoint`, `imglift_K`, `imglift_S`, `student_2d_from_refiner`.
+- Config `config/train_student_v4_imglift_markov.yml`, exp `student_v4_imglift_markov`. Đổi nhiều yếu tố cùng lúc. Báo epoch cuối (`last.pth.tar`), OC/PC chỉ seq test. Kết quả: chưa có.

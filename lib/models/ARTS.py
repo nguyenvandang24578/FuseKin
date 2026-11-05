@@ -110,8 +110,21 @@ class ARTS(nn.Module):
             print('[CANH BAO] Backbone ResNet KHONG nap pretrain (cfg.MODEL.backbone_pretrained rong) -> dac trung anh ngau nhien.')
 
         # Student: DiffLifter dong bang (2D -> 3D). Teacher khong can lifter.
-        self.use_diff = self.mode == 'student'
+        # Student v4 (MODEL.imglift_checkpoint): Refiner 2D day + ImgLifter dong bang thay DiffLifter.
+        self.use_imglift = self.mode == 'student' and bool(cfg.MODEL.get('imglift_checkpoint', ''))
+        self.use_diff = self.mode == 'student' and not self.use_imglift
         self.diff_lifter = self._build_diff_lifter() if self.use_diff else None
+        self.img_lifter = self.refiner2d = None
+        self.student_2d_from_refiner = bool(cfg.MODEL.get('student_2d_from_refiner', False))
+        if self.student_2d_from_refiner and not self.use_imglift:
+            raise ValueError('student_2d_from_refiner can MODEL.imglift_checkpoint')
+        if self.use_imglift:
+            from utils.img_lifter_tools import load_img_lifter, load_frozen_refiner
+            cpu = torch.device('cpu')
+            self.img_lifter, ck = load_img_lifter(cfg.MODEL.imglift_checkpoint, cpu)
+            self.refiner2d = load_frozen_refiner(cfg.MODEL.get('imglift_refiner_checkpoint', '') or ck['refiner_ckpt'], cpu)
+            print(f'===> Student v4: ImgLifter {cfg.MODEL.imglift_checkpoint} (K={cfg.MODEL.imglift_K}, '
+                  f'S={cfg.MODEL.imglift_S}) | 2D Student tu Refiner: {self.student_2d_from_refiner}')
         # Gate spread (chi Student): std K gia thuyet DiffLifter lam dau vao gate rieng tung khop o moi block fusion.
         self.diff_spread_gate = self.mode == 'student' and bool(cfg.MODEL.get('difflift_spread_gate', False))
         if self.mode == 'student' and cfg.MODEL.get('difflift_spread_gate_zero', False) and not self.diff_spread_gate:
@@ -145,7 +158,8 @@ class ARTS(nn.Module):
     def freeze_backbone_and_lifter(self):
         # Backbone: dong bang tru khi v3_bb_finetune (khi do chi BN giu thong ke cu, xem train()); module ghep
         # heatmap luon duoc train.
-        for module in ((None if self.bb_finetune else self.backbone), self.diff_lifter):
+        for module in ((None if self.bb_finetune else self.backbone), self.diff_lifter, self.img_lifter,
+                       self.refiner2d):
             if module is not None:
                 for param in module.parameters():
                     param.requires_grad = False
@@ -159,7 +173,30 @@ class ARTS(nn.Module):
         self.backbone.eval()
         if self.diff_lifter is not None:
             self.diff_lifter.eval()   # luon eval: DiffLifter.forward chon nhanh suy dien theo self.training
+        for module in (self.img_lifter, self.refiner2d):   # Student v4: luon eval (dong bang)
+            if module is not None:
+                module.eval()
         return self
+
+    @torch.no_grad()
+    def lift_imglift(self, image, pose_2d, joints_mask, cam_bbox):
+        """Student v4: anh + 2D detector -> Refiner 2D day -> ImgLifter (K gia thuyet x S buoc, gop mean).
+        Tra pose_3d (B,17,3) met root-relative, xy Refiner 17 khop (B,17,2) [-1,1]."""
+        from models.img_lifter import ImgLifter, aggregate
+        from utils.img_lifter_tools import refiner_inputs, lifter_det
+        B = image.shape[0]
+        p2 = pose_2d[:, 0] if pose_2d.dim() == 4 else pose_2d
+        jm = joints_mask.reshape(B, 17).float()
+        nc = int(getattr(self.img_lifter, 'num_ctx', 0))
+        xy, log_b, f8, fj = refiner_inputs(self.refiner2d, image, p2[..., :2].float(), jm, 17 + nc)
+        cond7 = ImgLifter.make_cond7(xy, log_b, lifter_det(jm, nc), cam_bbox.float())
+        gen = None
+        if not self.training:                                   # test: nhieu co dinh -> lap lai duoc
+            gen = torch.Generator(device=image.device)
+            gen.manual_seed(0)
+        hyp = self.img_lifter.sample(cond7, fj, f8, K=int(cfg.MODEL.imglift_K), S=int(cfg.MODEL.imglift_S),
+                                     eta=1.0, generator=gen)
+        return aggregate(hyp, xy, log_b, 'mean'), xy[:, :17]
 
     def get_image_features(self, image):
         feature_map, global_feature = self.backbone(image)
@@ -219,6 +256,21 @@ class ARTS(nn.Module):
 
     def forward_student(self, image, pose_2d, is_train, joints_mask=None, cam_bbox=None):
         spread = None
+        if self.use_imglift:
+            assert cam_bbox is not None and joints_mask is not None, "Student v4 can joints_mask + inputs['cam_bbox']"
+            pose_3d, xy_ref = self.lift_imglift(image, pose_2d, joints_mask, cam_bbox)
+            pose_3d = pose_3d - pose_3d[:, 0:1, :]
+            if self.student_2d_from_refiner:
+                # 2D Student = 2D Refiner (da dien khop detector sot), mask = 1 moi khop
+                ones = torch.ones_like(xy_ref[..., :1])
+                pose_2d = torch.cat([xy_ref, ones], dim=-1)
+                joints_mask = ones
+            feats = self.image_feats(image, pose_2d, joints_mask)
+            result = self.smpl_model(joints=pose_3d, is_train=is_train, return_features=True, joint_spread=None,
+                                     cam_bbox=cam_bbox, **feats, **self._pe2d_kwargs(pose_2d, joints_mask))
+            result['privileged_3d'] = self.privileged_joint_head(result['feat_joint'])
+            result['lifted_joints_3d'] = pose_3d
+            return result
         feats = self.image_feats(image, pose_2d, joints_mask)
         with torch.no_grad():
             assert cam_bbox is not None and joints_mask is not None, \

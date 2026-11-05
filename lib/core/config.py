@@ -214,6 +214,13 @@ cfg.MODEL.TEACHER = './experiment/teacher/checkpoint'   # checkpoint Teacher (St
 cfg.MODEL.difflift_checkpoint = ''
 cfg.MODEL.difflift_steps = 1   # S buoc DDIM; 1 = du doan 1 buoc (tot nhat cho MPJPE, diag muc F)
 cfg.MODEL.difflift_k = 1       # K gia thuyet, gop trung binh
+# Student v4 (2026-11-05): thay DiffLifter bang Refiner 2D day + ImgLifter (ca hai dong bang). '' = TAT (DiffLifter cu).
+cfg.MODEL.imglift_checkpoint = ''          # vd experiment/img_lifter_dense48_3dpw_markov/checkpoint/last.pth.tar
+cfg.MODEL.imglift_refiner_checkpoint = ''  # '' = refiner luu trong checkpoint ImgLifter
+cfg.MODEL.imglift_K = 5                    # so gia thuyet, gop trung binh
+cfg.MODEL.imglift_S = 2                    # so buoc DDIM
+# True: 2D cho Student (heatmap [A], PE, [B], feedback [D]) = 17 khop 2D cua Refiner (mask = 1 moi khop) thay 2D detector
+cfg.MODEL.student_2d_from_refiner = False
 # Gate dieu chinh cap nhat tu anh theo tung khop. Mac dinh TAT.
 # g=2*sigmoid(MLP([LN(joint),LN(image_update),log1p(std*10)])), khoi tao g=1; std tu K gia thuyet rieng
 # (difflift_spread_steps / difflift_spread_k), pose chinh van S1/K1.
