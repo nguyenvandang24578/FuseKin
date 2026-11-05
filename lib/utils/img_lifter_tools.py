@@ -157,6 +157,7 @@ def eval_img_lifter(lifter, refiner, loader, dev, regressor, K=10, S=4, eta=1.0,
                 g2, gin = g2[keep], gin[keep]
             B = img.shape[0]
         cur['jm'] = jm
+        if g2 is not None:
             add('gt3d_san', gt17, gt17, g2, gin)       # san: GT 3D (weak-perspective) vs GT 2D (phoi canh)
 
         nc = int(getattr(lifter, 'num_ctx', 0))
