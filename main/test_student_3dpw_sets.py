@@ -76,7 +76,7 @@ def main():
             results.append((label, len(ds), m))
             print(f'[{label}] n={len(ds)} | MPJPE {m["mpjpe"]:.2f} | PA {m["pa_mpjpe"]:.2f} | MPVPE {m["mpvpe"]:.2f}')
             stages = [k[:-len('_mpjpe')] for k in m if k.endswith('_mpjpe') and not k.endswith('_pa_mpjpe')
-                      and k != 'mpjpe']
+                      and k not in ('mpjpe', 'pa_mpjpe')]
             if stages:   # chan doan tung tang Student, cung thuoc do 14 khop
                 print('    tang: ' + ' | '.join(f'{s} {m[s + "_mpjpe"]:.2f} / PA {m[s + "_pa_mpjpe"]:.2f}'
                                                for s in stages) + f' | mesh_cuoi {m["mpjpe"]:.2f} / PA {m["pa_mpjpe"]:.2f}')
@@ -102,7 +102,7 @@ def main():
     for label, n, m in results:
         if m is not None and 'lift_mpjpe' in m:
             stages = [k[:-len('_mpjpe')] for k in m if k.endswith('_mpjpe') and not k.endswith('_pa_mpjpe')
-                      and k != 'mpjpe']
+                      and k not in ('mpjpe', 'pa_mpjpe')]
             print(f'{label:<28} | ' + ' -> '.join(f'{s} {m[s + "_mpjpe"]:.2f}' for s in stages)
                   + f' -> mesh_cuoi {m["mpjpe"]:.2f}')
 
