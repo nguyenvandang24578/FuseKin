@@ -56,10 +56,19 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda', with_lifter=Fals
                 reg = torch.as_tensor(dataset.h36m_joint_regressor, device=device, dtype=target_mesh_tensor.dtype)
                 gt17 = torch.einsum('jk,bkc->bjc', reg, target_mesh_tensor)
                 gt14 = (gt17 - gt17[:, root_idx:root_idx + 1])[:, eval_idx]
-                lf = outputs['lifted_joints_3d'].float()
-                lf14 = (lf - lf[:, root_idx:root_idx + 1])[:, eval_idx]
-                accumulated['lift_mpjpe'].extend((torch.norm(lf14 - gt14, dim=-1).mean(-1) * 1000).cpu().tolist())
-                accumulated['lift_pa_mpjpe'].extend(pa_errors(lf14, gt14).cpu().tolist())
+
+                def _acc14(key, j17):
+                    # j17 (B,17,3) met -> MPJPE / PA 14 khop (cung thuoc do dataset.evaluate)
+                    j14 = (j17 - j17[:, root_idx:root_idx + 1])[:, eval_idx]
+                    accumulated.setdefault(key + '_mpjpe', []).extend(
+                        (torch.norm(j14 - gt14, dim=-1).mean(-1) * 1000).cpu().tolist())
+                    accumulated.setdefault(key + '_pa_mpjpe', []).extend(pa_errors(j14, gt14).cpu().tolist())
+
+                _acc14('lift', outputs['lifted_joints_3d'].float())                       # tang 0: dau vao
+                if 'privileged_3d' in outputs:                                            # tang 1: token pose
+                    _acc14('token', outputs['privileged_3d'].float())
+                for it, h in enumerate(outputs.get('refine_history', []) or []):          # tang 2-3: mesh truoc [D]
+                    _acc14(f'mesh_it{it}', torch.einsum('jk,bkc->bjc', reg, h['smpl_mesh_cam'].float()))
             pred_mesh = outputs['smpl_mesh_cam'].detach().cpu().numpy()
             target_mesh = target_mesh_tensor.detach().cpu().numpy()
             batch_outputs = [

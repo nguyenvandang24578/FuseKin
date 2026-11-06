@@ -185,4 +185,14 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 ## 16. Student v4: Refiner dày + ImgLifter Markov v1 (2026-11-05, người dùng xác nhận, đã code, chưa chạy)
 - Giữ kiến trúc Student v3 [A]–[E]. Đổi: (1) pose 3D đầu vào = Refiner dày + ImgLifter Markov v1 đóng băng (K=5, S=2, mean) thay DiffLifter cũ; (2) 2D cho Student ([A], PE, [B], [D]) = 17 khớp 2D Refiner, mask 1; (3) bỏ KD/Teacher; (4) PoseFix 1.0. Student train 4 bộ, không 3dpw-train (lifter có).
 - Key: `MODEL.imglift_checkpoint` ('' = DiffLifter cũ), `imglift_refiner_checkpoint`, `imglift_K`, `imglift_S`, `student_2d_from_refiner`.
-- Config `config/train_student_v4_imglift_markov.yml`, exp `student_v4_imglift_markov`. Đổi nhiều yếu tố cùng lúc. Báo epoch cuối (`last.pth.tar`), OC/PC chỉ seq test. Kết quả: chưa có.
+- Config `config/train_student_v4_imglift_markov.yml`, exp `student_v4_imglift_markov`. Đổi nhiều yếu tố cùng lúc. Báo epoch cuối (`last.pth.tar`), OC/PC chỉ seq test.
+- Kết quả (người dùng gửi 2026-11-06, `last.pth.tar` epoch 22, `test_student_3dpw_sets.py --ocpc_mode test`). LIFT = pose ImgLifter đầu vào Student đo CÙNG thước đo 14 khớp mesh:
+
+| Tập | n | MPJPE | PA | MPVPE | LIFT | LIFT-PA | Student − LIFT |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 3DPW | 35,515 | 74.33 | 48.77 | 90.62 | 72.59 | 47.36 | +1.7 |
+| OC (test) | 4,157 | 81.64 | 51.31 | 95.37 | 78.79 | 49.08 | +2.9 |
+| PC (test) | 281 | 70.76 | 71.16 | 110.65 | 62.10 | 64.48 | +8.7 |
+| Crowd | 1,923 | 78.15 | 53.93 | 100.48 | 70.90 | 51.47 | +7.3 |
+
+  Student KÉM pose lifter đầu vào ở mọi tập (rõ nhất Crowd/PC) → Student chưa thêm giá trị, còn làm rơi thông tin. So DPMesh: 3DPW 74.33 vs 73.6 (thua 0.7), Crowd 78.15 vs 79.9 (thắng 1.8).

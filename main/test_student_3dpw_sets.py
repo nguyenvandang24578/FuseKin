@@ -74,8 +74,12 @@ def main():
             with torch.no_grad():
                 m = evaluate_3dpw_subset(model, ds, loader, device=device, with_lifter=True)
             results.append((label, len(ds), m))
-            print(f'[{label}] n={len(ds)} | MPJPE {m["mpjpe"]:.2f} | PA {m["pa_mpjpe"]:.2f} | MPVPE {m["mpvpe"]:.2f}'
-                  + (f' | lifter dau vao {m["lift_mpjpe"]:.2f} / PA {m["lift_pa_mpjpe"]:.2f}' if 'lift_mpjpe' in m else ''))
+            print(f'[{label}] n={len(ds)} | MPJPE {m["mpjpe"]:.2f} | PA {m["pa_mpjpe"]:.2f} | MPVPE {m["mpvpe"]:.2f}')
+            stages = [k[:-len('_mpjpe')] for k in m if k.endswith('_mpjpe') and not k.endswith('_pa_mpjpe')
+                      and k != 'mpjpe']
+            if stages:   # chan doan tung tang Student, cung thuoc do 14 khop
+                print('    tang: ' + ' | '.join(f'{s} {m[s + "_mpjpe"]:.2f} / PA {m[s + "_pa_mpjpe"]:.2f}'
+                                               for s in stages) + f' | mesh_cuoi {m["mpjpe"]:.2f} / PA {m["pa_mpjpe"]:.2f}')
         except Exception as e:
             results.append((label, 0, None))
             print(f'[{label}] LOI: {type(e).__name__}: {e}')
@@ -93,6 +97,14 @@ def main():
             print(f'{label:<28} | {n:>6} | {m["mpjpe"]:>7.2f} | {m["pa_mpjpe"]:>8.2f} | {m["mpvpe"]:>7.2f}{lf}')
     print('=' * 98)
     print('LIFT / LIFT-PA: pose 3D dau vao Student (lifter), CUNG thuoc do 14 khop voi mesh (chan doan)')
+    print('Chan doan tung tang (MPJPE / PA, 14 khop): lift = dau vao | token = privileged_3d giai ma tu token pose '
+          'sau fusion | mesh_it0 = mesh tu query SMPL truoc [D] | mesh_it1.. = sau tung vong [D] | mesh_cuoi')
+    for label, n, m in results:
+        if m is not None and 'lift_mpjpe' in m:
+            stages = [k[:-len('_mpjpe')] for k in m if k.endswith('_mpjpe') and not k.endswith('_pa_mpjpe')
+                      and k != 'mpjpe']
+            print(f'{label:<28} | ' + ' -> '.join(f'{s} {m[s + "_mpjpe"]:.2f}' for s in stages)
+                  + f' -> mesh_cuoi {m["mpjpe"]:.2f}')
 
 
 if __name__ == '__main__':
