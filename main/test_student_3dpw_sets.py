@@ -72,23 +72,27 @@ def main():
             ds = get_test_dataset(name, None)
             loader = DataLoader(ds, batch_size=bs, shuffle=False, num_workers=cfg.DATASET.workers)
             with torch.no_grad():
-                m = evaluate_3dpw_subset(model, ds, loader, device=device)
+                m = evaluate_3dpw_subset(model, ds, loader, device=device, with_lifter=True)
             results.append((label, len(ds), m))
-            print(f'[{label}] n={len(ds)} | MPJPE {m["mpjpe"]:.2f} | PA {m["pa_mpjpe"]:.2f} | MPVPE {m["mpvpe"]:.2f}')
+            print(f'[{label}] n={len(ds)} | MPJPE {m["mpjpe"]:.2f} | PA {m["pa_mpjpe"]:.2f} | MPVPE {m["mpvpe"]:.2f}'
+                  + (f' | lifter dau vao {m["lift_mpjpe"]:.2f} / PA {m["lift_pa_mpjpe"]:.2f}' if 'lift_mpjpe' in m else ''))
         except Exception as e:
             results.append((label, 0, None))
             print(f'[{label}] LOI: {type(e).__name__}: {e}')
 
     print('\n' + '=' * 78)
     print(f'{args.ckpt} | epoch {ck.get("epoch")} | {cfg.MODEL.name}')
-    print(f'{"tap":<28} | {"n":>6} | {"MPJPE":>7} | {"PA-MPJPE":>8} | {"MPVPE":>7}   (mm, 14 khop)')
-    print('-' * 78)
+    print(f'{"tap":<28} | {"n":>6} | {"MPJPE":>7} | {"PA-MPJPE":>8} | {"MPVPE":>7} | {"LIFT":>7} | {"LIFT-PA":>7}'
+          '   (mm, 14 khop)')
+    print('-' * 98)
     for label, n, m in results:
         if m is None:
             print(f'{label:<28} | LOI (xem phia tren)')
         else:
-            print(f'{label:<28} | {n:>6} | {m["mpjpe"]:>7.2f} | {m["pa_mpjpe"]:>8.2f} | {m["mpvpe"]:>7.2f}')
-    print('=' * 78)
+            lf = (f' | {m["lift_mpjpe"]:>7.2f} | {m["lift_pa_mpjpe"]:>7.2f}' if 'lift_mpjpe' in m else '')
+            print(f'{label:<28} | {n:>6} | {m["mpjpe"]:>7.2f} | {m["pa_mpjpe"]:>8.2f} | {m["mpvpe"]:>7.2f}{lf}')
+    print('=' * 98)
+    print('LIFT / LIFT-PA: pose 3D dau vao Student (lifter), CUNG thuoc do 14 khop voi mesh (chan doan)')
 
 
 if __name__ == '__main__':
