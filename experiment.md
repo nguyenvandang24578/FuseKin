@@ -201,3 +201,4 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - Chẩn đoán v4 (§16, `last`): lift → token (sau fusion, TRƯỚC HyperGCN) → mesh_it0 → mesh cuối = 3DPW 72.59 → 73.98 → 74.04 → 74.33; Crowd 70.90 → 70.64 → 78.10 → 78.15; OC 78.79 → 79.25 → 81.63 → 81.64. Mất ở HyperGCN hoặc query SMPL (chưa tách được); [D] đóng góp ~0.
 - v5 = v4 + `MODEL.v5_bone_query`: `ctx_joint_head` giải mã 3D từ ctx (sau HyperGCN, loss smooth-L1 với GT, trọng số `v5_ctx_loss_w`) → vector xương cha→con (hướng + độ dài) → MLP (khởi tạo 0) cộng vào 24 query SMPL; bỏ [D] (`v3_refine_iters 0`). Chẩn đoán thêm cột `ctx`.
 - Config `config/train_student_v5_bonequery.yml`, exp `student_v5_bonequery`. Kết quả: chưa có.
+- Biến thể `config/train_student_v5_bonequery_jotr.yml` (exp `student_v5_bonequery_jotr`): chỉ đổi `TRAIN.mix_mode: 'jotr'` (server mạnh); lịch epoch tạm `end_epoch 10`, `lr_step [6, 9]`, chỉnh theo số iter/epoch thực tế. Bản `ratio 0.25` chạy trên server yếu.
