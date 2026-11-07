@@ -221,6 +221,10 @@ cfg.MODEL.imglift_K = 5                    # so gia thuyet, gop trung binh
 cfg.MODEL.imglift_S = 2                    # so buoc DDIM
 # True: 2D cho Student (heatmap [A], PE, [B], feedback [D]) = 17 khop 2D cua Refiner (mask = 1 moi khop) thay 2D detector
 cfg.MODEL.student_2d_from_refiner = False
+# Student v5 (2026-11-07): giai ma 3D tu ctx (sau HyperGCN) -> vector xuong cha -> con -> MLP cong vao query SMPL.
+# v5_ctx_loss_w: trong so loss smooth-L1 ctx_3d vs GT (nhu privileged). Mac dinh TAT.
+cfg.MODEL.v5_bone_query = False
+cfg.MODEL.v5_ctx_loss_w = 1.0
 # Gate dieu chinh cap nhat tu anh theo tung khop. Mac dinh TAT.
 # g=2*sigmoid(MLP([LN(joint),LN(image_update),log1p(std*10)])), khoi tao g=1; std tu K gia thuyet rieng
 # (difflift_spread_steps / difflift_spread_k), pose chinh van S1/K1.

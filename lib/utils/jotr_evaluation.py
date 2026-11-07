@@ -67,6 +67,8 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda', with_lifter=Fals
                 _acc14('lift', outputs['lifted_joints_3d'].float())                       # tang 0: dau vao
                 if 'privileged_3d' in outputs:                                            # tang 1: token pose
                     _acc14('token', outputs['privileged_3d'].float())
+                if 'ctx_3d' in outputs:                                                   # tang 1b: sau HyperGCN (v5)
+                    _acc14('ctx', outputs['ctx_3d'].float())
                 for it, h in enumerate(outputs.get('refine_history', []) or []):          # tang 2-3: mesh truoc [D]
                     _acc14(f'mesh_it{it}', torch.einsum('jk,bkc->bjc', reg, h['smpl_mesh_cam'].float()))
             pred_mesh = outputs['smpl_mesh_cam'].detach().cpu().numpy()

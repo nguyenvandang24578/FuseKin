@@ -531,7 +531,7 @@ class FusionPose2Mesh(nn.Module):
                  spread_gate=False, spread_gate_zero=False, spread_gate_hidden=64,
                  joint_feat=False, hop_bias=False, depth_head=False, depth_bins=64, depth_range=1.0,
                  refine_iters=0, refine_feat_dim=32, refine_hidden=32, refine_dropout=0.25, joint_uncert=False,
-                 feat16_dim=1024, feat8_dim=2048):
+                 feat16_dim=1024, feat8_dim=2048, bone_query=False):
         super().__init__()
         assert num_joint == 17, "Query neo xuong can 17 khop H36M (bang SMPL_BONE_PAIRS_H36M)"
         self.num_joint = num_joint
@@ -593,6 +593,15 @@ class FusionPose2Mesh(nn.Module):
         self.bone_proj = nn.Linear(2 * embed_dim, embed_dim)
         nn.init.zeros_(self.bone_proj.weight)
         nn.init.zeros_(self.bone_proj.bias)
+        # ---- v5 (2026-11-07) query nhan biet hinh hoc xuong: giai ma 3D tu ctx (SAU HyperGCN) -> vector xuong
+        # cha -> con (huong don vi + do dai) -> MLP (lop cuoi khoi tao 0) cong vao query. ctx_3d co loss voi GT
+        # (base.py, MODEL.v5_ctx_loss_w). Mac dinh TAT. ----
+        self.bone_query = bool(bone_query)
+        if self.bone_query:
+            self.ctx_joint_head = nn.Linear(embed_dim, 3)
+            self.bone_geo_proj = nn.Sequential(nn.Linear(4, 128), nn.GELU(), nn.Linear(128, embed_dim))
+            nn.init.zeros_(self.bone_geo_proj[-1].weight)
+            nn.init.zeros_(self.bone_geo_proj[-1].bias)
 
         # ---- Shape path (init tu mean_shape) ----
         self.shape_embed = nn.Linear(10, embed_dim)
@@ -732,6 +741,14 @@ class FusionPose2Mesh(nn.Module):
         # a2: query_j += Linear(concat(ctx[cha_j], ctx[con_j])) -> giu thu tu cha -> con (huong xuong)
         bone = torch.cat([ctx[:, self.bone_pairs[:, 0]], ctx[:, self.bone_pairs[:, 1]]], dim=-1)  # (B, 24, 2C)
         pose_token = pose_token + self.bone_proj(bone)
+        ctx3d = None
+        if self.bone_query:                                          # v5: hinh hoc xuong tuong minh tu ctx
+            ctx3d = self.ctx_joint_head(ctx)
+            ctx3d = ctx3d - ctx3d[:, 0:1]                            # (B, J, 3) met, root-relative
+            vb = ctx3d[:, self.bone_pairs[:, 1]] - ctx3d[:, self.bone_pairs[:, 0]]   # (B, 24, 3) cha -> con
+            lb = vb.norm(dim=-1, keepdim=True)
+            geo = torch.cat([vb / lb.clamp_min(1e-4), lb * 10.0], dim=-1)          # huong + do dai (dm)
+            pose_token = pose_token + self.bone_geo_proj(geo)
         pose_feat = self.pose_context_attn(pose_token, ctx, ctx)     # (B, 24, dim)
 
         # a1: moi token -> delta 6D cua khop do, cong mean pose (local)
@@ -773,6 +790,8 @@ class FusionPose2Mesh(nn.Module):
                 result = self._smpl_outputs(rot6d, shape_param, cam_raw, is_train)
             result['refine_history'] = history          # uoc luong truoc buoc cuoi (Theta_0..Theta_{T-1}), cho loss moi buoc
 
+        if ctx3d is not None:
+            result['ctx_3d'] = ctx3d                               # (B, J, 3) v5: 3D giai ma tu ctx (sau HyperGCN)
         if self.use_img_probe:
             result['img_probe_joints'] = img_probe_joints          # (B, J, 3) chi tu anh
         if depth_out is not None:

@@ -196,3 +196,8 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 | Crowd | 1,923 | 78.15 | 53.93 | 100.48 | 70.90 | 51.47 | +7.3 |
 
   Student KÉM pose lifter đầu vào ở mọi tập (rõ nhất Crowd/PC) → Student chưa thêm giá trị, còn làm rơi thông tin. So DPMesh: 3DPW 74.33 vs 73.6 (thua 0.7), Crowd 78.15 vs 79.9 (thắng 1.8).
+
+## 17. Student v5: query nhận biết hình học xương (2026-11-07, người dùng xác nhận, đã code, chưa chạy)
+- Chẩn đoán v4 (§16, `last`): lift → token (sau fusion, TRƯỚC HyperGCN) → mesh_it0 → mesh cuối = 3DPW 72.59 → 73.98 → 74.04 → 74.33; Crowd 70.90 → 70.64 → 78.10 → 78.15; OC 78.79 → 79.25 → 81.63 → 81.64. Mất ở HyperGCN hoặc query SMPL (chưa tách được); [D] đóng góp ~0.
+- v5 = v4 + `MODEL.v5_bone_query`: `ctx_joint_head` giải mã 3D từ ctx (sau HyperGCN, loss smooth-L1 với GT, trọng số `v5_ctx_loss_w`) → vector xương cha→con (hướng + độ dài) → MLP (khởi tạo 0) cộng vào 24 query SMPL; bỏ [D] (`v3_refine_iters 0`). Chẩn đoán thêm cột `ctx`.
+- Config `config/train_student_v5_bonequery.yml`, exp `student_v5_bonequery`. Kết quả: chưa có.

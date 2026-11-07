@@ -861,12 +861,20 @@ class Student_Trainer:
             privileged_error = F.smooth_l1_loss(
                 model_output['privileged_3d'], gt_pose_input, reduction='none', beta=priv_beta).mean(-1)
             privileged_loss = ((privileged_error * valid_joint).sum(-1) / n_valid).mean()
+            # v5: 3D giai ma tu ctx (sau HyperGCN) cung giam sat GT nhu privileged
+            ctx_loss = privileged_loss.new_zeros(())
+            if 'ctx_3d' in model_output:
+                ctx_error = F.smooth_l1_loss(
+                    model_output['ctx_3d'], gt_pose_input, reduction='none', beta=priv_beta).mean(-1)
+                ctx_loss = ((ctx_error * valid_joint).sum(-1) / n_valid).mean()
 
             # ---------- hard loss ----------
             loss_terms = _hard_losses(self, model_output, targets, meta, gt_fit_joint_cam, fit_joint_trunc,
                                       is_valid_fit)
             hard_loss, _ = _apply_awl(self, loss_terms)
             loss = self.kd_hard_w * hard_loss + self.kd_lambda * kd_loss + privileged_loss
+            if 'ctx_3d' in model_output:
+                loss = loss + float(cfg.MODEL.v5_ctx_loss_w) * ctx_loss
             depth_stats = {}
             if 'depth_logits' in model_output:
                 d_loss, d_mm = _depth_loss(model_output, gt_pose_input, valid_joint)
@@ -907,6 +915,7 @@ class Student_Trainer:
                 'kd_joint': kd_joint_ps.mean().item(),
                 'kd_global': kd_global_ps.mean().item(),
                 'privileged_3d': privileged_loss.item(),
+                'ctx_3d': ctx_loss.item(),
                 'lift_err_mm': lift_err_mm,
                 **depth_stats,
             }
@@ -958,7 +967,8 @@ class Student_Trainer:
         avg = {k: v / n_batch for k, v in running.items()}
         print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f} | '
               f'KD dist proj: {avg["kd_proj"]:.4f} | joint: {avg["kd_joint"]:.4f} | global: {avg["kd_global"]:.4f}')
-        print(f'  Privileged 3D: {avg["privileged_3d"]:.4f} | loi joint dau vao (DiffLifter): {avg["lift_err_mm"]:.1f} mm'
+        print(f'  Privileged 3D: {avg["privileged_3d"]:.4f} | ctx 3D (v5): {avg.get("ctx_3d", 0.0):.4f}'
+              f' | loi joint dau vao (lifter): {avg["lift_err_mm"]:.1f} mm'
               + (f' | do sau [C]: loss {avg["depth_loss"]:.4f}, loi {avg["depth_err_mm"]:.1f} mm' if 'depth_loss' in avg else ''))
         if self.kd_joint_relation:
             print(f'  KD joint RELATION (thay MSE feature): {avg["kd_joint_relation"]:.6f} | '
