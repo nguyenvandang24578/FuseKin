@@ -145,7 +145,9 @@ class Fitter:
             _, J0 = self.mesh(pose0, torch.zeros(B, 10, device=pose0.device))
             t0 = init_trans(J0 @ R if R is not None else J0, xy[:, :17], w[:, :17])
         pose = pose0.clone().requires_grad_(True)
-        beta = torch.zeros(B, 10, device=pose0.device, requires_grad=True)
+        # KHONG khoi tao beta = 0 dung: smplpytorch SMPL_Layer dung self.th_betas noi bo khi norm(th_betas) == 0
+        # -> khong co gradient vao beta (loi lan chay 2026-11-08: |beta| = 0.00). 1e-4 ~ shape trung binh.
+        beta = torch.full((B, 10), 1e-4, device=pose0.device).requires_grad_(True)
         t = t0.clone().requires_grad_(True)
 
         def loss_fn(stage2):
