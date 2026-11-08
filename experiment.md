@@ -202,3 +202,14 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - v5 = v4 + `MODEL.v5_bone_query`: `ctx_joint_head` giải mã 3D từ ctx (sau HyperGCN, loss smooth-L1 với GT, trọng số `v5_ctx_loss_w`) → vector xương cha→con (hướng + độ dài) → MLP (khởi tạo 0) cộng vào 24 query SMPL; bỏ [D] (`v3_refine_iters 0`). Chẩn đoán thêm cột `ctx`.
 - Config `config/train_student_v5_bonequery.yml`, exp `student_v5_bonequery`. Kết quả: chưa có.
 - Biến thể `config/train_student_v5_bonequery_jotr.yml` (exp `student_v5_bonequery_jotr`): chỉ đổi `TRAIN.mix_mode: 'jotr'` (server mạnh); lịch epoch tạm `end_epoch 10`, `lr_step [6, 9]`, chỉnh theo số iter/epoch thực tế. Bản `ratio 0.25` chạy trên server yếu.
+- Kết quả v5 ratio 0.25 (người dùng gửi 2026-11-08, `last.pth.tar` epoch 22, `--ocpc_mode test`, mesh 14 khớp; Δ so v4 §16):
+
+| Tập | n | MPJPE | PA | MPVPE | LIFT | Student − LIFT | Δ MPJPE vs v4 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 3DPW | 35,515 | 73.15 | 48.82 | 89.77 | 72.59 | +0.6 | −1.18 |
+| OC (test) | 4,157 | 81.74 | 51.67 | 96.62 | 78.79 | +2.9 | +0.10 |
+| PC (test) | 281 | 68.58 | 68.60 | 108.55 | 62.10 | +6.5 | −2.18 |
+| Crowd | 1,923 | 80.39 | 56.50 | 103.87 | 70.90 | +9.5 | +2.24 |
+
+  Chẩn đoán tầng (lift → token → ctx → mesh): 3DPW 72.59 → 72.44 → 73.18 → 73.15; OC 78.79 → 78.34 → 79.60 → 81.74; PC 62.10 → 66.19 → 65.80 → 68.58; Crowd: người dùng chưa gửi dòng chẩn đoán.
+  Nhận xét: fusion hết mất trên 3DPW/OC (v4 mất 1.4 mm ở 3DPW); HyperGCN (token → ctx) tăng lỗi +0.7 (3DPW), +1.3 (OC); query → mesh ≈ 0 ở 3DPW nhưng +2.1 (OC), +2.8 (PC). Crowd tệ hơn v4 2.2 mm. So DPMesh: 3DPW 73.15 vs 73.6 (thắng 0.45), Crowd 80.39 vs 79.9 (thua 0.5).
