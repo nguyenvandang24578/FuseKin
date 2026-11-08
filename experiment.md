@@ -213,3 +213,7 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 
   Chẩn đoán tầng (lift → token → ctx → mesh): 3DPW 72.59 → 72.44 → 73.18 → 73.15; OC 78.79 → 78.34 → 79.60 → 81.74; PC 62.10 → 66.19 → 65.80 → 68.58; Crowd: người dùng chưa gửi dòng chẩn đoán.
   Nhận xét: fusion hết mất trên 3DPW/OC (v4 mất 1.4 mm ở 3DPW); HyperGCN (token → ctx) tăng lỗi +0.7 (3DPW), +1.3 (OC); query → mesh ≈ 0 ở 3DPW nhưng +2.1 (OC), +2.8 (PC). Crowd tệ hơn v4 2.2 mm. So DPMesh: 3DPW 73.15 vs 73.6 (thắng 0.45), Crowd 80.39 vs 79.9 (thua 0.5).
+- Kiểm tra trọng số (người dùng chạy `tools/check_hypergcn_scale.py`, 2026-11-08, `last` v4 & v5):
+  - HyperGCN `layer_scale_1` (khởi tạo 1e-5): v4 ≈ 0.04–0.05, v5 ≈ 0.0125 → HyperGCN CÓ được dùng (không phải đồng nhất), v5 dùng ít hơn v4 ~3–4 lần.
+  - BatchNorm1d (kênh = 17 khớp) v4: `running_var` tới 5.7e11 (block 0), 1.3e9 (block 1), `running_mean` tới −1e4 → thống kê BN bùng nổ; v5 bình thường (var 3–13). Giả thuyết (chưa kiểm chứng): `p_adj`/`b_adj` học tự do + `norm()` chia (tổng cột + 0.001) → tổng cột gần 0 làm nổ; BN test dùng running stats → lệch train/test ở một số khớp.
+  - Nhánh khởi tạo 0 (`bone_proj`, `bone_geo_proj`, `jf_proj`, `depth_proj`): mean|w| ≈ 0.006–0.009 (tham chiếu lớp thường 0.024) → đều được học, độ lớn trọng số không đủ kết luận đóng góp → cần ablation.
