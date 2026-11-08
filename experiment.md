@@ -217,3 +217,13 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
   - HyperGCN `layer_scale_1` (khởi tạo 1e-5): v4 ≈ 0.04–0.05, v5 ≈ 0.0125 → HyperGCN CÓ được dùng (không phải đồng nhất), v5 dùng ít hơn v4 ~3–4 lần.
   - BatchNorm1d (kênh = 17 khớp) v4: `running_var` tới 5.7e11 (block 0), 1.3e9 (block 1), `running_mean` tới −1e4 → thống kê BN bùng nổ; v5 bình thường (var 3–13). Giả thuyết (chưa kiểm chứng): `p_adj`/`b_adj` học tự do + `norm()` chia (tổng cột + 0.001) → tổng cột gần 0 làm nổ; BN test dùng running stats → lệch train/test ở một số khớp.
   - Nhánh khởi tạo 0 (`bone_proj`, `bone_geo_proj`, `jf_proj`, `depth_proj`): mean|w| ≈ 0.006–0.009 (tham chiếu lớp thường 0.024) → đều được học, độ lớn trọng số không đủ kết luận đóng góp → cần ablation.
+- Kiểm tra lần 2 (script mở rộng: BN theo khớp + tổng cột `p_adj`/`b_adj`, người dùng chạy 2026-11-08) — **xác nhận nguyên nhân BN v4 nổ**:
+  - v4: khớp BN nổ trùng đúng cột ma trận siêu cạnh có tổng ≈ 0 / âm (`norm()` nhân 1/(tổng+0.001), kỳ dị tại tổng = −0.001). Block 0: p_adj RWrist −0.0022 (×826), LWrist −0.0050, b_adj Neck −0.0073 → BN nổ RWrist (var 5.7e11), LWrist 7.4e4, Neck 1.9e3. Block 1: p_adj Head −0.0009 (×8959) → BN Head 1.3e9; RWrist 9.2e7. Block 2: b_adj LKnee +0.0016 (×390) → BN LKnee 6.5e4. Khởi tạo tổng cột ≥ 0.69.
+  - v5: tổng cột ≥ 0.07 (hệ số ≤ 14), BN bình thường; trôi ma trận ~0.02 (v4 ~0.05). Nhưng b_adj Neck block 2 đã trôi 0.87 → 0.07 → vẫn có nguy cơ nếu train lâu hơn.
+  - ~50% phần tử ma trận thành âm ở cả v4/v5 (khởi tạo không âm) → siêu đồ thị học tự do không còn giữ cấu trúc giải phẫu.
+  - Hệ quả: so sánh v4 ↔ v5 bị nhiễu vì HyperGCN v4 hỏng số học ở cổ tay/đầu/cổ/gối. Kiến trúc HyperGCN giống hệt HyperDiff (người dùng muốn giữ); vấn đề nằm ở việc ma trận được học tự do không ràng buộc.
+
+## 18. Đo tương quan độ bất định – lỗi từng khớp (2026-11-08, người dùng xác nhận, đã code, chưa chạy)
+- Mục đích: kiểm tra tiền đề ý tưởng "hypergraph dẫn dắt bởi độ bất định" (đề xuất contribution, giả thuyết) trước khi code Student mới.
+- Script mới `main/corr_uncert_lifter.py` (chỉ đánh giá): Refiner dày + ImgLifter Markov v1, K=5 S=2 như Student. Tín hiệu: `log_b` Refiner, spread K giả thuyết (mm), kết hợp (rank TB), detector sót. Lỗi: 3D, 3D PA, 2D Refiner. Báo Spearman gộp / trong mẫu / trong loại khớp, AUROC khớp xấu (top 20% e3d_pa), lỗi theo quintile, bảng theo khớp; lưu `.npz`.
+- Ngưỡng đọc (đặt trước): Spearman trong mẫu ≥ ~0.4 và AUROC ≥ ~0.7 → tín hiệu đủ tốt. Kết quả: chưa có.
