@@ -241,3 +241,20 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
   - log_b gần như không xếp hạng được lỗi 2D trong mẫu ([B] 0.10–0.16) → giải thích khả dĩ vì sao cổng b của Markov không giúp khớp che (§13). spread tốt hơn log_b.
   - Lưu ý gây nhiễu: spread và e3d root-relative cùng tăng theo khoảng cách tới root (Pelvis spread = 0) → [B] vs e3d bị thổi phồng. Cần [B] sau khi chuẩn hóa theo loại khớp (tính lại từ .npz).
 - Bước tiếp (2026-11-08, đã code, chưa chạy): `tools/analyze_corr_npz.py` (chỉ CPU, đọc .npz) — đổi tín hiệu/lỗi thành phân vị TRONG từng loại khớp (bỏ Pelvis) để loại nhiễu loại khớp; báo [B*] trong mẫu, [D*] AUROC khớp xấu bất thường, precision@3 (ngẫu nhiên 0.188). Ngưỡng đặt trước: [B*] ≥ ~0.3, [D*] ≥ ~0.7.
+- Kết quả phân tích chuẩn hóa theo loại khớp (người dùng chạy `tools/analyze_corr_npz.py`, 2026-11-08, 16 khớp bỏ Pelvis):
+
+| Tập | [B*] spread vs e3d / e3d_PA | [B*] comb vs e3d_PA | [D*] AUROC comb vs e3d_PA | P@3 comb vs e3d_PA (ngẫu nhiên 0.188) |
+|---|---|---:|---:|---:|
+| 3DPW | 0.19 / 0.10 | 0.12 | 0.66 | 0.27 |
+| OC | 0.14 / 0.05 | 0.06 | 0.68 | 0.25 |
+| PC (n=281) | 0.01 / 0.04 | 0.04 | 0.49 | 0.22 |
+| Crowd | 0.14 / 0.07 | 0.07 | 0.81 | 0.23 |
+
+  - **Kết luận (theo ngưỡng đặt trước): KHÔNG ĐẠT.** [B*] 0.05–0.19 ≪ 0.3 → sau khi bỏ ảnh hưởng loại khớp, tín hiệu bất định gần như KHÔNG chỉ ra được khớp nào trong cùng một người tệ bất thường. [D*] vẫn 0.66–0.81 (trừ PC) → tín hiệu chủ yếu phản ánh độ khó CẤP MẪU (ảnh khó → mọi khớp cùng bất định, cùng sai), không phải cấp khớp.
+  - → Tiền đề của "hypergraph truyền tin từ khớp tin cậy sang khớp không tin cậy trong cùng người" không được ủng hộ với tín hiệu hiện có. log_b còn kém hơn spread.
+  - Lưu ý chưa loại trừ: spread ước lượng từ K=5 nên nhiễu ở cấp khớp; chưa thử K lớn.
+
+## 19. Cận trên IK: pose lifter → IK giải tích (HybrIK) → mesh (2026-11-08, người dùng xác nhận, đã code, chưa chạy)
+- Mục đích: trước khi làm Student v6 (mesh neo vào hình học qua IK), đo xem chỉ IK từ pose lifter (không học gì) đạt bao nhiêu so với LIFT và Student v5.
+- File mới (không sửa file cũ, không key config): `lib/models/hybrik_lbs.py` (chép nguyên văn ARTS lbs.py), `lib/models/hybrik_smpl.py` (`HybrIKSMPL`, dựng buffer từ lớp smplpytorch sẵn có, 29 điểm = 24 khớp SMPL + 5 đỉnh đầu chi, chỉ nhánh test), `tools/fit_h36m_to_smpl29.py` (khớp M 29×17 bằng bình phương tối thiểu trên mesh GT train Human36M+MuCo, không 3DPW), `main/ik_upper_bound.py` (biến thể LIFT / A_gt29 / B_M_gt17 / C_M_lift; β trung bình, twist 0; đo 14 khớp + MPVPE như dataset.evaluate).
+- Đọc: C ≈ LIFT → IK giữ thông tin, làm v6; A/B lớn → lỗi do β/twist hoặc ánh xạ 17→29. Kết quả: chưa có.
