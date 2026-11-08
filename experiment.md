@@ -226,4 +226,18 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 ## 18. Đo tương quan độ bất định – lỗi từng khớp (2026-11-08, người dùng xác nhận, đã code, chưa chạy)
 - Mục đích: kiểm tra tiền đề ý tưởng "hypergraph dẫn dắt bởi độ bất định" (đề xuất contribution, giả thuyết) trước khi code Student mới.
 - Script mới `main/corr_uncert_lifter.py` (chỉ đánh giá): Refiner dày + ImgLifter Markov v1, K=5 S=2 như Student. Tín hiệu: `log_b` Refiner, spread K giả thuyết (mm), kết hợp (rank TB), detector sót. Lỗi: 3D, 3D PA, 2D Refiner. Báo Spearman gộp / trong mẫu / trong loại khớp, AUROC khớp xấu (top 20% e3d_pa), lỗi theo quintile, bảng theo khớp; lưu `.npz`.
-- Ngưỡng đọc (đặt trước): Spearman trong mẫu ≥ ~0.4 và AUROC ≥ ~0.7 → tín hiệu đủ tốt. Kết quả: chưa có.
+- Ngưỡng đọc (đặt trước): Spearman trong mẫu ≥ ~0.4 và AUROC ≥ ~0.7 → tín hiệu đủ tốt.
+- Kết quả (người dùng gửi 2026-11-08, K=5 S=2, OC/PC chỉ seq test). Tín hiệu kết hợp (comb) / spread / log_b / detector sót:
+
+| Tập | n | [B] comb vs e3d | [B] comb vs e3d_PA | [C] comb vs e3d_PA | AUROC comb | AUROC spread | AUROC log_b | AUROC sót | e3d_PA quintile thấp→cao (comb) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 3DPW | 35,515 | 0.55 | 0.32 | 0.30 | 0.73 | 0.71 | 0.68 | 0.51 | 28.3 → 72.8 |
+| OC (test) | 4,157 | 0.52 | 0.34 | 0.40 | 0.77 | 0.74 | 0.72 | 0.48 | 24.6 → 74.6 |
+| PC (test) | 281 | 0.68 | 0.69 | 0.04 | 0.83 | 0.87 | 0.66 | 0.43 | 23.2 → 88.5 |
+| Crowd | 1,923 | 0.50 | 0.31 | 0.62 | 0.83 | 0.82 | 0.78 | 0.55 | 21.5 → 93.7 |
+
+  - AUROC đạt ngưỡng ở mọi tập; lỗi nhóm bất định cao gấp 2.5–4 lần nhóm thấp. [B] vs e3d đạt (0.50–0.68) nhưng [B] vs e3d_PA chưa đạt (0.31–0.34, trừ PC n nhỏ).
+  - Detector sót gần như vô dụng (AUROC ≈ 0.5; OC sót 46.7 vs có 45.4 mm) → Refiner đã lấp khớp sót tốt; "khớp bị che" ≠ "khớp sót detector".
+  - log_b gần như không xếp hạng được lỗi 2D trong mẫu ([B] 0.10–0.16) → giải thích khả dĩ vì sao cổng b của Markov không giúp khớp che (§13). spread tốt hơn log_b.
+  - Lưu ý gây nhiễu: spread và e3d root-relative cùng tăng theo khoảng cách tới root (Pelvis spread = 0) → [B] vs e3d bị thổi phồng. Cần [B] sau khi chuẩn hóa theo loại khớp (tính lại từ .npz).
+- Bước tiếp (2026-11-08, đã code, chưa chạy): `tools/analyze_corr_npz.py` (chỉ CPU, đọc .npz) — đổi tín hiệu/lỗi thành phân vị TRONG từng loại khớp (bỏ Pelvis) để loại nhiễu loại khớp; báo [B*] trong mẫu, [D*] AUROC khớp xấu bất thường, precision@3 (ngẫu nhiên 0.188). Ngưỡng đặt trước: [B*] ≥ ~0.3, [D*] ≥ ~0.7.
