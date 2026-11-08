@@ -17,6 +17,7 @@ Chay (cfg = yml Student de co duong dan du lieu):
 import os, sys
 sys.path.append('./lib')
 sys.path.append('./')
+sys.path.append('./main')          # __init_path nam trong main/ (script nay o tools/)
 os.environ["OMP_NUM_THREADS"] = "1"
 import argparse
 
