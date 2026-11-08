@@ -531,7 +531,7 @@ class FusionPose2Mesh(nn.Module):
                  spread_gate=False, spread_gate_zero=False, spread_gate_hidden=64,
                  joint_feat=False, hop_bias=False, depth_head=False, depth_bins=64, depth_range=1.0,
                  refine_iters=0, refine_feat_dim=32, refine_hidden=32, refine_dropout=0.25, joint_uncert=False,
-                 feat16_dim=1024, feat8_dim=2048, bone_query=False):
+                 feat16_dim=1024, feat8_dim=2048, bone_query=False, v6_ik=False, hgcn_freeze_adj=False):
         super().__init__()
         assert num_joint == 17, "Query neo xuong can 17 khop H36M (bang SMPL_BONE_PAIRS_H36M)"
         self.num_joint = num_joint
@@ -646,7 +646,88 @@ class FusionPose2Mesh(nn.Module):
         if joint_uncert:                                 # [E] log-sigma tung khop (loss trong base.py)
             self.joint_log_sigma = nn.Parameter(torch.zeros(num_joint))
 
+        # ---- Khoa ma tran sieu canh HyperGCN (MODEL.hgcn_freeze_adj, §17): giu dung ma tran giai phau khoi tao ----
+        if hgcn_freeze_adj:
+            n_frz = 0
+            for name, p in self.spatial_hypers.named_parameters():
+                if name.endswith('p_adj') or name.endswith('b_adj'):
+                    p.requires_grad_(False)
+                    n_frz += 1
+            print(f'===> HyperGCN: khoa {n_frz} ma tran sieu canh (p_adj / b_adj)')
+
+        # ---- Student v6 (MODEL.v6_ik): J29 = M x (lift + delta17(ctx)) + delta29(query) -> IK HybrIK -> goc SMPL ----
+        # Moi head khoi tao 0 (twist = 0) -> luc dau = baseline "lifter + M + IK" (experiment.md §19).
+        self.v6_ik = bool(v6_ik)
+        if self.v6_ik:
+            assert self.refine_iters == 0, 'v6_ik khong dung chung voi [D] (v3_refine_iters phai = 0)'
+            assert not self.bone_query, 'v6_ik khong dung chung voi v5_bone_query'
+            from models.hybrik_smpl import HybrIKSMPL
+            reg_path = os.path.join(cfg.DATASET.jotr_data_root, 'Human36M', 'J_regressor_h36m_correct.npy')
+            self.hybrik = HybrIKSMPL(self.human_model_layer, np.load(reg_path))
+            Mmap = np.load(cfg.MODEL.v6_m_path).astype(np.float32)
+            assert Mmap.shape == (29, 17), f'v6_m_path phai la ma tran (29, 17), nhan {Mmap.shape}'
+            self.register_buffer('v6_M', torch.from_numpy(Mmap))          # luu trong ckpt -> test dung dung M
+            self.v6_d17 = self.v6_d29 = self.v6_dleaf = self.v6_tw = None
+            if cfg.MODEL.v6_delta17:                     # hieu chinh pose lifter tu ctx (sau HyperGCN)
+                self.v6_d17 = nn.Linear(embed_dim, 3)
+            if cfg.MODEL.v6_delta29:                     # hieu chinh 24 khop SMPL + 5 diem dau chi tu token query
+                self.v6_d29 = nn.Linear(embed_dim, 3)
+                self.v6_dleaf = nn.Linear(embed_dim, 3)  # diem dau chi lay token cua khop cha
+            if cfg.MODEL.v6_twist:                       # twist (cos, sin) cong vao (1, 0)
+                self.v6_tw = nn.Linear(embed_dim, 2)
+            for m in (self.v6_d17, self.v6_d29, self.v6_dleaf, self.v6_tw):
+                if m is not None:
+                    nn.init.zeros_(m.weight)
+                    nn.init.zeros_(m.bias)
+            print(f'===> Student v6 IK: M {cfg.MODEL.v6_m_path} | delta17 {cfg.MODEL.v6_delta17} '
+                  f'delta29 {cfg.MODEL.v6_delta29} twist {cfg.MODEL.v6_twist}')
+
     # --------------------------------------------------------
+    def _v6_ik_outputs(self, joints, ctx, pose_feat, shape_param, cam_raw, is_train):
+        """v6: pose lifter (joints, root-relative) -> pose17 -> J29 -> IK (beta = shape_param, twist) -> goc SMPL
+        -> cung dict output nhu _smpl_outputs. Tra (result, pose17, j29)."""
+        from models.hybrik_smpl import LEAF_PARENTS, rotmat_to_aa_safe
+        B = joints.shape[0]
+        lift = joints - joints[:, 0:1]
+        pose17 = lift
+        if self.v6_d17 is not None:
+            pose17 = lift + self.v6_d17(ctx)
+            pose17 = pose17 - pose17[:, 0:1]
+        j29 = torch.einsum('jk,bkc->bjc', self.v6_M, pose17)                              # (B, 29, 3)
+        if self.v6_d29 is not None:
+            d24 = self.v6_d29(pose_feat)                                                  # (B, 24, 3)
+            dleaf = self.v6_dleaf(pose_feat[:, LEAF_PARENTS])                             # (B, 5, 3)
+            j29 = j29 + torch.cat([d24, dleaf], dim=1)
+        phis = self.hybrik.default_phis(B, j29.device, torch.float32)
+        if self.v6_tw is not None:
+            phis = phis + self.v6_tw(pose_feat[:, 1:24]).float()                          # khop 1..23
+        rot_mats = self.hybrik.ik(j29.float(), shape_param.float(), phis)                 # (B, 24, 3, 3)
+        full_pose = rotmat_to_aa_safe(rot_mats.reshape(-1, 3, 3)).reshape(B, 24, 3)
+        full_pose = torch.cat([full_pose[:, :22], torch.zeros_like(full_pose[:, 22:])], dim=1).reshape(B, 72)
+        result = self._smpl_outputs_aa(full_pose, shape_param, cam_raw, is_train)
+        result['root_pose_6d'] = rot_mats[:, 0, :, :2].reshape(B, 6)
+        result['v6_phis'] = phis
+        return result, pose17, j29
+
+    def _smpl_outputs_aa(self, full_pose, shape_param, cam_raw, is_train):
+        """Nhu _smpl_outputs nhung nhan san goc axis-angle (B, 72) (dung cho v6). Cung key output."""
+        cam_trans = self.get_camera_trans(cam_raw)
+        joint_proj, joint_cam, mesh_cam, mesh_cam_render = self.get_coord(full_pose, shape_param, cam_trans)
+        if is_train:
+            _, _, _, mesh_render_det = self.get_coord(full_pose.detach(), shape_param, cam_trans)
+        else:
+            mesh_render_det = mesh_cam_render
+        return {
+            'joint_proj': joint_proj,
+            'joint_cam': joint_cam,
+            'smpl_mesh_cam': mesh_cam,
+            'smpl_mesh_cam_render': mesh_cam_render,
+            'smpl_mesh_cam_render_det': mesh_render_det,
+            'smpl_pose': full_pose,
+            'smpl_shape': shape_param,
+            'cam_param': cam_trans,
+        }
+
     def _smpl_outputs(self, rot6d, shape_param, cam_raw, is_train):
         """rot6d (B,24,6), shape (B,10), cam_raw (B,3) -> dict output SMPL (cung key voi ban v2)."""
         B = rot6d.shape[0]
@@ -752,7 +833,8 @@ class FusionPose2Mesh(nn.Module):
         pose_feat = self.pose_context_attn(pose_token, ctx, ctx)     # (B, 24, dim)
 
         # a1: moi token -> delta 6D cua khop do, cong mean pose (local)
-        rot6d = self.init_pose + self.per_joint_head(pose_feat)                     # (B, 24, 6)
+        # v6: goc tinh bang IK o buoc 5 (per_joint_head khong dung)
+        rot6d = None if self.v6_ik else self.init_pose + self.per_joint_head(pose_feat)   # (B, 24, 6)
 
         # 3. Camera (tham so tho [tx, ty, gamma])
         cam_raw = self.cam_head(global_ft)
@@ -765,7 +847,11 @@ class FusionPose2Mesh(nn.Module):
         shape_param = self.shape_head(shape_out).reshape(B, -1)
 
         # 5. SMPL (uoc luong ban dau)
-        result = self._smpl_outputs(rot6d, shape_param, cam_raw, is_train)
+        if self.v6_ik:
+            result, ctx3d, j29 = self._v6_ik_outputs(joints, ctx, pose_feat, shape_param, cam_raw, is_train)
+            result['v6_j29'] = j29                     # (B, 29, 3) loss j29 (base.py); ctx3d = pose17 -> 'ctx_3d'
+        else:
+            result = self._smpl_outputs(rot6d, shape_param, cam_raw, is_train)
 
         # 6. [D] Tinh chinh lap: moi buoc nhin lai anh tai vi tri khop da chieu, cap nhat delta (ReFit).
         if self.refine_iters > 0:

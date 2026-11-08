@@ -14,7 +14,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from models.hybrik_lbs import hybrik, vertices2joints
+from models.hybrik_lbs import (hybrik, vertices2joints, blend_shapes, batch_inverse_kinematics_transform,
+                               rotation_matrix_to_quaternion)
 
 # Cha cua 24 khop SMPL chuan (kintree_table[0]) + 5 diem dau chi (nhu ARTS SMPL_layer)
 SMPL_PARENTS_24 = [-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 21]
@@ -23,6 +24,21 @@ LEAF_VERTS = [411, 2445, 5905, 3216, 6617]
 LEAF_IDX = [24, 25, 26, 27, 28]
 SPINE3_IDX = 9
 NECK_IDX = 12
+
+
+def rotmat_to_aa_safe(R, eps=1e-6):
+    """(N, 3, 3) -> axis-angle (N, 3), on dinh khi train. Ban rotmat_to_aa cua HybrIK (kornia) chia cho sin(theta)
+    trong nhanh torch.where -> grad NaN khi goc = 0 va gan NaN tai cho; ban nay: quaternion (kornia) -> chuan hoa
+    w >= 0 -> aa = v * 2 atan2(|v|, w) / |v| voi |v| lam tron bang eps (gan 0: he so -> 2, grad huu han)."""
+    N = R.shape[0]
+    pad = torch.zeros(N, 3, 1, dtype=R.dtype, device=R.device)
+    q = rotation_matrix_to_quaternion(torch.cat([R, pad], dim=-1))          # (N, 4) (w, x, y, z)
+    q = q * torch.where(q[:, :1] < 0, -torch.ones_like(q[:, :1]), torch.ones_like(q[:, :1]))
+    v = q[:, 1:]
+    # sqrt(|v|^2 + eps^2): tron tai 0 (norm().clamp_min van cho grad NaN vi backward cua norm chia cho 0)
+    s = torch.sqrt((v * v).sum(-1, keepdim=True) + eps * eps)
+    k = 2.0 * torch.atan2(s, q[:, :1]) / s
+    return v * k
 
 
 def _children_map(parents):
@@ -71,19 +87,39 @@ class HybrIKSMPL(nn.Module):
             assert kp[1:24] == SMPL_PARENTS_24[1:], f'kintree_parents khac SMPL chuan: {kp}'
 
         parents = torch.tensor(SMPL_PARENTS_24 + LEAF_PARENTS, dtype=torch.long)
-        self.register_buffer('v_template', v_template)
-        self.register_buffer('shapedirs', shapedirs[:, :, :10].contiguous())
-        self.register_buffer('posedirs', posedirs)
-        self.register_buffer('J_regressor', J_reg)
-        self.register_buffer('J_regressor_h36m', torch.as_tensor(h36m_regressor, dtype=f32))
-        self.register_buffer('lbs_weights', weights)
-        self.register_buffer('parents', parents)
-        self.register_buffer('children_map', _children_map(parents))
+        # persistent=False: hang so SMPL, khong luu vao checkpoint (tranh phinh ckpt / lech khi nap)
+        self.register_buffer('v_template', v_template, persistent=False)
+        self.register_buffer('shapedirs', shapedirs[:, :, :10].contiguous(), persistent=False)
+        self.register_buffer('posedirs', posedirs, persistent=False)
+        self.register_buffer('J_regressor', J_reg, persistent=False)
+        self.register_buffer('J_regressor_h36m', torch.as_tensor(h36m_regressor, dtype=f32), persistent=False)
+        self.register_buffer('lbs_weights', weights, persistent=False)
+        self.register_buffer('parents', parents, persistent=False)
+        self.register_buffer('children_map', _children_map(parents), persistent=False)
 
     def joints29_from_mesh(self, verts):
         """Mesh (B, V, 3) -> 29 diem (24 = J_regressor x mesh, 5 = dinh dau chi). Dung de tao muc tieu / khop M."""
         j24 = vertices2joints(self.J_regressor, verts)
         return torch.cat([j24, verts[:, LEAF_VERTS]], dim=1)
+
+    @staticmethod
+    def default_phis(B, device, dtype):
+        """Twist = 0 <=> (cos, sin) = (1, 0), (B, 23, 2)."""
+        phis = torch.zeros(B, 23, 2, device=device, dtype=dtype)
+        phis[..., 0] = 1.0
+        return phis
+
+    def ik(self, joints29, betas, phis):
+        """CHI tinh goc (khong skinning): 29 diem (B,29,3) met + betas (B,10) + phis (B,23,2) -> rot_mats (B,24,3,3)
+        goc LOCAL theo cay SMPL (khop 0 = huong toan cuc). Luon dung nhanh khong-naive cua HybrIK (ca luc train),
+        vi nhanh naive can scripted_calc_swing khong co trong ban chep."""
+        dt = joints29.dtype
+        v_shaped = self.v_template[None] + blend_shapes(betas.to(dt), self.shapedirs)
+        rest_J = torch.cat([vertices2joints(self.J_regressor, v_shaped), v_shaped[:, LEAF_VERTS]], dim=1)   # (B,29,3)
+        rot_mats, _ = batch_inverse_kinematics_transform(
+            joints29, None, phis, rest_J.clone(), self.children_map, self.parents, dtype=dt, train=False,
+            leaf_thetas=None)
+        return rot_mats.reshape(joints29.shape[0], 24, 3, 3)
 
     def forward(self, joints29, betas=None, phis=None):
         """joints29 (B, 29, 3) met; betas (B, 10) (None = shape trung binh); phis (B, 23, 2) (None = twist 0).

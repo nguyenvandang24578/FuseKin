@@ -258,3 +258,25 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - Mục đích: trước khi làm Student v6 (mesh neo vào hình học qua IK), đo xem chỉ IK từ pose lifter (không học gì) đạt bao nhiêu so với LIFT và Student v5.
 - File mới (không sửa file cũ, không key config): `lib/models/hybrik_lbs.py` (chép nguyên văn ARTS lbs.py), `lib/models/hybrik_smpl.py` (`HybrIKSMPL`, dựng buffer từ lớp smplpytorch sẵn có, 29 điểm = 24 khớp SMPL + 5 đỉnh đầu chi, chỉ nhánh test), `tools/fit_h36m_to_smpl29.py` (khớp M 29×17 bằng bình phương tối thiểu trên mesh GT train Human36M+MuCo, không 3DPW), `main/ik_upper_bound.py` (biến thể LIFT / A_gt29 / B_M_gt17 / C_M_lift; β trung bình, twist 0; đo 14 khớp + MPVPE như dataset.evaluate).
 - Đọc: C ≈ LIFT → IK giữ thông tin, làm v6; A/B lớn → lỗi do β/twist hoặc ánh xạ 17→29. Kết quả: chưa có.
+- Bước 1 (người dùng chạy 2026-11-08): M khớp trên 40k mẫu (Human36M + MuCo 20k mỗi bộ, val 10%), lỗi TB 33.0 mm. Điểm có tương ứng H36M: gối 4 mm; pelvis 8.5; collar/neck/head/head_top 9–12; vai 12–13; hông 17; cổ chân 17–22; khuỷu 18–23; cổ tay 16–26. Điểm H36M không có: bàn tay 35–43, bàn chân 85–88, ngón giữa 78–81, ngón chân cái 129–132 mm. Giả thuyết: lệch hông/khuỷu/cổ tay là offset theo hệ trục cục bộ của chi (ánh xạ tuyến tính toàn cục không biểu diễn được); bàn tay/bàn chân không có thông tin hướng trong H36M-17 → xoay cổ tay/cổ chân sai → ảnh hưởng chủ yếu MPVPE.
+- Bước 2 (người dùng chạy 2026-11-08, `ik_upper_bound.py`, K=5 S=2, β trung bình, twist 0, KHÔNG train). MPJPE / PA / MPVPE (14 khớp):
+
+| Tập | LIFT | A_gt29 | B_M_gt17 | **C_M_lift (không học)** | Student v5 (`last`) |
+|---|---|---|---|---|---|
+| 3DPW | 72.53 / 47.35 | 24.52 / 12.64 / 29.02 | 25.26 / 15.88 / 36.32 | **73.18 / 49.23 / 90.59** | 73.15 / 48.82 / 89.77 |
+| OC (test) | 78.67 / 48.98 | 31.99 / 14.84 / 36.02 | 31.69 / 18.55 / 43.75 | **82.02 / 51.60 / 96.85** | 81.74 / 51.67 / 96.62 |
+| PC (test) | 62.19 / 64.60 | 19.04 / 16.74 / 28.40 | 23.49 / 20.62 / 41.10 | **64.19 / 67.97 / 103.61** | 68.58 / 68.60 / 108.55 |
+| Crowd | 70.89 / 51.56 | 31.42 / 12.51 / 36.12 | 31.03 / 15.13 / 44.06 | **77.56 / 54.08 / 101.08** | 80.39 / 56.50 / 103.87 |
+
+  - **Kết luận chính:** lifter + M + IK, KHÔNG học gì, đã ngang Student v5 ở 3DPW/OC (±0.3) và TỐT HƠN ở PC (−4.4) và Crowd (−2.8 MPJPE, −2.4 PA, −2.8 MPVPE). → Toàn bộ phần học của Student v5 (backbone, fusion, HyperGCN, query) hiện không thêm giá trị so với baseline không học.
+  - Ánh xạ M gần như không làm hỏng MPJPE (A ≈ B, B kém hơn ~3 PA, ~7–8 MPVPE). Sàn A (~25–32 mm) chủ yếu do β trung bình + twist 0 (+ khác định nghĩa khớp) → phần có thể học (β, twist, bàn tay/chân).
+  - C vẫn kém LIFT: 3DPW +0.7, OC +3.4, PC +2.0, Crowd +6.7 → IK làm mất thông tin nhiều nhất ở Crowd. Giả thuyết (chưa kiểm chứng): hướng pelvis (SVD từ hông/spine nhiễu) và β trung bình lệch nhiều ở Crowd.
+  - Lưu ý so sánh với SOTA: lifter có dùng 3dpw-train.
+
+## 20. Student v6: mesh neo vào hình học qua IK (2026-11-08, người dùng xác nhận, đã code, chưa chạy)
+- Lý do: §19 — lifter + M + IK không học đã ngang/hơn Student v5 → cho Student xuất phát từ baseline này.
+- Luồng (thay bước query → 6D): pose17 = lift + Δ17(ctx) (→ `ctx_3d`, loss `v5_ctx_loss_w`) → J29 = M·pose17 + Δ29(token query; 5 điểm đầu chi lấy token khớp cha) → twist = (1,0) + Linear(token query 1..23) → `HybrIKSMPL.ik` (β = shape head) → rotmat → axis-angle (`rotmat_to_aa_safe`, tránh NaN) → `get_coord` cũ. Mọi head khởi tạo 0 → lúc đầu = baseline C (§19). 5 loss cũ giữ nguyên; thêm `v6_j29_loss_w` (smooth-L1 J29 vs GT29 từ mesh GT, gốc Pelvis H36M, mask is_valid_fit).
+- Key mới (mặc định tắt): `MODEL.v6_ik`, `v6_m_path`, `v6_delta17/29`, `v6_twist`, `v6_j29_loss_w`, `hgcn_freeze_adj` (requires_grad=False cho p_adj/b_adj, không sửa hypergraph.py). `bone_proj` (v4) vẫn cộng vào query; `per_joint_head` không dùng khi v6.
+- File sửa (backup `_to_delete/bak_student_v6/`): `config.py`, `teacher_student.py`, `ARTS.py`, `base.py` (`_v6_j29_loss`, log `j29` mm), `hybrik_smpl.py` (`ik()`, `rotmat_to_aa_safe`, buffer không lưu ckpt). `v6_M` lưu trong ckpt.
+- Config: `config/train_student_v6_ik.yml` (exp `student_v6_ik`) = v5 + v6_ik + hgcn_freeze_adj, tắt v5_bone_query; `config/train_student_v6_ik_lite.yml` (exp `student_v6_ik_lite`) = v6_ik + tắt [B] [B'] [C] [E]. Cùng ratio 0.25, 22 epoch như v5.
+- Mốc phải vượt: baseline C (3DPW 73.18, OC 82.02, PC 64.19, Crowd 77.56). Kết quả: chưa có.

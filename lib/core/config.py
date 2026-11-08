@@ -225,6 +225,19 @@ cfg.MODEL.student_2d_from_refiner = False
 # v5_ctx_loss_w: trong so loss smooth-L1 ctx_3d vs GT (nhu privileged). Mac dinh TAT.
 cfg.MODEL.v5_bone_query = False
 cfg.MODEL.v5_ctx_loss_w = 1.0
+# Student v6 (2026-11-08): mesh neo vao hinh hoc qua IK giai tich (HybrIK). Mac dinh TAT.
+#   pose17 = lift + delta17(ctx) [ctx_3d, loss v5_ctx_loss_w] -> J29 = M x pose17 + delta29(query) -> IK (beta, twist)
+#   -> goc SMPL -> get_coord nhu cu. Moi delta / twist khoi tao 0 -> luc dau = baseline "lifter + M + IK" (§19).
+#   v6_m_path: anh xa M (29 x 17) tu tools/fit_h36m_to_smpl29.py. v6_j29_loss_w: smooth-L1 J29 vs GT29 (tu mesh GT).
+#   v6_delta17 / v6_delta29 / v6_twist: bat / tat tung phan (ablation); False = giu co dinh (delta 0, twist 0).
+cfg.MODEL.v6_ik = False
+cfg.MODEL.v6_m_path = 'data_final/h36m17_to_smpl29.npy'
+cfg.MODEL.v6_delta17 = True
+cfg.MODEL.v6_delta29 = True
+cfg.MODEL.v6_twist = True
+cfg.MODEL.v6_j29_loss_w = 1.0
+# Khoa ma tran sieu canh p_adj / b_adj cua HyperGCN (khong sua hypergraph.py). Ly do: §17 (v4 tong cot ve 0 -> BN no).
+cfg.MODEL.hgcn_freeze_adj = False
 # Gate dieu chinh cap nhat tu anh theo tung khop. Mac dinh TAT.
 # g=2*sigmoid(MLP([LN(joint),LN(image_update),log1p(std*10)])), khoi tao g=1; std tu K gia thuyet rieng
 # (difflift_spread_steps / difflift_spread_k), pose chinh van S1/K1.
