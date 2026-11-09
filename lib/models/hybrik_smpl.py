@@ -24,6 +24,8 @@ LEAF_VERTS = [411, 2445, 5905, 3216, 6617]
 LEAF_IDX = [24, 25, 26, 27, 28]
 SPINE3_IDX = 9
 NECK_IDX = 12
+# Cha cua 17 khop H36M (thu tu repo: 1 RHip, 4 LHip, 11 LShoulder, 14 RShoulder) -> 16 xuong cho beta_from_bones
+H36M_PARENTS = [-1, 0, 1, 2, 0, 4, 5, 0, 7, 8, 9, 8, 11, 12, 8, 14, 15]
 
 
 def rotmat_to_aa_safe(R, eps=1e-6):
@@ -96,6 +98,31 @@ class HybrIKSMPL(nn.Module):
         self.register_buffer('lbs_weights', weights, persistent=False)
         self.register_buffer('parents', parents, persistent=False)
         self.register_buffer('children_map', _children_map(parents), persistent=False)
+
+    def beta_from_bones(self, j17, iters=3, lam=1e-4):
+        """(v7) Giai beta sao cho do dai 16 xuong H36M cua mesh T-pose khop voi do dai xuong cua j17 (B,17,3) met.
+        Khop H36M T-pose tuyen tinh theo beta: J(beta) = R v_template + (R S) beta -> vector xuong b_k = c_k + D_k beta.
+        Gauss-Newton tu beta = 0: min sum_k (|b_k| - l_k)^2 + lam |beta|^2. Kha vi, khong tham so hoc. Tra (B, 10)."""
+        dt = j17.dtype
+        R = self.J_regressor_h36m.to(dt)                                   # (17, V)
+        J0 = R @ self.v_template.to(dt)                                    # (17, 3)
+        A = torch.einsum('jv,vcl->jcl', R, self.shapedirs.to(dt))          # (17, 3, 10)
+        ch = torch.arange(1, 17, device=j17.device)
+        pa = torch.as_tensor(H36M_PARENTS[1:], device=j17.device)
+        c, D = J0[ch] - J0[pa], A[ch] - A[pa]                              # (16, 3), (16, 3, 10)
+        L = torch.norm(j17[:, ch] - j17[:, pa], dim=-1)                    # (B, 16) do dai xuong muc tieu
+        B = j17.shape[0]
+        beta = j17.new_zeros(B, 10)
+        eye = torch.eye(10, device=j17.device, dtype=dt)[None]
+        for _ in range(int(iters)):
+            b = c[None] + torch.einsum('kcl,bl->bkc', D, beta)             # (B, 16, 3)
+            n = b.norm(dim=-1).clamp_min(1e-6)
+            r = n - L                                                      # (B, 16)
+            Jac = torch.einsum('bkc,kcl->bkl', b / n[..., None], D)        # (B, 16, 10)
+            H = Jac.transpose(1, 2) @ Jac + lam * eye
+            g = (Jac.transpose(1, 2) @ r[..., None])[..., 0] + lam * beta
+            beta = beta - torch.linalg.solve(H, g[..., None])[..., 0]
+        return beta
 
     def joints29_from_mesh(self, verts):
         """Mesh (B, V, 3) -> 29 diem (24 = J_regressor x mesh, 5 = dinh dau chi). Dung de tao muc tieu / khop M."""

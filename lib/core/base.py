@@ -346,6 +346,9 @@ def _apply_awl(trainer, loss_dict):
     """Trong so shape (shape_param_loss_w) roi AWL. Tra (tong loss, dict loss da qua AWL)."""
     loss_dict = dict(loss_dict)
     sigma_nll = loss_dict.pop('joint_sigma_nll', None)   # [E] khong qua AWL (co the am)
+    if cfg.MODEL.get('v7_no_pose_param_loss', False):
+        # v7: goc do IK quyet dinh -> bo loss tham so pose (mau thuan voi IK); van giu trong loss_terms de log
+        loss_dict.pop('smpl_pose', None)
     if trainer.shape_loss_w <= 0:
         loss_dict.pop('smpl_shape')   # bo han khoi AWL (giu voi gia tri 0 -> trong so AWL ve vo cung -> NaN)
     elif trainer.shape_loss_w != 1.0:
@@ -799,7 +802,7 @@ class Student_Trainer:
         per_sample = (((rs - rt) ** 2) * pair_mask).sum(dim=(1, 2)) / pair_count.clamp_min(1.0)
         return per_sample, pair_count
 
-    def _v6_j29_loss(self, pred29, targets, is_valid_fit, beta):
+    def _v6_j29_loss(self, pred29, targets, is_valid_fit, beta, idx=None):
         """v6: smooth-L1 giua 29 diem dua vao IK va GT29 tu mesh GT (J_regressor SMPL x mesh + 5 dinh dau chi),
         goc = Pelvis H36M cua mesh GT (cung he voi pose lifter root-relative). Chi mau is_valid_fit.
         Tra (loss, loi TB mm)."""
@@ -808,6 +811,8 @@ class Student_Trainer:
             gm = targets['smpl_mesh_cam'].cuda().float()                          # (B, V, 3) met
             g17 = torch.matmul(self.J_regressor[None], gm)
             g29 = net.smpl_model.hybrik.joints29_from_mesh(gm) - g17[:, 0:1]
+        if idx is not None:                                   # v7: chi cac diem dau chi
+            pred29, g29 = pred29[:, idx], g29[:, idx]
         err = F.smooth_l1_loss(pred29.float(), g29, reduction='none', beta=beta).mean(-1).mean(-1)   # (B,)
         w = is_valid_fit.float().reshape(-1)
         loss = (err * w).sum() / w.sum().clamp_min(1.0)
@@ -888,7 +893,9 @@ class Student_Trainer:
             loss_terms = _hard_losses(self, model_output, targets, meta, gt_fit_joint_cam, fit_joint_trunc,
                                       is_valid_fit)
             hard_loss, _ = _apply_awl(self, loss_terms)
-            loss = self.kd_hard_w * hard_loss + self.kd_lambda * kd_loss + privileged_loss
+            # v7_no_privileged: bo loss privileged (Student khong duoc giao viec tai tao pose)
+            priv_w = 0.0 if cfg.MODEL.get('v7_no_privileged', False) else 1.0
+            loss = self.kd_hard_w * hard_loss + self.kd_lambda * kd_loss + priv_w * privileged_loss
             if 'ctx_3d' in model_output:
                 loss = loss + float(cfg.MODEL.v5_ctx_loss_w) * ctx_loss
             # v6: giam sat truc tiep 29 diem dua vao IK (IK HybrIK detach mot phan gradient -> can loss rieng)
@@ -897,6 +904,14 @@ class Student_Trainer:
                 j29_loss, j29_mm = self._v6_j29_loss(model_output['v6_j29'], targets, is_valid_fit, priv_beta)
                 loss = loss + float(cfg.MODEL.v6_j29_loss_w) * j29_loss
                 j29_stats = {'v6_j29': j29_loss.item(), 'v6_j29_mm': j29_mm}
+            if 'v7_j29' in model_output:                       # v7: J29 chi 7 diem dau chi + rang buoc dbeta
+                from models.teacher_student import V7_LIMB_IDX
+                j29_loss, j29_mm = self._v6_j29_loss(model_output['v7_j29'], targets, is_valid_fit, priv_beta,
+                                                     idx=V7_LIMB_IDX)
+                db_loss = (model_output['v7_dbeta'] ** 2).mean()
+                loss = loss + float(cfg.MODEL.v7_j29_loss_w) * j29_loss + float(cfg.MODEL.v7_dbeta_w) * db_loss
+                j29_stats = {'v6_j29': j29_loss.item(), 'v6_j29_mm': j29_mm, 'v7_dbeta': db_loss.item(),
+                             'v7_beta0': model_output['v7_beta0'].norm(dim=-1).mean().item()}
             depth_stats = {}
             if 'depth_logits' in model_output:
                 d_loss, d_mm = _depth_loss(model_output, gt_pose_input, valid_joint)
@@ -994,7 +1009,8 @@ class Student_Trainer:
         print(f'  Privileged 3D: {avg["privileged_3d"]:.4f} | ctx 3D (v5): {avg.get("ctx_3d", 0.0):.4f}'
               f' | loi joint dau vao (lifter): {avg["lift_err_mm"]:.1f} mm'
               + (f' | do sau [C]: loss {avg["depth_loss"]:.4f}, loi {avg["depth_err_mm"]:.1f} mm' if 'depth_loss' in avg else '')
-              + (f' | J29 (v6): loss {avg["v6_j29"]:.4f}, loi {avg["v6_j29_mm"]:.1f} mm' if 'v6_j29' in avg else ''))
+              + (f' | J29 (v6/v7): loss {avg["v6_j29"]:.4f}, loi {avg["v6_j29_mm"]:.1f} mm' if 'v6_j29' in avg else '')
+              + (f' | v7: TB dbeta^2 {avg["v7_dbeta"]:.4f}, |beta0| {avg["v7_beta0"]:.2f}' if 'v7_dbeta' in avg else ''))
         if self.kd_joint_relation:
             print(f'  KD joint RELATION (thay MSE feature): {avg["kd_joint_relation"]:.6f} | '
                   f'cap hop le/mau: {avg["kd_relation_pairs"]:.1f}; global KD giu nguyen')

@@ -238,6 +238,25 @@ cfg.MODEL.v6_twist = True
 cfg.MODEL.v6_j29_loss_w = 1.0
 # Khoa ma tran sieu canh p_adj / b_adj cua HyperGCN (khong sua hypergraph.py). Ly do: §17 (v4 tong cot ve 0 -> BN no).
 cfg.MODEL.hgcn_freeze_adj = False
+# Student v7 (2026-11-09): mesh NEO theo pose lifter, Student chi doan phan BE MAT. Mac dinh TAT.
+#   Pose : J29 = M x pose3d (than giu nguyen) + delta 7 diem dau chi {10,11,22,23,24,27,28} (body_tok) -> IK
+#          twist tu part_tok (doan chi chua xuong). v7_delta17: cho Student sua 17 khop (CHI de ablation).
+#   Shape: beta = beta_xuong (Gauss-Newton tu do dai 16 xuong H36M cua pose3d, khong tham so) + dbeta (body_tok, anh)
+#   Loss : bo loss tham so pose (v7_no_pose_param_loss), bo privileged (v7_no_privileged), J29 chi 7 diem dau chi,
+#          + v7_dbeta_w * TB(dbeta^2). Dung chung v6_m_path, hgcn_freeze_adj. v7_no_hgcn: bo qua HyperGCN (ablation).
+cfg.MODEL.v7_anchor = False
+cfg.MODEL.v7_part_readout = True       # doc token sieu canh (10 doan chi, 5 chi/than) sau HyperGCN
+cfg.MODEL.v7_twist = True
+cfg.MODEL.v7_delta_limb = True
+cfg.MODEL.v7_dbeta = True
+cfg.MODEL.v7_delta17 = False
+cfg.MODEL.v7_no_hgcn = False
+cfg.MODEL.v7_bone_gn_iters = 3          # so buoc Gauss-Newton giai beta tu do dai xuong
+cfg.MODEL.v7_bone_beta_reg = 1e-4       # lambda * |beta|^2 trong Gauss-Newton (residual tinh bang met; J^T J ~ 1e-3)
+cfg.MODEL.v7_dbeta_w = 0.01
+cfg.MODEL.v7_j29_loss_w = 1.0
+cfg.MODEL.v7_no_pose_param_loss = False
+cfg.MODEL.v7_no_privileged = False
 # Gate dieu chinh cap nhat tu anh theo tung khop. Mac dinh TAT.
 # g=2*sigmoid(MLP([LN(joint),LN(image_update),log1p(std*10)])), khoi tao g=1; std tu K gia thuyet rieng
 # (difflift_spread_steps / difflift_spread_k), pose chinh van S1/K1.

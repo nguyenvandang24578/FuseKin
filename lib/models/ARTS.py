@@ -36,7 +36,8 @@ def v3_model_kwargs():
                 refine_iters=int(M.v3_refine_iters), refine_feat_dim=int(M.v3_refine_feat_dim),
                 refine_hidden=int(M.v3_refine_hidden), refine_dropout=float(M.v3_refine_dropout),
                 joint_uncert=bool(M.v3_joint_uncert), bone_query=bool(M.get('v5_bone_query', False)),
-                v6_ik=bool(M.get('v6_ik', False)), hgcn_freeze_adj=bool(M.get('hgcn_freeze_adj', False)))
+                v6_ik=bool(M.get('v6_ik', False)), hgcn_freeze_adj=bool(M.get('hgcn_freeze_adj', False)),
+                v7_anchor=bool(M.get('v7_anchor', False)))
 
 
 def build_diff_lifter(path, steps=1, k=1):

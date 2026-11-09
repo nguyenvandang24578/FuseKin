@@ -107,6 +107,19 @@ SMPL_BONE_PAIRS_H36M = (
     (16, 16),  # 23 R_Hand (dau ra = 0)
 )
 
+# ---- Student v7: sieu canh (CUNG nhom khop voi hypergraph.py, dataset 'h36m') va anh xa giai ma theo bo phan ----
+# H36M-17: 0 Pelvis, 1 R_Hip, 2 R_Knee, 3 R_Ankle, 4 L_Hip, 5 L_Knee, 6 L_Ankle, 7 Torso, 8 Neck, 9 Nose, 10 Head,
+#          11 L_Shoulder, 12 L_Elbow, 13 L_Wrist, 14 R_Shoulder, 15 R_Elbow, 16 R_Wrist.
+V7_PARTS = [[0, 7, 8], [8, 9, 10], [0, 1, 2], [2, 3], [0, 4, 5], [5, 6], [8, 14, 15], [8, 11, 12], [15, 16], [12, 13]]
+V7_BODY = [[0, 1, 4, 7, 8, 9, 10, 11, 14], [14, 15, 16], [11, 12, 13], [1, 2, 3], [4, 5, 6]]   # than, tay P, tay T, chan P, chan T
+# Twist khop SMPL 1..23 (xuong khop -> con) -> doan chi chua xuong do (chi so trong V7_PARTS)
+V7_TWIST_PART = [4, 2, 0, 5, 3, 0, 5, 3, 0, 5, 3, 1, 7, 6, 1, 7, 6, 9, 8, 9, 8, 9, 8]
+# 7 diem dau chi trong 29 diem HybrIK co delta: ban chan T/P, ban tay T/P, dinh dau, ngon chan cai T/P.
+# (25, 26 giua ban tay bo: goc khop 22, 23 bi dat 0 nen khong anh huong mesh)
+V7_LIMB_IDX = [10, 11, 22, 23, 24, 27, 28]
+V7_LIMB_BODY = [4, 3, 2, 1, 0, 4, 3]          # chi / than chua diem do (chi so trong V7_BODY)
+V7_LIMB_TOKEN = [10, 11, 22, 23, 15, 10, 11]  # token query SMPL dung (diem la -> token khop cha)
+
 
 class PosEnc2D(nn.Module):
     """PE vi tri 2D Fourier, DUNG CHUNG cho token khop (theo toa do 2D) va o anh (theo tam o) -> cung khong gian vi tri.
@@ -531,7 +544,8 @@ class FusionPose2Mesh(nn.Module):
                  spread_gate=False, spread_gate_zero=False, spread_gate_hidden=64,
                  joint_feat=False, hop_bias=False, depth_head=False, depth_bins=64, depth_range=1.0,
                  refine_iters=0, refine_feat_dim=32, refine_hidden=32, refine_dropout=0.25, joint_uncert=False,
-                 feat16_dim=1024, feat8_dim=2048, bone_query=False, v6_ik=False, hgcn_freeze_adj=False):
+                 feat16_dim=1024, feat8_dim=2048, bone_query=False, v6_ik=False, hgcn_freeze_adj=False,
+                 v7_anchor=False):
         super().__init__()
         assert num_joint == 17, "Query neo xuong can 17 khop H36M (bang SMPL_BONE_PAIRS_H36M)"
         self.num_joint = num_joint
@@ -682,6 +696,46 @@ class FusionPose2Mesh(nn.Module):
             print(f'===> Student v6 IK: M {cfg.MODEL.v6_m_path} | delta17 {cfg.MODEL.v6_delta17} '
                   f'delta29 {cfg.MODEL.v6_delta29} twist {cfg.MODEL.v6_twist}')
 
+        # ---- Student v7 (MODEL.v7_anchor, 2026-11-09): mesh NEO theo pose lifter, Student chi doan phan BE MAT ----
+        # Pose than = pose3d (khong sua); delta 7 diem dau chi tu body_tok; twist tu part_tok; beta = beta_xuong + dbeta.
+        # Moi head khoi tao 0 -> luc dau = "lifter + beta tu xuong + IK" (experiment.md muc 21: ~ LIFT).
+        self.v7 = bool(v7_anchor)
+        if self.v7:
+            assert not self.v6_ik, 'v7_anchor va v6_ik khong bat cung luc'
+            assert self.refine_iters == 0 and not self.bone_query, 'v7_anchor can v3_refine_iters = 0, v5_bone_query = False'
+            from models.hybrik_smpl import HybrIKSMPL
+            reg_path = os.path.join(cfg.DATASET.jotr_data_root, 'Human36M', 'J_regressor_h36m_correct.npy')
+            self.hybrik = HybrIKSMPL(self.human_model_layer, np.load(reg_path))
+            Mmap = np.load(cfg.MODEL.v6_m_path).astype(np.float32)
+            assert Mmap.shape == (29, 17), f'v6_m_path phai la ma tran (29, 17), nhan {Mmap.shape}'
+            self.register_buffer('v7_M', torch.from_numpy(Mmap))           # luu trong ckpt
+            # Ma tran thuoc (khop x sieu canh) chuan hoa theo bac sieu canh: CUNG nhom khop voi hypergraph.py (h36m)
+            hp = torch.zeros(num_joint, len(V7_PARTS))
+            for e, js in enumerate(V7_PARTS):
+                hp[js, e] = 1.0
+            hb = torch.zeros(num_joint, len(V7_BODY))
+            for e, js in enumerate(V7_BODY):
+                hb[js, e] = 1.0
+            self.register_buffer('v7_Hp', hp / hp.sum(0, keepdim=True), persistent=False)   # (17, 10)
+            self.register_buffer('v7_Hb', hb / hb.sum(0, keepdim=True), persistent=False)   # (17, 5)
+            self.v7_readout = bool(cfg.MODEL.v7_part_readout)
+            self.v7_no_hgcn = bool(cfg.MODEL.v7_no_hgcn)
+            fin2 = 2 * embed_dim if self.v7_readout else embed_dim
+            if self.v7_readout:
+                self.v7_part_norm = nn.LayerNorm(embed_dim)
+                self.v7_body_norm = nn.LayerNorm(embed_dim)
+            self.v7_tw = nn.Linear(fin2, 2) if cfg.MODEL.v7_twist else None          # twist (cos, sin) += ...
+            self.v7_dlimb = nn.Linear(fin2, 3) if cfg.MODEL.v7_delta_limb else None   # delta 7 diem dau chi
+            self.v7_db = nn.Linear(fin2, 10) if cfg.MODEL.v7_dbeta else None         # dbeta
+            self.v7_d17 = nn.Linear(embed_dim, 3) if cfg.MODEL.v7_delta17 else None  # CHI ablation
+            for m in (self.v7_tw, self.v7_dlimb, self.v7_db, self.v7_d17):
+                if m is not None:
+                    nn.init.zeros_(m.weight)
+                    nn.init.zeros_(m.bias)
+            print(f'===> Student v7 anchor: readout {self.v7_readout} | twist {cfg.MODEL.v7_twist} '
+                  f'dlimb {cfg.MODEL.v7_delta_limb} dbeta {cfg.MODEL.v7_dbeta} delta17 {cfg.MODEL.v7_delta17} '
+                  f'no_hgcn {self.v7_no_hgcn}')
+
     # --------------------------------------------------------
     def _v6_ik_outputs(self, joints, ctx, pose_feat, shape_param, cam_raw, is_train):
         """v6: pose lifter (joints, root-relative) -> pose17 -> J29 -> IK (beta = shape_param, twist) -> goc SMPL
@@ -708,6 +762,57 @@ class FusionPose2Mesh(nn.Module):
         result['root_pose_6d'] = rot_mats[:, 0, :, :2].reshape(B, 6)
         result['v6_phis'] = phis
         return result, pose17, j29
+
+    def _v7_outputs(self, joints, ctx, pose_feat, shape_out, cam_raw, is_train):
+        """v7: pose than = pose3d (khong sua) -> J29 = M x pose17 (+ delta 7 diem dau chi) ; beta = beta_xuong + dbeta ;
+        twist tu part_tok -> IK -> goc SMPL -> cung dict output nhu _smpl_outputs. Tra (result, ctx3d | None)."""
+        from models.hybrik_smpl import rotmat_to_aa_safe
+        B = joints.shape[0]
+        lift = joints - joints[:, 0:1]
+        pose17, ctx3d = lift, None
+        if self.v7_d17 is not None:                                                   # CHI ablation
+            pose17 = lift + self.v7_d17(ctx)
+            pose17 = pose17 - pose17[:, 0:1]
+            ctx3d = pose17
+        j29 = torch.einsum('jk,bkc->bjc', self.v7_M, pose17)                          # (B, 29, 3)
+        part_tok = body_tok = None
+        if self.v7_readout:                                                           # token sieu canh sau HyperGCN
+            part_tok = self.v7_part_norm(torch.einsum('jp,bjc->bpc', self.v7_Hp, ctx))   # (B, 10, C)
+            body_tok = self.v7_body_norm(torch.einsum('jp,bjc->bpc', self.v7_Hb, ctx))   # (B, 5, C)
+        # delta 7 diem dau chi (sua loi anh xa M o ban tay / ban chan / dinh dau)
+        dlimb = None
+        if self.v7_dlimb is not None:
+            q = pose_feat[:, V7_LIMB_TOKEN]                                           # (B, 7, C)
+            inp = torch.cat([q, body_tok[:, V7_LIMB_BODY]], -1) if self.v7_readout else q
+            dlimb = self.v7_dlimb(inp)                                                # (B, 7, 3)
+            d29 = torch.zeros_like(j29)
+            d29[:, V7_LIMB_IDX] = dlimb
+            j29 = j29 + d29
+        # beta = beta tu do dai xuong cua pose3d (hinh hoc, khong hoc) + dbeta (anh)
+        with torch.no_grad():
+            beta0 = self.hybrik.beta_from_bones(pose17.detach().float(), int(cfg.MODEL.v7_bone_gn_iters),
+                                                float(cfg.MODEL.v7_bone_beta_reg))
+        dbeta = torch.zeros_like(beta0)
+        if self.v7_db is not None:
+            s = shape_out[:, 0]                                                       # (B, C)
+            inp = torch.cat([s, body_tok.mean(1)], -1) if self.v7_readout else s
+            dbeta = self.v7_db(inp).float()
+        beta = beta0 + dbeta
+        # twist: khop SMPL 1..23 doc token doan chi chua xuong cua no
+        phis = self.hybrik.default_phis(B, j29.device, torch.float32)
+        if self.v7_tw is not None:
+            q = pose_feat[:, 1:24]
+            inp = torch.cat([q, part_tok[:, V7_TWIST_PART]], -1) if self.v7_readout else q
+            phis = phis + self.v7_tw(inp).float()
+        rot_mats = self.hybrik.ik(j29.float(), beta, phis)                            # (B, 24, 3, 3)
+        full_pose = rotmat_to_aa_safe(rot_mats.reshape(-1, 3, 3)).reshape(B, 24, 3)
+        full_pose = torch.cat([full_pose[:, :22], torch.zeros_like(full_pose[:, 22:])], dim=1).reshape(B, 72)
+        result = self._smpl_outputs_aa(full_pose, beta, cam_raw, is_train)
+        result['root_pose_6d'] = rot_mats[:, 0, :, :2].reshape(B, 6)
+        result['v7_j29'] = j29                                                        # loss J29 chi 7 diem dau chi
+        result['v7_dbeta'] = dbeta                                                    # rang buoc |dbeta|^2
+        result['v7_beta0'] = beta0
+        return result, ctx3d
 
     def _smpl_outputs_aa(self, full_pose, shape_param, cam_raw, is_train):
         """Nhu _smpl_outputs nhung nhan san goc axis-angle (B, 72) (dung cho v6). Cung key output."""
@@ -815,7 +920,8 @@ class FusionPose2Mesh(nn.Module):
         # 2. Pose. ctx tinh TRUOC query (a2 can ctx de neo query vao xuong)
         idx = torch.arange(self.num_joint, device=device)
         ctx = self.norm(joint_out) + self.node_pe(idx)
-        ctx = self.spatial_hypers(ctx.unsqueeze(1)).squeeze(1)       # (B, J, dim)
+        if not (self.v7 and self.v7_no_hgcn):                        # v7_no_hgcn: bo qua HyperGCN (CHI ablation)
+            ctx = self.spatial_hypers(ctx.unsqueeze(1)).squeeze(1)   # (B, J, dim)
 
         # query: mean_pose (24, 6) -> (B, 24, dim)
         pose_token = self.pose_embed(self.init_pose.expand(B, -1, -1)) + self.pose_pe.weight.unsqueeze(0)
@@ -834,7 +940,7 @@ class FusionPose2Mesh(nn.Module):
 
         # a1: moi token -> delta 6D cua khop do, cong mean pose (local)
         # v6: goc tinh bang IK o buoc 5 (per_joint_head khong dung)
-        rot6d = None if self.v6_ik else self.init_pose + self.per_joint_head(pose_feat)   # (B, 24, 6)
+        rot6d = None if (self.v6_ik or self.v7) else self.init_pose + self.per_joint_head(pose_feat)   # (B, 24, 6)
 
         # 3. Camera (tham so tho [tx, ty, gamma])
         cam_raw = self.cam_head(global_ft)
@@ -850,6 +956,8 @@ class FusionPose2Mesh(nn.Module):
         if self.v6_ik:
             result, ctx3d, j29 = self._v6_ik_outputs(joints, ctx, pose_feat, shape_param, cam_raw, is_train)
             result['v6_j29'] = j29                     # (B, 29, 3) loss j29 (base.py); ctx3d = pose17 -> 'ctx_3d'
+        elif self.v7:
+            result, ctx3d = self._v7_outputs(joints, ctx, pose_feat, shape_out, cam_raw, is_train)
         else:
             result = self._smpl_outputs(rot6d, shape_param, cam_raw, is_train)
 

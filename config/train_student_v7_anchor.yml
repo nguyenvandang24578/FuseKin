@@ -1,0 +1,109 @@
+# train_student_v7_anchor (2026-11-09, nguoi dung xac nhan) = cau hinh lite cua v6 + thay nhanh v6 bang v7:
+#   Pose than = pose3d lifter (KHONG sua) -> J29 = M x pose3d + delta 7 diem dau chi (body_tok) -> IK
+#   Twist: query SMPL + part_tok (doan chi chua xuong); Shape: beta = beta_xuong (Gauss-Newton) + dbeta (body_tok, anh)
+#   Loss: mesh, khop, chieu 2D, smpl_shape, J29 7 diem dau chi, |dbeta|^2; BO loss tham so pose, privileged.
+#   Giu [A], fusion, HyperGCN (khoa ma tran), 24 query. Tat [B] [B'] [C] [E]. Ratio 0.25, 22 epoch (so v5 / v6).
+#   python main/train.py --cfg ./config/train_student_v7_anchor.yml --exp_name student_v7_anchor --gpu 0
+#   python -u main/test_student_3dpw_sets.py --cfg ./config/train_student_v7_anchor.yml \
+#     --ckpt experiment/student_v7_anchor/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --ocpc_mode test --gpu 0
+
+update_bbox: True          # giong JOTR yml
+DATASET:
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']   # KHONG 3dpw-train (lifter thi co)
+  test_list: ['3dpw', '3dpw-oc', '3dpw-pc', '3dpw-crowd']   # danh gia moi epoch (chi log, bao epoch cuoi)
+  pw3d_ocpc_test_only: True   # lifter co 3dpw-train -> OC / PC chi seq test
+  workers: 8
+  pw3d_2d_source: 'openpose'     # test: OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd)
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: False    # mask nhi phan, giong lifter jotr
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  posefix_scale: 1.0       # dong bo voi Refiner day + ImgLifter (train PoseFix 1.0)
+  posefix_fast: True       # giong tung bit ban goc, nhanh ~10%
+  fusekin_unified: True    # mau train thong nhat cho 4 bo (lib/utils/fusekin_sample.py)
+
+MODEL:
+  name: 'student'
+  resnet_type: 50
+  hpe_dim: 512
+  imglift_checkpoint: 'experiment/img_lifter_dense48_3dpw_markov/checkpoint/last.pth.tar'   # Refiner day lay tu ckpt
+  imglift_K: 5
+  imglift_S: 2
+  student_2d_from_refiner: True   # 2D Student = 2D Refiner (17 khop, mask 1)
+  v5_bone_query: False     # v6: tat (thay bang IK)
+  v6_ik: False             # v7 thay v6
+  v6_m_path: 'data_final/h36m17_to_smpl29.npy'   # M dung chung cho v7
+  v7_anchor: True          # v7: mesh neo theo pose lifter, Student chi doan be mat
+  v7_part_readout: True    # twist tu part_tok, delta dau chi + dbeta tu body_tok
+  v7_twist: True
+  v7_delta_limb: True      # 7 diem dau chi {10,11,22,23,24,27,28}
+  v7_dbeta: True
+  v7_delta17: False        # KHONG sua pose than (chi bat khi ablation)
+  v7_no_hgcn: False
+  v7_bone_gn_iters: 3
+  v7_bone_beta_reg: 0.0001
+  v7_dbeta_w: 0.01
+  v7_j29_loss_w: 1.0
+  v7_no_pose_param_loss: True   # goc do IK quyet dinh
+  v7_no_privileged: True
+  hgcn_freeze_adj: True    # khoa p_adj / b_adj HyperGCN (experiment.md muc 17)
+  v5_ctx_loss_w: 1.0
+  backbone_pretrained: 'spin'
+  student_use_kd: False    # bo KD / Teacher (train scratch)
+  init_student_from_teacher: False
+
+  # ---- KD feature (E1, giong student_kd_e1_v2_diff_jotr_l2last) ----
+  kd_feat_dist: 'mse'
+  kd_hard_w: 1.0
+  kd_lambda: 1.0
+  kd_w_proj: 0.0
+  kd_w_joint: 1.0
+  kd_w_global: 1.0
+
+  # ---- FuseKin-v3 ----
+  v3_bb_finetune: True     # [A]
+  v3_bb_lr_scale: 0.1
+  v3_bb_heatmap: True      # [A]
+  v3_heatmap_sigma: 2.0
+  v3_joint_feat: False     # [B] TAT (lite)
+  v3_hop_bias: False       # [B'] TAT (lite)
+  v3_depth_head: False     # [C] TAT (lite)
+  v3_depth_bins: 64
+  v3_depth_range: 1.0
+  v3_depth_loss_w: 0.1
+  v3_refine_iters: 0       # [D] TAT (v4 chan doan: dong gop ~0)
+  v3_refine_feat_dim: 32
+  v3_refine_hidden: 32
+  v3_refine_dropout: 0.25
+  v3_refine_gamma: 0.85
+  v3_joint_uncert: False   # [E] TAT (lite)
+  v3_pose2d_noise_prob: 0.0   # [E] TAT (lite)
+  v3_pose2d_noise_std: 0.02
+  v3_pose2d_drop_prob: 0.05
+
+TRAIN:
+  print_freq: 20
+  batch_size: 32
+  shuffle: True
+  dataset_ratio: [0.25, 0.25, 0.25, 0.25]   # Human36M, MuCo, MSCOCO, CrowdPose (giong v3 KD, nguoi dung chon)
+  samples_per_epoch: 32000                   # 1000 iter / epoch voi batch 32
+  begin_epoch: 1
+  end_epoch: 22                # 2026-10-27: rut ngan (truoc 30)
+  scheduler: 'step'
+  lr: 0.0001
+  lr_step: [10, 16, 20]        # 2026-10-27: giam lr som hon (truoc [15, 22, 27]); LUU Y khac lich scratch v2
+  lr_factor: 0.5
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 32
+  shuffle: False
+  select_dataset: '3dpw'
+  save_best_per_set: False
+  final_test_list: []          # bao EPOCH CUOI: test last.pth.tar bang main/test_student_3dpw_sets.py
