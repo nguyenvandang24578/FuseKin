@@ -307,3 +307,16 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - Key mới (`config.py`, mặc định tắt): `v7_anchor`, `v7_part_readout`, `v7_twist`, `v7_delta_limb`, `v7_dbeta`, `v7_delta17` (ablation), `v7_no_hgcn` (ablation), `v7_bone_gn_iters`, `v7_bone_beta_reg` (1e-4), `v7_dbeta_w`, `v7_j29_loss_w`, `v7_no_pose_param_loss`, `v7_no_privileged`. Dùng chung `v6_m_path`, `hgcn_freeze_adj`.
 - File sửa (backup `_to_delete/bak_student_v7/`): `config.py`, `teacher_student.py` (hằng số V7_*, nhánh `_v7_outputs`, cờ bỏ HyperGCN), `ARTS.py`, `hybrik_smpl.py` (`beta_from_bones`), `base.py` (J29 theo chỉ số, Δβ, bỏ privileged / pose param).
 - Config `config/train_student_v7_anchor.yml` (exp `student_v7_anchor`) = lite v6 + v7. Ablation dự kiến: `v7_no_hgcn`, `v7_part_readout False`, `v7_delta17 True`. Kết quả: chưa có.
+- **Kết quả v7_anchor** (người dùng gửi 2026-11-10, eval epoch 22 = `last` trong log train, OC/PC chỉ seq test), MPJPE / PA / MPVPE:
+
+| Tập | v7 (`last`) | LIFT | Baseline IK (C) | v5 | v6_ik | DPMesh |
+|---|---|---|---|---|---|---|
+| 3DPW | **73.46 / 48.17 / 90.61** | 72.53 / 47.36 | 73.18 / 49.23 / 90.59 | 73.15 / 48.82 / 89.77 | 75.53 / 49.60 / 92.00 | 73.6 / 47.4 / 90.7 |
+| OC (test) | **80.43 / 50.57 / 95.14** | 78.67 / 48.98 | 82.02 / 51.60 / 96.85 | 81.74 / 51.67 / 96.62 | 84.64 / 51.84 / 98.87 | (70.9, toàn bộ seq) |
+| PC (test) | **61.85 / 64.71 / 98.91** | 62.19 / 64.60 | 64.19 / 67.97 / 103.61 | 68.58 / 68.60 / 108.55 | 66.11 / 66.32 / 104.03 | (82.2, toàn bộ seq) |
+| Crowd | **71.72 / 52.49 / 94.87** | 70.89 / 51.47 | 77.56 / 54.08 / 101.08 | 80.39 / 56.50 / 103.87 | 78.50 / 55.43 / 101.45 | 79.9 / 51.1 / – |
+
+  - So v5: 3DPW ≈ (+0.3 MPJPE, −0.7 PA, +0.8 MPVPE); OC −1.3 / −1.1 / −1.5; PC −6.7 / −3.9 / −9.6; Crowd **−8.7 / −4.0 / −9.0**. So baseline IK: Crowd −5.8 / −1.6 / −6.2, PC −2.3 / −3.3 / −4.7, OC −1.6 / −1.0 / −1.7, 3DPW ≈. So LIFT: MPJPE +0.9 (3DPW), +1.8 (OC), −0.3 (PC), +0.8 (Crowd). → Bản Student tốt nhất tới nay; lợi ích lớn nhất ở che khuất / đông người. So DPMesh: 3DPW MPJPE ≈ (−0.1), MPVPE ≈, PA kém 0.8; Crowd MPJPE −8.2 nhưng PA kém 1.4. Lưu ý: lifter dùng 3dpw-train.
+  - Log train: |β0| = 2.00 ổn định (β từ xương, lifter đóng băng); TB Δβ² tăng 0.19 → 0.38 (|Δβ| ~ 1.9, cùng cỡ β0); J29 7 điểm đầu chi 148 → 138 mm (giảm chậm). Giả thuyết (chưa kiểm chứng): β0 quá lớn / nhiễu do λ = 1e-4 yếu (16 xương, 10 tham số), Δβ đang bù ngược → có thể là lý do MPVPE 3DPW không giảm so với baseline IK và MPJPE còn cách LIFT ~1 mm.
+- Test chính thức v7 `last` (người dùng chạy `test_student_3dpw_sets.py --ocpc_mode test`, 2026-11-10): **trùng khớp** eval epoch 22 — 3DPW 73.46 / 48.17 / 90.61 (LIFT 72.59 / 47.36), OC 80.43 / 50.57 / 95.14 (LIFT 78.79 / 49.08), PC 61.85 / 64.71 / 98.91 (LIFT 62.10 / 64.48), Crowd 71.72 / 52.49 / 94.87 (LIFT 70.90 / 51.47). Mesh − LIFT: +0.87 / +1.64 / −0.25 / +0.82 MPJPE; PA +0.81 / +1.49 / +0.23 / +1.02. Cột token ~670–740 mm là bình thường (privileged không train ở v7).
+- **B (2026-11-10, người dùng duyệt, chưa chạy):** `config/train_student_v7_anchor_breg.yml` (exp `student_v7_anchor_breg`) = v7 chỉ đổi `v7_bone_beta_reg` 1e-4 → 1e-3 (cùng bậc J^T J; chọn theo lý thuyết). Kỳ vọng (giả thuyết): |β0| ~1, Δβ² không tăng, mesh sát LIFT hơn, MPVPE 3DPW giảm. Kết quả: chưa có.
