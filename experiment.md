@@ -327,3 +327,30 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
   - **breg `last` trên TOÀN BỘ OC / PC** (`--ocpc_mode both`, người dùng gửi 2026-11-11; RÒ RỈ vì lifter train 3dpw-train → KHÔNG đưa vào bảng paper), MPJPE / PA / MPVPE (LIFT / LIFT-PA): OC toàn bộ (n 20243) 52.15 / 37.04 / 67.36 (48.44 / 34.19) vs chỉ seq test (n 4157) 80.54 / 50.60 / 95.45 (78.79 / 49.08); PC toàn bộ (n 2218) 74.23 / 58.53 / 99.51 (72.36 / 57.49) vs chỉ seq test (n 281) 61.56 / 64.96 / 100.09 (62.10 / 64.48).
     - OC: rò rỉ rất nặng (LIFT 78.8 → 48.4) → số toàn bộ vô nghĩa. PC: LIFT toàn bộ (72.4) còn KÉM phần test (62.1) → phần test của PC là tập con dễ / quá nhỏ; mức rò rỉ trên PC chưa tách được (cần tách theo split train/val/test).
     - Mesh − LIFT: OC toàn bộ +3.71 (seq test +1.75), PC toàn bộ +1.87 (seq test −0.54). Giả thuyết: lifter càng chính xác (nhớ mẫu train) thì Student (không train 3dpw) càng làm xấu thêm → Student/IK đang cộng một sai số nền vài mm, không bám được lifter khi lifter rất tốt.
+
+## 23. Ablation D: lifter + β_xương + IK, KHÔNG học (2026-11-11, người dùng duyệt, đã chạy)
+- Mục đích: tách lợi ích của Student so với baseline IK (C, β TB, twist 0) thành phần do β_xương (Gauss-Newton, không học) và phần do các thành phần HỌC (HyperGCN, twist, Δβ, Δ đầu chi).
+- Code: `main/ik_upper_bound.py` thêm biến thể `D_M_lift_bb` (β = `beta_from_bones(lift, 3, 1e-3)`, twist 0) + `--bone_gn_iters`, `--bone_beta_reg` (backup `_to_delete/bak_ik_upper_bound/`). Lifter Markov v1, K5 S2, OC/PC chỉ seq test.
+- Kết quả (người dùng gửi 2026-11-11), MPJPE / PA / MPVPE:
+
+| Tập | LIFT | C (β TB) | D (β_xương) | Student breg `last` |
+|---|---|---|---|---|
+| 3DPW | 72.53 / 47.35 | 73.18 / 49.23 / 90.59 | 74.53 / 49.17 / 91.74 | 73.32 / 48.16 / 90.11 |
+| OC (test) | 78.67 / 48.98 | 82.02 / 51.60 / 96.85 | 83.21 / 51.77 / 98.03 | 80.54 / 50.60 / 95.45 |
+| PC (test, n 281) | 62.19 / 64.60 | 64.19 / 67.97 / 103.61 | 64.76 / 67.32 / 104.10 | 61.56 / 64.96 / 100.09 |
+| Crowd | 70.89 / 51.56 | 77.56 / 54.08 / 101.08 | 73.17 / 53.99 / 97.09 | 72.30 / 52.53 / 95.18 |
+
+- Phân rã C → Student (MPJPE / PA / MPVPE):
+  - β_xương (C → D): 3DPW +1.35 / −0.06 / +1.15; OC +1.19 / +0.17 / +1.18; PC +0.57 / −0.65 / +0.49; Crowd **−4.39 / −0.09 / −3.99**.
+  - Phần học (D → Student): 3DPW **−1.21 / −1.01 / −1.63**; OC **−2.67 / −1.17 / −2.58**; PC **−3.20 / −2.36 / −4.01**; Crowd **−0.87 / −1.46 / −1.91**.
+- Kết luận (dữ kiện): phần học của Student đóng góp NHẤT QUÁN trên cả 4 tập (MPJPE −0.9…−3.2, PA −1.0…−2.4, MPVPE −1.6…−4.0) → contribution đứng vững. NHƯNG lợi ích lớn ở Crowd so với C chủ yếu do β_xương (−4.4 trong −5.3 MPJPE), không phải phần học → paper phải báo trung thực. β_xương một mình làm XẤU 3DPW / OC / PC (+0.6…+1.4) nhưng tốt cho Crowd.
+- Giả thuyết (chưa kiểm chứng): một phần lợi ích "phần học" có thể chỉ là Δβ sửa lại β_xương xấu (vì D kém C ở 3 tập) → ablation tắt Δβ (`v7_dbeta False`) / tắt twist / tắt Δ đầu chi sẽ tách tiếp.
+
+## 24. Dọn code: v7 (breg) là phiên bản Student CHÍNH THỨC DUY NHẤT (2026-11-11, người dùng duyệt phạm vi: chỉ code kiến trúc + YAML)
+- Từ đây chỉ còn 1 Student = v7 anchor với `v7_bone_beta_reg = 1e-3` (breg). Config chính thức: `config/train_student.yml` (nội dung = `train_student_v7_anchor_breg.yml`, chỉ đổi header). Ablation = chép file này, đổi 1 key `v7_*`.
+- `lib/models/teacher_student.py` (1060 → 613 dòng): chỉ còn `Student` (gộp FusionPose2Mesh). Bỏ Teacher, joint_encoder 'gt', spread gate, hop bias, [B] [C] [D] [E], img probe, v5 bone_query, v6 IK, nhánh góc 6D (`per_joint_head`), `shape_head` (v7 không dùng). Tên module / tham số giữ nguyên → ckpt v7 cũ nạp được; key `per_joint_head.*`, `shape_head.*` thêm vào `LEGACY_KEY_PARTS` (bỏ qua khi nạp).
+- `lib/models/ARTS.py` (312 → 207 dòng): chỉ đường Refiner dày + ImgLifter → Student. Bỏ Teacher, DiffLifter trong ARTS, spread gate, F16. GIỮ `make_heatmaps`, `build_diff_lifter`, `diff_lift` (Refiner / script eval / tools còn import) và `privileged_joint_head` (base.py còn đọc `privileged_3d`, loss đã tắt) — dọn khi tới base.py.
+- YAML: giữ 3 file (`train_student.yml`, `train_refiner2d_jotr_mesh_dense48_scratch.yaml`, `train_img_lifter_dense48_3dpw_markov.yaml`); 40 YAML cũ chuyển vào `_to_delete/bak_cleanup_v7_20261111/config/`. Backup 2 file model: `_to_delete/bak_cleanup_v7_20261111/lib_models/`.
+- NGOÀI phạm vi (chưa dọn): `base.py` (Teacher_Trainer / KD / loss cũ — Teacher_Trainer giờ báo lỗi rõ ràng khi gọi), `config.py`, `main/`, `tools/`. Các script cũ dùng Teacher / YAML cũ (analyze_teacher, inspect_student_spread, oracle_best_hypothesis, diag_*, ...) sẽ không chạy được nữa.
+- Lưu ý: bỏ module thừa làm thay đổi thứ tự khởi tạo ngẫu nhiên → train lại cùng YAML sẽ KHÔNG trùng bit với run breg cũ (kết quả kỳ vọng tương đương).
+- Kiểm tra cần chạy (người dùng): (1) test ckpt breg `last` bằng `config/train_student.yml` phải ra đúng 73.32 / 48.16 / 90.11 … và log nạp chỉ "thừa" key `per_joint_head` / `shape_head`, "thiếu" 0; (2) train thử 1 epoch không lỗi (kể cả lúc lưu ckpt). Kết quả: chưa có.
