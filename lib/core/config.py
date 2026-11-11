@@ -257,6 +257,11 @@ cfg.MODEL.v7_dbeta_w = 0.01
 cfg.MODEL.v7_j29_loss_w = 1.0
 cfg.MODEL.v7_no_pose_param_loss = False
 cfg.MODEL.v7_no_privileged = False
+# HyperGCN tren 24 token query SMPL (2026-11-12, lib/models/hypergraph_smpl.py): sau pose_context_attn, truoc head be mat
+#   (twist, delta dau chi) -> du doan trong cung chuoi chi nhat quan. Sieu canh 10 part / 5 body bam sat H36M cua
+#   HyperDiff. Layer scale 1e-5 -> luc dau = khong co. Ma tran sieu canh khoa theo hgcn_freeze_adj. Mac dinh TAT.
+cfg.MODEL.smpl_hgcn = False
+cfg.MODEL.smpl_hgcn_layers = 3
 # Gate dieu chinh cap nhat tu anh theo tung khop. Mac dinh TAT.
 # g=2*sigmoid(MLP([LN(joint),LN(image_update),log1p(std*10)])), khoi tao g=1; std tu K gia thuyet rieng
 # (difflift_spread_steps / difflift_spread_k), pose chinh van S1/K1.

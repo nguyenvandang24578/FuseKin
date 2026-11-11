@@ -405,14 +405,24 @@ class Student(nn.Module):
         # ---- Camera ----
         self.cam_head = MLP(global_dim, smpl_head_hidden_dim, 3, 2)
 
+        # ---- HyperGCN tren 24 token query SMPL (MODEL.smpl_hgcn, 2026-11-12): sau pose_context_attn, truoc head be mat ----
+        self.smpl_hypers = None
+        if cfg.MODEL.get('smpl_hgcn', False):
+            from models.hypergraph_smpl import create_smpl_layers
+            self.smpl_hypers = create_smpl_layers(embed_dim, n_layers=int(cfg.MODEL.smpl_hgcn_layers))
+            print(f'===> HyperGCN SMPL-24 tren token query: {int(cfg.MODEL.smpl_hgcn_layers)} lop')
+
         # ---- Khoa ma tran sieu canh HyperGCN (MODEL.hgcn_freeze_adj): giu ma tran giai phau khoi tao ----
         if hgcn_freeze_adj:
-            n_frz = 0
-            for name, p in self.spatial_hypers.named_parameters():
-                if name.endswith('p_adj') or name.endswith('b_adj'):
-                    p.requires_grad_(False)
-                    n_frz += 1
-            print(f'===> HyperGCN: khoa {n_frz} ma tran sieu canh (p_adj / b_adj)')
+            for tag, mod in (('H36M-17', self.spatial_hypers), ('SMPL-24', self.smpl_hypers)):
+                if mod is None:
+                    continue
+                n_frz = 0
+                for name, p in mod.named_parameters():
+                    if name.endswith('p_adj') or name.endswith('b_adj'):
+                        p.requires_grad_(False)
+                        n_frz += 1
+                print(f'===> HyperGCN {tag}: khoa {n_frz} ma tran sieu canh (p_adj / b_adj)')
 
         # ---- IK HybrIK + anh xa M (H36M-17 -> 29 diem HybrIK) ----
         from models.hybrik_smpl import HybrIKSMPL
@@ -548,6 +558,8 @@ class Student(nn.Module):
         bone = torch.cat([ctx[:, self.bone_pairs[:, 0]], ctx[:, self.bone_pairs[:, 1]]], dim=-1)  # (B, 24, 2C)
         pose_token = pose_token + self.bone_proj(bone)
         pose_feat = self.pose_context_attn(pose_token, ctx, ctx)     # (B, 24, dim)
+        if self.smpl_hypers is not None:                             # HyperGCN SMPL-24: dong bo token trong cung chuoi chi
+            pose_feat = self.smpl_hypers(pose_feat.unsqueeze(1)).squeeze(1)
 
         # 3. Camera (tham so tho [tx, ty, gamma])
         cam_raw = self.cam_head(global_ft)
