@@ -2,11 +2,13 @@
 main/ik_upper_bound.py -- (2026-11-08) Can tren cua duong "pose 3D -> IK giai tich (HybrIK) -> mesh", KHONG train.
 Tra loi: neu Student chi lay pose lifter roi IK (khong hoc them gi), mesh dat bao nhieu so voi LIFT va Student v5?
 
-Bien the (beta = shape trung binh, twist = 0 o moi bien the):
+Bien the (twist = 0 o moi bien the; beta = shape trung binh, TRU D):
   LIFT      : pose ImgLifter (K, S nhu Student), 14 khop, KHONG qua mesh (= cot LIFT cua test_student)
   A_gt29    : 29 diem lay tu mesh GT (J_regressor x mesh + 5 dinh)  -> IK  : san loi do beta TB + twist 0
   B_M_gt17  : M x H36M-17 GT                                         -> IK  : + loi anh xa 17 -> 29
   C_M_lift  : M x pose lifter                                        -> IK  : CAN TREN THUC TE (khong hoc them)
+  D_M_lift_bb (2026-11-11): nhu C nhung beta = beta_xuong (HybrIKSMPL.beta_from_bones, Gauss-Newton, KHONG hoc,
+              giong Student v7) -> tach loi ich cua Student: do beta_xuong hay do phan hoc (HyperGCN, twist, dbeta, delta)
 Do: MPJPE / PA-MPJPE 14 khop (H36M regressor x mesh, root Pelvis H36M, h36m_eval_joint) + MPVPE (tru Pelvis SMPL),
 giong dataset.evaluate / test_student_3dpw_sets.
 
@@ -36,6 +38,8 @@ parser.add_argument('--eta', type=float, default=1.0)
 parser.add_argument('--max_samples', type=int, default=0, help='0 = toan bo tap')
 parser.add_argument('--batch_size', type=int, default=0, help='0 = cfg.TEST.batch_size')
 parser.add_argument('--seed', type=int, default=0)
+parser.add_argument('--bone_gn_iters', type=int, default=3, help='D: so buoc Gauss-Newton (= v7_bone_gn_iters)')
+parser.add_argument('--bone_beta_reg', type=float, default=1e-3, help='D: lambda (= v7_bone_beta_reg cua breg)')
 parser.add_argument('--gpu', type=str, default='0')
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -55,7 +59,7 @@ from utils.img_lifter_tools import load_img_lifter, load_frozen_refiner, refiner
 from models.img_lifter import ImgLifter, aggregate
 from models.hybrik_smpl import HybrIKSMPL
 
-VARIANTS = ['LIFT', 'A_gt29', 'B_M_gt17', 'C_M_lift']
+VARIANTS = ['LIFT', 'A_gt29', 'B_M_gt17', 'C_M_lift', 'D_M_lift_bb']
 
 
 @torch.no_grad()
@@ -118,10 +122,15 @@ def run_set(name, lifter, refiner, M, dev):
         # B: M x H36M-17 GT
         add_mesh('B_M_gt17', hyb(torch.einsum('jk,bkc->bjc', M, gt17_rel))['vertices'], gt14, gt_mesh_rel)
         # C: M x pose lifter
-        add_mesh('C_M_lift', hyb(torch.einsum('jk,bkc->bjc', M, lift))['vertices'], gt14, gt_mesh_rel)
+        j29_lift = torch.einsum('jk,bkc->bjc', M, lift)
+        add_mesh('C_M_lift', hyb(j29_lift)['vertices'], gt14, gt_mesh_rel)
+        # D: nhu C, beta = beta_xuong tu do dai 16 xuong cua pose lifter (khong hoc, giong Student v7)
+        beta_bb = hyb.beta_from_bones(lift.float(), int(args.bone_gn_iters), float(args.bone_beta_reg))
+        add_mesh('D_M_lift_bb', hyb(j29_lift, betas=beta_bb)['vertices'], gt14, gt_mesh_rel)
 
     n = sum(len(x) for x in acc['LIFT']['mpjpe'])
-    lines = [f'[{label}] n={n} | K={args.K} S={args.S} | beta TB, twist 0',
+    lines = [f'[{label}] n={n} | K={args.K} S={args.S} | twist 0 | beta TB (A-C), beta_xuong (D: '
+             f'{args.bone_gn_iters} buoc, lambda {args.bone_beta_reg:g})',
              f'  {"bien the":10s} | {"MPJPE":>7s} | {"PA":>6s} | {"MPVPE":>7s}']
     for v in VARIANTS:
         a = acc[v]
@@ -142,6 +151,8 @@ def main():
         print(run_set(name, lifter, refiner, M, dev), flush=True)
     print('Tham chieu Student v5 (last, MPJPE / PA / MPVPE): 3DPW 73.15/48.82/89.77 | OC 81.74/51.67/96.62 | '
           'PC 68.58/68.60/108.55 | Crowd 80.39/56.50/103.87')
+    print('Tham chieu Student v7 breg (last, chi seq test): 3DPW 73.32/48.16/90.11 | OC 80.54/50.60/95.45 | '
+          'PC 61.56/64.96/100.09 | Crowd 72.30/52.53/95.18')
 
 
 if __name__ == '__main__':
