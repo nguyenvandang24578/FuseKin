@@ -423,3 +423,9 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - Mong đợi (giả thuyết): gần Student vì lifter no3dpw với GT 2D vẫn 76.16 (§27); có thể chênh ở PA / MPVPE (phần bề mặt). Số test của YAML này là ORACLE (test cũng GT 2D); test thêm ckpt bằng `train_student.yml` để xem Teacher với 2D detector.
 - So với Student breg `last`: 3DPW 73.32 / 48.16 / 90.11, OC 80.54 / 50.60 / 95.45, PC 61.56 / 64.96 / 100.09, Crowd 72.30 / 52.53 / 95.18.
 - KD sau này: `Student_Trainer` KD hiện tạo Teacher bằng `MODEL.name = 'teacher'` (ARTS báo lỗi) và đưa 2D detector cho Teacher → cần sửa để Teacher nhận GT 2D (`targets['orig_joint_img']`). Kết quả: chưa có.
+
+## 31. Lifter TEACHER 2D GT cho KD ở lifter (2026-11-12, người dùng duyệt, đã tạo YAML, chưa chạy)
+- Lý do: lifter train bằng 2D nhiễu không tận dụng được 2D chính xác (GT 2D lúc test 76.16 vs OpenPose 74.80, §27) → Teacher ở mức Student (§30) khó mạnh hơn Student. Lifter train hẳn bằng GT 2D mới là teacher có ý nghĩa (kiểu NKR DPMesh, áp vào lifter). Cận trên nâng 2D GT → 3D trên 3DPW trong tài liệu ~65 mm (Pose2Mesh, giả thuyết là teacher đạt gần đó).
+- `config/train_img_lifter_dense48_markov_no3dpw_ftref_teacher_gt2d.yaml` (exp `img_lifter_dense48_markov_no3dpw_ftref_teacher_gt2d`) = YAML ftref (§29, CÙNG version: Refiner mở khóa, không 3dpw-train) + 3 key định nghĩa teacher sạch: `DATASET.input_2d_gt: True` (split 'all', train + test), `IMGLIFT.train_xy_noise: 0`, `IMGLIFT.input_drop_prob: 0`. Không sửa code. Eval nhanh mỗi epoch và eval cuối = oracle (GT 2D).
+- Tiêu chí (MPJPE17 3DPW, K10 S4): ≤ ~65 → code KD ở lifter (bước 2: teacher đóng băng + student cùng t và cùng nhiễu, ép token ẩn từng khớp; chờ duyệt kế hoạch); ~72–76 → dừng hướng KD.
+- §30 (Teacher 2D GT ở mức Student): Claude đề nghị tạm hoãn để dành GPU. Kết quả: chưa có.
