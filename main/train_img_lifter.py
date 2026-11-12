@@ -10,6 +10,8 @@ root-relative) -> cung dinh nghia khop mesh voi GT 3DPW. Tap train theo DATASET.
 EMA (IMGLIFT.ema_decay): 'model_state' trong checkpoint = trong so EMA (dung danh gia); 'raw_model_state' de resume.
 IMGLIFT.refiner_finetune (2026-11-12, mac dinh TAT): mo khoa Refiner, train cung lifter (loss 3D qua f8 + loss 2D Refiner);
   Refiner EMA luu moi epoch thanh checkpoint/refiner_epoch_XX.pth.tar va refiner_last.pth.tar, ck['refiner_ckpt'] tro toi do.
+IMGLIFT.kd_teacher_ckpt (2026-11-12, mac dinh TAT): KD tu lifter teacher GT 2D (dong bang) sang lifter nay, cung t / nhieu,
+  MSE token an 17 khop da layer_norm x IMGLIFT.kd_w. IMGLIFT.init_ckpt: khoi tao tu last.pth.tar cua run khac.
 Moi epoch: danh gia nhanh tren IMGLIFT.eval_sets (chi LOG). Bao ket qua theo EPOCH CUOI (lich co dinh).
 
 Chay:
@@ -21,6 +23,7 @@ sys.path.append('./')
 os.environ["OMP_NUM_THREADS"] = "1"
 import argparse
 import copy
+import math
 import json
 import random
 
@@ -35,6 +38,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
@@ -49,7 +53,8 @@ from core.base import get_dataloader
 from models.img_lifter import ImgLifter
 from utils.jotr_dataset import get_test_dataset
 from utils.img_lifter_tools import (build_img_lifter, imglift_arch, load_frozen_refiner, refiner_inputs,
-                                    refiner_inputs_train, lifter_det, eval_img_lifter, format_eval)
+                                    refiner_inputs_train, lifter_det, eval_img_lifter, format_eval,
+                                    load_img_lifter)
 from models.refiner2d import refiner_losses
 
 random.seed(args.seed)
@@ -57,6 +62,17 @@ np.random.seed(args.seed)
 torch.manual_seed(args.seed)
 DEVICE = torch.device('cuda')
 L = cfg.IMGLIFT
+
+
+def nt_xent(a, b, tau):
+    """NT-Xent doi xung (giong lop SimCLR trong DPMesh/common/nets/loss.py). a, b (n, D): 2 goc nhin cua cung n mau.
+    Duong = (a_i, b_i) va (b_i, a_i); am = 2(n - 1) vector con lai; cosine / tau."""
+    n = a.shape[0]
+    z = F.normalize(torch.cat([a, b], 0), dim=-1)                              # (2n, D)
+    sim = z @ z.t() / float(tau)
+    sim = sim.masked_fill(torch.eye(2 * n, dtype=torch.bool, device=z.device), float('-inf'))   # bo chinh no
+    ar = torch.arange(n, device=z.device)
+    return F.cross_entropy(sim, torch.cat([ar + n, ar]))
 
 
 def main():
@@ -136,13 +152,56 @@ def main():
         begin = ck['epoch'] + 1
         log(f'===> resume tu epoch {ck["epoch"]}')
 
+    if L.get('init_ckpt', '') and not args.resume_training:
+        # Khoi tao tu run khac (vd ftref last): lifter raw + EMA (+ Refiner raw + EMA), KHONG nap optimizer / lich lr
+        ick = torch.load(L.init_ckpt, map_location='cpu', weights_only=False)
+        ia = dict(ick['imglift_arch'])
+        for key, default in (('num_ctx', 0), ('markov', False), ('markov_gate_b', False),
+                             ('markov_iters', 0), ('markov_gate_positive', False), ('bone_paper', False),
+                             ('markov_msg_norm', False)):
+            ia.setdefault(key, default)
+        if ia != imglift_arch():
+            raise ValueError(f'init_ckpt khac kien truc YAML: {ia} vs {imglift_arch()}')
+        model.load_state_dict(ick['raw_model_state'], strict=True)
+        ema.load_state_dict(ick['model_state'], strict=True)
+        if FT_REF:
+            assert 'refiner_raw_state' in ick, 'init_ckpt khong co Refiner fine-tune (can run refiner_finetune)'
+            refiner.load_state_dict(ick['refiner_raw_state'], strict=True)
+            ema_ref.load_state_dict(ick['refiner_ema_state'], strict=True)
+        log(f'===> Khoi tao tu {L.init_ckpt} (epoch {ick.get("epoch")}), optimizer / lich lr bat dau lai')
+        del ick
+
+    KD = bool(L.get('kd_teacher_ckpt', ''))
+    NCE_MODE = str(L.get('kd_nce_mode', 'sample'))
+    assert NCE_MODE in ('sample', 'joint'), f'IMGLIFT.kd_nce_mode phai la sample | joint: {NCE_MODE}'
+    NCE_FEAT = str(L.get('kd_nce_feat', 'hidden'))
+    assert NCE_FEAT in ('hidden', 'f8'), f'IMGLIFT.kd_nce_feat phai la hidden | f8: {NCE_FEAT}'
+    KD_F8_W = float(L.get('kd_f8_w', 0.0))
+    if KD and (KD_F8_W > 0 or (float(L.kd_nce_w) > 0 and NCE_FEAT == 'f8')):
+        assert FT_REF, 'KD tren f8 can IMGLIFT.refiner_finetune (f8 student phai co gradient vao backbone Refiner)'
+    # Gia tri InfoNCE khi dac trung ngau nhien (de doc log): 1 vector / mau = log(2B - 1), muc khop = log(17 B)
+    NCE_REF = math.log(max(17 * cfg.TRAIN.batch_size, 2)) if (NCE_FEAT == 'hidden' and NCE_MODE == 'joint') else \
+        math.log(max(2 * cfg.TRAIN.batch_size - 1, 2))
+    teacher = t_refiner = None
+    if KD:
+        # Teacher lifter GT 2D + Refiner cua no, dong bang (luon eval)
+        teacher, tck = load_img_lifter(L.kd_teacher_ckpt, DEVICE)
+        for p in teacher.parameters():
+            p.requires_grad = False
+        t_refiner = load_frozen_refiner(tck['refiner_ckpt'], DEVICE)
+        assert int(teacher.num_ctx) == int(L.num_ctx), 'teacher va student phai cung num_ctx'
+        log(f'===> KD lifter: teacher {L.kd_teacher_ckpt} (epoch {tck.get("epoch")}, refiner {tck["refiner_ckpt"]}), '
+            f'kd_w (token an) {float(L.kd_w)} | kd_f8_w {KD_F8_W} | InfoNCE w {float(L.kd_nce_w)} tau '
+            f'{float(L.kd_nce_tau)} tren {NCE_FEAT}' + (f' mode {NCE_MODE}' if NCE_FEAT == 'hidden' else ''))
+        del tck
+
     decay = float(L.ema_decay)
     for epoch in range(begin, cfg.TRAIN.end_epoch + 1):
         model.train()
         if FT_REF:
             refiner.train()
         run, nb = {'loss_mm': 0.0, 'xy_err_px': 0.0, 'bone': 0.0, 'angle': 0.0, 'total': 0.0,
-                   'ref_loss': 0.0, 'ref_px': 0.0}, 0
+                   'ref_loss': 0.0, 'ref_px': 0.0, 'kd': 0.0, 'kd_nce': 0.0, 'kd_f8': 0.0}, 0
         pbar = tqdm(train_loader, desc=f'Epoch {epoch}')
         for i, (inputs, targets, meta) in enumerate(pbar):
             img = inputs['img'].to(DEVICE).float()
@@ -163,8 +222,60 @@ def main():
                 b = torch.exp(log_b).clamp(max=8.0)                               # chan 8 o (32 px): log_b toi da 6
                 xy = xy + torch.randn_like(xy) * (b / 32.0 * float(L.train_xy_noise)).unsqueeze(-1)
             cond7 = ImgLifter.make_cond7(xy, log_b, lifter_det(jm_in, NC), cam)
-            loss, _ = model.loss(gt3d, cond7, fj, f8, valid,
-                                 w_bone=float(L.w_bone), w_angle=float(L.w_angle))   # 0 = tat (chi MPJPE)
+            if KD:
+                # Cung buoc t va cung nhieu cho teacher / student -> token an so sanh duoc
+                kd_t = torch.randint(0, model.num_timesteps, (B,), device=DEVICE).long()
+                kd_noise = torch.randn(B, 17, 3, device=DEVICE)
+                loss, _, h_s = model.loss(gt3d, cond7, fj, f8, valid, w_bone=float(L.w_bone),
+                                          w_angle=float(L.w_angle), t=kd_t, noise=kd_noise, return_hidden=True)
+                with torch.no_grad():
+                    # Dau vao teacher: GT 2D giong input_2d_gt (mask = khop trong khung x hop le), khong nhieu
+                    hm_k = torch.tensor([cfg.output_hm_shape[2], cfg.output_hm_shape[1]], device=DEVICE,
+                                        dtype=torch.float32)
+                    tgm = (meta['orig_joint_trunc'].to(DEVICE).float().reshape(B, 17) > 0).float()
+                    if 'orig_joint_valid' in meta:
+                        tgm = tgm * (meta['orig_joint_valid'].to(DEVICE).float().reshape(B, 17) > 0).float()
+                    tg2 = targets['orig_joint_img'].to(DEVICE).float()[..., :2] / hm_k * 2 - 1
+                    tg2 = tg2 * tgm.unsqueeze(-1)
+                    xy_t, lb_t, f8_t, fj_t = refiner_inputs(t_refiner, img, tg2, tgm, 17 + NC)
+                    cond_t = ImgLifter.make_cond7(xy_t, lb_t, lifter_det(tgm, NC), cam)
+                    _, _, h_t = teacher.loss(gt3d, cond_t, fj_t, f8_t, valid, t=kd_t, noise=kd_noise,
+                                             return_hidden=True)
+                D = h_s.shape[-1]
+                kd_e = (F.layer_norm(h_s.float(), (D,)) - F.layer_norm(h_t.float(), (D,))).pow(2).mean((1, 2))   # (B,)
+                kd_loss = (kd_e * valid).sum() / valid.sum().clamp_min(1.0)
+                loss = loss + float(L.kd_w) * kd_loss
+                run['kd'] += float(kd_loss)
+                if KD_F8_W > 0:
+                    # KD tren f8 Refiner: f8 student (2D nhieu, CO gradient) ~ f8 teacher (GT 2D). Chuan hoa L2 theo kenh
+                    # tai tung o -> ||.||^2 = 2 - 2 cos; trung binh 64 o; chi mau is_valid_fit
+                    f8_e = (F.normalize(f8.float(), dim=1) - F.normalize(f8_t.float(), dim=1)).pow(2).sum(1).mean((1, 2))
+                    f8_loss = (f8_e * valid).sum() / valid.sum().clamp_min(1.0)
+                    loss = loss + KD_F8_W * f8_loss
+                    run['kd_f8'] += float(f8_loss)
+                if float(L.kd_nce_w) > 0:
+                    keep = valid > 0
+                    n_k = int(keep.sum())
+                    if n_k == 0:
+                        nce = loss.new_zeros(())
+                    elif NCE_FEAT == 'f8':
+                        # 1 vector / mau = f8 flatten (2048 x 8 x 8), khong phu thuoc t
+                        nce = nt_xent(f8[keep].float().flatten(1), f8_t[keep].float().flatten(1), L.kd_nce_tau)
+                    elif NCE_MODE == 'sample':
+                        # 1 vector / mau = 17 token an noi lai
+                        nce = nt_xent(h_s[keep].float().reshape(n_k, -1), h_t[keep].float().reshape(n_k, -1),
+                                      L.kd_nce_tau)
+                    else:
+                        # 'joint': student (b, j) phai gan teacher (b, j) hon moi token teacher khac trong batch
+                        zs = F.normalize(h_s[keep].float().reshape(-1, D), dim=-1)     # (N, D), N = so mau x 17
+                        zt = F.normalize(h_t[keep].float().reshape(-1, D), dim=-1)
+                        logits = zs @ zt.t() / float(L.kd_nce_tau)
+                        nce = F.cross_entropy(logits, torch.arange(zs.shape[0], device=DEVICE))
+                    loss = loss + float(L.kd_nce_w) * nce
+                    run['kd_nce'] += float(nce)
+            else:
+                loss, _ = model.loss(gt3d, cond7, fj, f8, valid,
+                                     w_bone=float(L.w_bone), w_angle=float(L.w_angle))   # 0 = tat (chi MPJPE)
             if FT_REF:
                 # Loss 2D Refiner giong train_refiner2d.py (target 'mesh'): 17 khop tu mesh GT (+ diem day);
                 # khop bi bo o dau vao (input_drop) van duoc giam sat
@@ -220,7 +331,14 @@ def main():
                f' | w*angle {float(L.w_angle) * run["angle"] / count:.5f} | total {run["total"] / count:.5f}'
                if float(L.w_bone) > 0 or float(L.w_angle) > 0 else '')
             + (f' | Refiner: loss 2D {run["ref_loss"] / count:.4f}, loi {run["ref_px"] / count:.2f} px (target mesh)'
-               if FT_REF else ''))
+               if FT_REF else '')
+            + (f' | KD: mse {run["kd"] / count:.4f} (x kd_w {float(L.kd_w)} = {float(L.kd_w) * run["kd"] / count:.5f})'
+               if KD else '')
+            + (f' | KD f8: {run["kd_f8"] / count:.4f} (x {KD_F8_W} = {KD_F8_W * run["kd_f8"] / count:.5f}; 0 = trung, 2 = vuong goc)'
+               if KD and KD_F8_W > 0 else '')
+            + (f' | InfoNCE {run["kd_nce"] / count:.4f} (x {float(L.kd_nce_w)} = '
+               f'{float(L.kd_nce_w) * run["kd_nce"] / count:.5f}; tren {NCE_FEAT}, muc ngau nhien ~{NCE_REF:.2f})'
+               if KD and float(L.kd_nce_w) > 0 else ''))
 
         ref_ep_path = ref_last_path = L.refiner_ckpt
         if FT_REF:

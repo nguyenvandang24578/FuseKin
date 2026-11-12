@@ -240,7 +240,7 @@ class ImgLifterDenoiser(nn.Module):
         img_tok = self.img_embed(img) + self.img_pos
         return c_j, img_tok
 
-    def forward(self, x_t, t, c_j, img_tok, log_b=None):
+    def forward(self, x_t, t, c_j, img_tok, log_b=None, return_hidden=False):
         """x_t (N,17,3) da chia scale; t (N,); c_j (N,P,D); img_tok (N,64,D); log_b (N,17) -> x0 (N,17,3) met."""
         J = self.num_joints
         x = self.x_embed(x_t) + c_j[:, :J] + self.joint_pos[:, :J]          # [1] dieu kien o dau vao
@@ -251,7 +251,10 @@ class ImgLifterDenoiser(nn.Module):
             x = blk(x, cond, img_tok, log_b)                                # [3] cross-attn anh trong blk
         x, cond = x[:, :J], cond[:, :J]                                     # chi 17 khop co dau ra 3D
         shift, scale = self.final_ada(cond).chunk(2, dim=-1)
-        return self.head(modulate(self.final_norm(x), shift, scale))
+        h = modulate(self.final_norm(x), shift, scale)                      # token an 17 khop (truoc head)
+        if return_hidden:                                                   # KD o lifter (2026-11-12)
+            return self.head(h), h
+        return self.head(h)
 
 
 class ImgLifter(nn.Module):
@@ -286,22 +289,34 @@ class ImgLifter(nn.Module):
         return torch.cat([xy, log_b.unsqueeze(-1), det.float().unsqueeze(-1),
                           cam_bbox[:, None, :].expand(-1, J, -1)], dim=-1)
 
-    def _x0(self, x_t_scaled, t, c_j, img_tok, log_b=None):
+    def _x0(self, x_t_scaled, t, c_j, img_tok, log_b=None, return_hidden=False):
+        if return_hidden:
+            p, h = self.denoiser(x_t_scaled, t, c_j, img_tok, log_b, return_hidden=True)
+            return p - p[:, 0:1, :], h
         p = self.denoiser(x_t_scaled, t, c_j, img_tok, log_b)
         return p - p[:, 0:1, :]                                             # root-relative, met
 
-    def loss(self, pose_3d, cond7, feat_j, f8, valid=None, w_bone=0.0, w_angle=0.0):
+    def loss(self, pose_3d, cond7, feat_j, f8, valid=None, w_bone=0.0, w_angle=0.0, t=None, noise=None,
+             return_hidden=False):
         """pose_3d (B,17,3) GT met root-relative. valid (B,) 0/1. Tra (loss tong, pred_x0).
         Tung thanh phan (MPJPE / bone / angle, chua nhan trong so) luu o self.last_terms de log."""
         B = pose_3d.shape[0]
         x0 = ((pose_3d - pose_3d[:, 0:1]) * self.scale).clamp(-1.1 * self.scale, 1.1 * self.scale)
-        t = torch.randint(0, self.num_timesteps, (B,), device=pose_3d.device).long()
-        noise = torch.randn_like(x0)
+        # KD (2026-11-12): t / noise truyen tu ngoai de teacher va student dung CUNG buoc nhieu; None = nhu cu
+        if t is None:
+            t = torch.randint(0, self.num_timesteps, (B,), device=pose_3d.device).long()
+        if noise is None:
+            noise = torch.randn_like(x0)
         x_t = extract(self.sqrt_alphas_cumprod, t, x0.shape) * x0 + \
             extract(self.sqrt_one_minus_alphas_cumprod, t, x0.shape) * noise
         c_j, img_tok = self.denoiser.encode_cond(cond7, feat_j, f8)
         log_b = cond7[:, :self.num_joints, 2]
-        pred = self._x0(x_t.clamp(-1.1 * self.scale, 1.1 * self.scale) / self.scale, t, c_j, img_tok, log_b)
+        hid = None
+        if return_hidden:
+            pred, hid = self._x0(x_t.clamp(-1.1 * self.scale, 1.1 * self.scale) / self.scale, t, c_j, img_tok, log_b,
+                                 return_hidden=True)
+        else:
+            pred = self._x0(x_t.clamp(-1.1 * self.scale, 1.1 * self.scale) / self.scale, t, c_j, img_tok, log_b)
         gt = pose_3d - pose_3d[:, 0:1]
         v = torch.ones(B, device=pose_3d.device) if valid is None else valid.float()
         vs = v.sum().clamp_min(1.0)
@@ -314,6 +329,8 @@ class ImgLifter(nn.Module):
             total = total + float(w_bone) * terms['bone'] + float(w_angle) * terms['angle']
         self.last_terms = {k: float(x.detach()) for k, x in terms.items()}
         self.last_terms['total'] = float(total.detach())
+        if return_hidden:
+            return total, pred, hid                                         # hid (B,17,D) token an lop cuoi
         return total, pred
 
     @torch.no_grad()

@@ -510,6 +510,31 @@ cfg.IMGLIFT.bone_paper = False           # True: cong thuc (4), var GT tren 16 x
 cfg.IMGLIFT.refiner_finetune = False
 cfg.IMGLIFT.refiner_lr_scale = 0.5      # TRAIN.lr 2e-4 -> head 1e-4, backbone 1e-5 (bb_lr_scale 0.1)
 cfg.IMGLIFT.refiner_loss_w = 1.0
+# KD o lifter (2026-11-12, nguoi dung duyet). Mac dinh TAT (kd_teacher_ckpt = '').
+# Teacher = checkpoint train_img_lifter train bang GT 2D (Refiner cua no lay tu ck['refiner_ckpt']), DONG BANG.
+# Moi batch: teacher nhan GT 2D (targets orig_joint_img, mask orig_joint_trunc x orig_joint_valid), student nhan 2D
+# nhieu nhu cu, CUNG buoc t va CUNG nhieu. Loss KD = MSE giua token an 17 khop (lop cuoi, truoc head), ca hai qua
+# layer_norm khong tham so, trung binh theo khop va kenh, chi mau is_valid_fit, x kd_w, cong vao loss lifter.
+cfg.IMGLIFT.kd_teacher_ckpt = ''
+cfg.IMGLIFT.kd_w = 0.05
+# InfoNCE trong KD (2026-11-12). kd_nce_w 0 = TAT. Chi mau is_valid_fit. kd_nce_mode:
+#   'sample' (GIONG lop SimCLR trong DPMesh/common/nets/loss.py): moi MAU 1 vector = 17 token an noi lai (flatten),
+#            NT-Xent DOI XUNG: duong = (student_b, teacher_b); am = 2(n - 1) vector con lai cua ca student lan teacher.
+#   'joint'  (ban dau cua Claude): anchor = token student (b, j), duong = teacher (b, j), am = moi token teacher khac.
+# kd_nce_tau: lop SimCLR cua DPMesh mac dinh 1.0 nhung cho goi khong co trong code phat hanh -> khong biet gia tri ho dung.
+cfg.IMGLIFT.kd_nce_w = 0.0
+cfg.IMGLIFT.kd_nce_tau = 0.07
+cfg.IMGLIFT.kd_nce_mode = 'sample'
+# KD tren f8 cua Refiner (2026-11-12, nguoi dung duyet 23:01) = cho 2D duoc tiem vao backbone (tuong ung NKR cua DPMesh):
+# f8 student (2D nhieu) phai giong f8 teacher (GT 2D). KHONG phu thuoc buoc nhieu t; gradient vao backbone Refiner
+# -> can refiner_finetune. kd_f8_w x TB theo o 8x8 cua ||chuan hoa L2 theo kenh (f8_s) - (f8_t)||^2 (= 2 - 2 cos, trong [0, 4]).
+# kd_nce_feat: InfoNCE tinh tren 'hidden' (token an lifter, co duong tat qua t) | 'f8' (1 vector / mau = f8 flatten,
+# NT-Xent doi xung nhu SimCLR cua DPMesh; kd_nce_mode khong ap dung).
+cfg.IMGLIFT.kd_f8_w = 0.0
+cfg.IMGLIFT.kd_nce_feat = 'hidden'
+# Khoi tao lifter (+ Refiner neu refiner_finetune) tu last.pth.tar cua run khac (raw + EMA), KHONG nap optimizer.
+# '' = train tu dau (nhu cu). Bo qua khi --resume_training.
+cfg.IMGLIFT.init_ckpt = ''
 
 """ Test Detail """
 cfg.TEST = edict()

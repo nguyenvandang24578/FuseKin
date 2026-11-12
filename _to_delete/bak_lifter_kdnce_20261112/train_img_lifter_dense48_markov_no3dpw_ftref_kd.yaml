@@ -1,0 +1,109 @@
+# =====================================================================
+# train_img_lifter_dense48_markov_no3dpw_ftref_kd (2026-11-12, nguoi dung duyet) -- KD O LIFTER, fine-tune tu ftref.
+#   = ..._ftref.yaml (PoseFix 1.0, Refiner mo khoa), doi: IMGLIFT.kd_teacher_ckpt (teacher GT 2D, muc 31), kd_w 0.05,
+#   init_ckpt = ftref last (lifter + Refiner, raw + EMA; optimizer / lich lr bat dau lai), TRAIN.batch_size 32 (VRAM),
+#   end_epoch 10, lr_step [6, 9] (lr 2e-4 -> 2e-5 -> 2e-6, nen lich ftref vao 10 epoch).
+#   Loss KD: cung t + cung nhieu cho teacher / student; MSE giua token an 17 khop lop cuoi (truoc head), ca hai qua
+#   layer_norm khong tham so; chi mau is_valid_fit. Teacher nhan GT 2D, student nhan 2D nhieu nhu cu.
+#   So voi: ftref last (diem khoi tao). Doi chung chat che (tuy chon): cung YAML nhung kd_teacher_ckpt '' (fine-tune
+#   them 10 epoch KHONG KD) -> tach loi ich KD khoi loi ich train them (ftref phang tu ep5 nen du kien nho).
+#   CAN: teacher chay xong epoch 25 (last.pth.tar) va ftref last.pth.tar.
+# Chay:
+#   python main/train_img_lifter.py --cfg config/train_img_lifter_dense48_markov_no3dpw_ftref_kd.yaml --exp_name img_lifter_dense48_markov_no3dpw_ftref_kd --gpu 1
+#   python main/eval_img_lifter.py --cfg config/train_img_lifter_dense48_markov_no3dpw_ftref_kd.yaml --ckpt experiment/img_lifter_dense48_markov_no3dpw_ftref_kd/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --gpu 1
+# =====================================================================
+# --- phan duoi: noi dung goc cua train_img_lifter_dense48_markov_no3dpw_ftref.yaml ---
+# =====================================================================
+# train_img_lifter_dense48_markov_no3dpw_ftref (2026-11-12, nguoi dung duyet) = train_img_lifter_dense48_markov_no3dpw,
+#   CHI doi 1 yeu to: IMGLIFT.refiner_finetune True = mo khoa Refiner day (backbone ResNet + head), train cung lifter.
+#   Loss 3D cua lifter day backbone qua f8; giu loss 2D Refiner (target mesh, 17 khop + 48 diem day) x refiner_loss_w.
+#   lr: lifter 2e-4 | head Refiner 1e-4 | backbone Refiner 1e-5 (mac dinh refiner_lr_scale 0.5, REFINE2D.bb_lr_scale 0.1).
+#   Di kem BAT BUOC (khong phai yeu to moi): DATASET.dense2d_vertex_file de co nhan 48 diem day cho loss 2D Refiner.
+#   Muc dich (experiment.md muc 27): kiem chung 'dac trung anh chi hoc 2D, dong bang -> thieu thong tin do sau'.
+#   So voi lifter no3dpw (K10 S4, MPJPE17 / PA): 3DPW 74.80 / 49.87 | OC 75.49 / 53.47 | PC 85.49 / 64.06 | Crowd 83.22 / 56.47;
+#   tap train MSCOCO 77.56 / 41.56, CrowdPose 69.97 / 34.60. Tieu chi: 3DPW tot hon >= 2 mm thi di tiep.
+#   Refiner EMA luu moi epoch: checkpoint/refiner_epoch_XX.pth.tar + refiner_last.pth.tar (~100 MB / file);
+#   ck['refiner_ckpt'] tro toi do -> eval_img_lifter / ik_upper_bound / Student nap dung Refiner moi, KHONG can --refiner_ckpt.
+# Chay:
+#   python main/train_img_lifter.py --cfg config/train_img_lifter_dense48_markov_no3dpw_ftref.yaml --exp_name img_lifter_dense48_markov_no3dpw_ftref --gpu 0
+#   python main/eval_img_lifter.py --cfg config/train_img_lifter_dense48_markov_no3dpw_ftref.yaml --ckpt experiment/img_lifter_dense48_markov_no3dpw_ftref/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --gpu 0
+#   python main/eval_img_lifter.py --cfg config/train_img_lifter_dense48_markov_no3dpw_ftref.yaml --ckpt experiment/img_lifter_dense48_markov_no3dpw_ftref/checkpoint/last.pth.tar --sets '' --train_sets Human36M,MuCo,MSCOCO,CrowdPose --max_samples 3000 --gpu 0
+# =====================================================================
+# --- phan duoi: noi dung goc cua train_img_lifter_dense48_markov_no3dpw.yaml ---
+# =====================================================================
+# train_img_lifter_dense48_markov_no3dpw (2026-11-12, nguoi dung yeu cau) = train_img_lifter_dense48_3dpw_markov, CHI bo
+#   3dpw-train khoi train_list (ratio 0.25 x 4 bo, giong Refiner day va Student). Muc dich: giao thuc cong bang voi
+#   bang chinh JOTR / DPMesh (khong train 3DPW) -> bao duoc 3DPW-OC / PC TOAN BO sequence (--ocpc_mode all).
+#   Giu nguyen: Refiner day (refiner2d_dense48_scratch, von KHONG train 3dpw), kien truc, Markov, loss, so epoch, lr.
+#   Luu y: samples_per_epoch giu 64000 -> moi bo chiem nhieu mau hon (0.25 thay 0.2); bao epoch cuoi (last).
+# Chay:
+#   python main/train_img_lifter.py --cfg config/train_img_lifter_dense48_markov_no3dpw.yaml --exp_name img_lifter_dense48_markov_no3dpw --gpu 0
+#   python main/eval_img_lifter.py --cfg config/train_img_lifter_dense48_markov_no3dpw.yaml --ckpt experiment/img_lifter_dense48_markov_no3dpw/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --ocpc_mode all --gpu 0
+# Sau do Student: chep config/train_student.yml, doi MODEL.imglift_checkpoint -> ckpt moi va DATASET.pw3d_ocpc_test_only -> False.
+# =====================================================================
+
+update_bbox: True          # giong JOTR yml (va luc train Refiner)
+DATASET:
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']   # KHONG 3dpw-train (giao thuc JOTR / DPMesh)
+  workers: 8
+  pw3d_2d_source: 'openpose'     # danh gia: OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd)
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: False
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  posefix_scale: 1.0       # cung phan bo dau vao voi luc train Refiner
+  posefix_fast: True
+  fusekin_unified: True    # mau train thong nhat 4 bo: anh + 2D + GT 3D tu mesh
+  drop_raw_smpl_stats: True   # (chi co tac dung voi 3dpw-train; giu cho giong ban cu)
+  dense2d_vertex_file: 'config/dense48_fps.json'   # nhan 48 diem day (loss 2D Refiner khi fine-tune), giong YAML Refiner
+
+TRAIN:
+  print_freq: 20
+  batch_size: 32            # VRAM (nguoi dung chot 22:37)
+  shuffle: True
+  dataset_ratio: [0.25, 0.25, 0.25, 0.25]   # Human36M, MuCo, MSCOCO, CrowdPose (giong Refiner day / Student)
+  samples_per_epoch: 64000                   # 2000 iter / epoch voi batch 32
+  end_epoch: 10
+  lr: 0.0002
+  lr_step: [6, 9]
+  lr_factor: 0.1
+
+TEST:
+  batch_size: 64
+  shuffle: False
+
+REFINE2D:
+  deconv_ch: 256           # phai khop Refiner (so kenh feat_j)
+
+IMGLIFT:
+  refiner_ckpt: 'experiment/refiner2d_dense48_scratch/checkpoint/last.pth.tar'
+  num_ctx: 48              # 48 diem day cua Refiner -> token ngu canh
+  markov_layer: True       # truyen tin theo xuong giua 17 khop, moi block
+  markov_gate_b: True      # cong theo do bat dinh b cua Refiner
+  w_bone: 0.5              # L1 do dai 16 xuong (met)
+  w_angle: 0.1             # (cos goc 2 xuong noi tiep: du doan - GT)^2
+  embed_dim: 512
+  depth: 8
+  num_heads: 8
+  mlp_ratio: 2.0
+  drop_path: 0.1
+  timesteps: 1000
+  scale: 3.0
+  train_xy_noise: 0.5
+  input_drop_prob: 0.1
+  weight_decay: 0.01
+  ema_decay: 0.999
+  eval_sets: ['3dpw', '3dpw-pc', '3dpw-crowd']
+  eval_max_samples: 3000
+  eval_K: 5
+  eval_S: 2
+  eta: 1.0
+  jpma_max_b: 3.0
+  refiner_finetune: True   # MO KHOA Refiner, train cung lifter (yeu to duy nhat thay doi)
+  # KD o lifter (2026-11-12)
+  kd_teacher_ckpt: 'experiment/img_lifter_dense48_markov_no3dpw_ftref_teacher_gt2d/checkpoint/last.pth.tar'   # teacher GT 2D (dong bang)
+  kd_w: 0.05             # MSE token an da layer_norm; chinh theo log epoch 1
+  init_ckpt: 'experiment/img_lifter_dense48_markov_no3dpw_ftref/checkpoint/last.pth.tar'   # fine-tune tu ftref (lifter + Refiner)
