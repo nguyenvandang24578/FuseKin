@@ -1,0 +1,85 @@
+# =====================================================================
+# eval_img_lifter_no3dpw_gt2d (2026-11-12, nguoi dung duyet) -- CHI DE DANH GIA ORACLE, KHONG DUNG DE TRAIN.
+#   = train_img_lifter_dense48_markov_no3dpw.yaml, CHI them DATASET.input_2d_gt: True (split 'all'):
+#   2D dau vao tap test (OpenPose / HHRNet) duoc thay bang GT 2D (H36M-17 tu mesh GT chieu vao crop, mask = khop
+#   trong khung) -> GT 2D -> Refiner day -> ImgLifter. Crop van lay tu bbox detector.
+#   Muc dich: tach nguyen nhan lifter kem (experiment.md muc 27): lech 2D train / test hay anh + do sau.
+#   Luu y: oracle LAC QUAN (GT cho ca khop bi che); cot "khop sot / co" khong con y nghia (mask = GT).
+#   KHONG truyen --train_sets voi file nay (bo train cung se bi thay bang GT 2D, mat PoseFix).
+# Chay (so voi moc OpenPose: 3DPW 74.80 / 49.87 | OC 75.49 / 53.47 | PC 85.49 / 64.06 | Crowd 83.22 / 56.47):
+#   python main/eval_img_lifter.py --cfg config/eval_img_lifter_no3dpw_gt2d.yaml --ckpt experiment/img_lifter_dense48_markov_no3dpw/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --gpu 0
+# =====================================================================
+# --- phan duoi: noi dung goc cua train_img_lifter_dense48_markov_no3dpw.yaml ---
+# =====================================================================
+# train_img_lifter_dense48_markov_no3dpw (2026-11-12, nguoi dung yeu cau) = train_img_lifter_dense48_3dpw_markov, CHI bo
+#   3dpw-train khoi train_list (ratio 0.25 x 4 bo, giong Refiner day va Student). Muc dich: giao thuc cong bang voi
+#   bang chinh JOTR / DPMesh (khong train 3DPW) -> bao duoc 3DPW-OC / PC TOAN BO sequence (--ocpc_mode all).
+#   Giu nguyen: Refiner day (refiner2d_dense48_scratch, von KHONG train 3dpw), kien truc, Markov, loss, so epoch, lr.
+#   Luu y: samples_per_epoch giu 64000 -> moi bo chiem nhieu mau hon (0.25 thay 0.2); bao epoch cuoi (last).
+# Chay:
+#   python main/train_img_lifter.py --cfg config/train_img_lifter_dense48_markov_no3dpw.yaml --exp_name img_lifter_dense48_markov_no3dpw --gpu 0
+#   python main/eval_img_lifter.py --cfg config/train_img_lifter_dense48_markov_no3dpw.yaml --ckpt experiment/img_lifter_dense48_markov_no3dpw/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --ocpc_mode all --gpu 0
+# Sau do Student: chep config/train_student.yml, doi MODEL.imglift_checkpoint -> ckpt moi va DATASET.pw3d_ocpc_test_only -> False.
+# =====================================================================
+
+update_bbox: True          # giong JOTR yml (va luc train Refiner)
+DATASET:
+  input_2d_gt: True        # ORACLE: 2D dau vao = GT 2D o moi bo (chi dung de danh gia)
+  input_2d_gt_split: 'all'
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']   # KHONG 3dpw-train (giao thuc JOTR / DPMesh)
+  workers: 8
+  pw3d_2d_source: 'openpose'     # danh gia: OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd)
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: False
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  posefix_scale: 1.0       # cung phan bo dau vao voi luc train Refiner
+  posefix_fast: True
+  fusekin_unified: True    # mau train thong nhat 4 bo: anh + 2D + GT 3D tu mesh
+  drop_raw_smpl_stats: True   # (chi co tac dung voi 3dpw-train; giu cho giong ban cu)
+
+TRAIN:
+  print_freq: 20
+  batch_size: 64
+  shuffle: True
+  dataset_ratio: [0.25, 0.25, 0.25, 0.25]   # Human36M, MuCo, MSCOCO, CrowdPose (giong Refiner day / Student)
+  samples_per_epoch: 64000                   # 1000 iter / epoch voi batch 64
+  end_epoch: 25
+  lr: 0.0002
+  lr_step: [18, 23]
+  lr_factor: 0.1
+
+TEST:
+  batch_size: 64
+  shuffle: False
+
+REFINE2D:
+  deconv_ch: 256           # phai khop Refiner (so kenh feat_j)
+
+IMGLIFT:
+  refiner_ckpt: 'experiment/refiner2d_dense48_scratch/checkpoint/last.pth.tar'
+  num_ctx: 48              # 48 diem day cua Refiner -> token ngu canh
+  markov_layer: True       # truyen tin theo xuong giua 17 khop, moi block
+  markov_gate_b: True      # cong theo do bat dinh b cua Refiner
+  w_bone: 0.5              # L1 do dai 16 xuong (met)
+  w_angle: 0.1             # (cos goc 2 xuong noi tiep: du doan - GT)^2
+  embed_dim: 512
+  depth: 8
+  num_heads: 8
+  mlp_ratio: 2.0
+  drop_path: 0.1
+  timesteps: 1000
+  scale: 3.0
+  train_xy_noise: 0.5
+  input_drop_prob: 0.1
+  weight_decay: 0.01
+  ema_decay: 0.999
+  eval_sets: ['3dpw', '3dpw-pc', '3dpw-crowd']
+  eval_max_samples: 3000
+  eval_K: 5
+  eval_S: 2
+  eta: 1.0
+  jpma_max_b: 3.0
