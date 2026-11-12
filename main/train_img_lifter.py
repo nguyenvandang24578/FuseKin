@@ -8,6 +8,8 @@ root-relative) -> cung dinh nghia khop mesh voi GT 3DPW. Tap train theo DATASET.
   - IMGLIFT.train_xy_noise: cong nhieu Gauss std = train_xy_noise x b vao xy Refiner (Refiner chay tren anh no
     da hoc -> loi nho hon test; nhieu bu khoang cach).
 EMA (IMGLIFT.ema_decay): 'model_state' trong checkpoint = trong so EMA (dung danh gia); 'raw_model_state' de resume.
+IMGLIFT.refiner_finetune (2026-11-12, mac dinh TAT): mo khoa Refiner, train cung lifter (loss 3D qua f8 + loss 2D Refiner);
+  Refiner EMA luu moi epoch thanh checkpoint/refiner_epoch_XX.pth.tar va refiner_last.pth.tar, ck['refiner_ckpt'] tro toi do.
 Moi epoch: danh gia nhanh tren IMGLIFT.eval_sets (chi LOG). Bao ket qua theo EPOCH CUOI (lich co dinh).
 
 Chay:
@@ -47,7 +49,8 @@ from core.base import get_dataloader
 from models.img_lifter import ImgLifter
 from utils.jotr_dataset import get_test_dataset
 from utils.img_lifter_tools import (build_img_lifter, imglift_arch, load_frozen_refiner, refiner_inputs,
-                                    lifter_det, eval_img_lifter, format_eval)
+                                    refiner_inputs_train, lifter_det, eval_img_lifter, format_eval)
+from models.refiner2d import refiner_losses
 
 random.seed(args.seed)
 np.random.seed(args.seed)
@@ -67,12 +70,37 @@ def main():
     log(f'cfg={args.cfg} | IMGLIFT={json.dumps(dict(L), default=str)} | TRAIN lr={cfg.TRAIN.lr} '
         f'lr_step={cfg.TRAIN.lr_step} end_epoch={cfg.TRAIN.end_epoch} batch={cfg.TRAIN.batch_size}')
     refiner = load_frozen_refiner(L.refiner_ckpt, DEVICE)
+    FT_REF = bool(L.get('refiner_finetune', False))
+    ema_ref, ref_arch, NUM_DENSE_REF = None, None, 0
+    if FT_REF:
+        # Mo khoa Refiner: train() giu BN backbone o eval (bb_bn_eval trong ckpt), head BN train binh thuong
+        ref_arch = torch.load(L.refiner_ckpt, map_location='cpu', weights_only=False)['refine2d_arch']
+        NUM_DENSE_REF = int(ref_arch.get('num_dense', 0))
+        for p in refiner.parameters():
+            p.requires_grad = True
+        refiner.train()
+        ema_ref = copy.deepcopy(refiner).eval()
+        for p in ema_ref.parameters():
+            p.requires_grad = False
+        log(f'===> Fine-tune Refiner cung lifter: {sum(p.numel() for p in refiner.parameters()) / 1e6:.2f}M tham so, '
+            f'arch {ref_arch}, loss 2D x {float(L.refiner_loss_w)}')
     model = build_img_lifter().to(DEVICE)
     ema = copy.deepcopy(model).eval()
     for p in ema.parameters():
         p.requires_grad = False
     log(f'ImgLifter: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M tham so')
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.TRAIN.lr, weight_decay=float(L.weight_decay))
+    if FT_REF:
+        # Nhom tham so: lifter (lr TRAIN.lr) | head Refiner | backbone Refiner (lr nho, giu dac trung pretrain)
+        lr_h = cfg.TRAIN.lr * float(L.refiner_lr_scale)
+        lr_b = lr_h * float(cfg.REFINE2D.bb_lr_scale)
+        wd_r = float(cfg.REFINE2D.weight_decay)
+        opt = torch.optim.AdamW([{'params': list(model.parameters())},
+                                 {'params': refiner.head_parameters(), 'lr': lr_h, 'weight_decay': wd_r},
+                                 {'params': refiner.backbone_parameters(), 'lr': lr_b, 'weight_decay': wd_r}],
+                                lr=cfg.TRAIN.lr, weight_decay=float(L.weight_decay))
+        log(f'===> lr lifter {cfg.TRAIN.lr:.1e} | head Refiner {lr_h:.1e} | backbone Refiner {lr_b:.1e}')
+    else:
+        opt = torch.optim.AdamW(model.parameters(), lr=cfg.TRAIN.lr, weight_decay=float(L.weight_decay))
     sched = torch.optim.lr_scheduler.MultiStepLR(opt, milestones=list(cfg.TRAIN.lr_step), gamma=cfg.TRAIN.lr_factor)
 
     _, train_loader = get_dataloader(args, cfg.DATASET.train_list, is_train=True)
@@ -99,6 +127,10 @@ def main():
             raise ValueError('YAML khac kien truc/quy uoc Markov cua checkpoint; hay tao run moi')
         model.load_state_dict(ck['raw_model_state'], strict=True)
         ema.load_state_dict(ck['model_state'], strict=True)
+        if FT_REF:
+            assert 'refiner_raw_state' in ck, 'checkpoint khong co Refiner fine-tune -> hay tao run moi'
+            refiner.load_state_dict(ck['refiner_raw_state'], strict=True)
+            ema_ref.load_state_dict(ck['refiner_ema_state'], strict=True)
         opt.load_state_dict(ck['optim_state'])
         sched.load_state_dict(ck['sched_state'])
         begin = ck['epoch'] + 1
@@ -107,7 +139,10 @@ def main():
     decay = float(L.ema_decay)
     for epoch in range(begin, cfg.TRAIN.end_epoch + 1):
         model.train()
-        run, nb = {'loss_mm': 0.0, 'xy_err_px': 0.0, 'bone': 0.0, 'angle': 0.0, 'total': 0.0}, 0
+        if FT_REF:
+            refiner.train()
+        run, nb = {'loss_mm': 0.0, 'xy_err_px': 0.0, 'bone': 0.0, 'angle': 0.0, 'total': 0.0,
+                   'ref_loss': 0.0, 'ref_px': 0.0}, 0
         pbar = tqdm(train_loader, desc=f'Epoch {epoch}')
         for i, (inputs, targets, meta) in enumerate(pbar):
             img = inputs['img'].to(DEVICE).float()
@@ -120,13 +155,33 @@ def main():
             drop = (torch.rand_like(jm) < float(L.input_drop_prob)).float() * (jm > 0).float()
             jm_in = jm * (1 - drop)                                               # detector "bo sot"
             NC = int(L.num_ctx)                                                   # >0: them diem day lam ngu canh
-            xy, log_b, f8, fj = refiner_inputs(refiner, img, j2, jm_in, 17 + NC)
+            if FT_REF:
+                xy, log_b, f8, fj, ref_out = refiner_inputs_train(refiner, img, j2, jm_in, 17 + NC)
+            else:
+                xy, log_b, f8, fj = refiner_inputs(refiner, img, j2, jm_in, 17 + NC)
             if float(L.train_xy_noise) > 0:                                       # b: o luoi 64 -> [-1,1] = / 32
                 b = torch.exp(log_b).clamp(max=8.0)                               # chan 8 o (32 px): log_b toi da 6
                 xy = xy + torch.randn_like(xy) * (b / 32.0 * float(L.train_xy_noise)).unsqueeze(-1)
             cond7 = ImgLifter.make_cond7(xy, log_b, lifter_det(jm_in, NC), cam)
             loss, _ = model.loss(gt3d, cond7, fj, f8, valid,
                                  w_bone=float(L.w_bone), w_angle=float(L.w_angle))   # 0 = tat (chi MPJPE)
+            if FT_REF:
+                # Loss 2D Refiner giong train_refiner2d.py (target 'mesh'): 17 khop tu mesh GT (+ diem day);
+                # khop bi bo o dau vao (input_drop) van duoc giam sat
+                hm2 = torch.tensor([cfg.output_hm_shape[2], cfg.output_hm_shape[1]], device=DEVICE, dtype=torch.float32)
+                rtg = targets['orig_joint_img'].to(DEVICE).float()[..., :2] / hm2 * 2 - 1
+                rva = (meta['orig_joint_trunc'].to(DEVICE).float().reshape(B, 17) > 0).float()
+                if NUM_DENSE_REF:
+                    assert 'dense_img' in targets, 'refiner_finetune voi Refiner day can DATASET.dense2d_vertex_file'
+                    rtg = torch.cat([rtg, targets['dense_img'].to(DEVICE).float() / hm2 * 2 - 1], 1)
+                    rva = torch.cat([rva, (meta['dense_trunc'].to(DEVICE).float().reshape(B, -1) > 0).float()], 1)
+                R = cfg.REFINE2D
+                ref_loss, ref_parts = refiner_losses(ref_out, rtg, rva, sigma=float(R.heat_sigma),
+                                                     w_coord=float(R.w_coord), w_heat=float(R.w_heat),
+                                                     w_nll=float(R.w_nll))
+                loss = loss + float(L.refiner_loss_w) * ref_loss
+                run['ref_loss'] += float(ref_loss)
+                run['ref_px'] += ref_parts['err_px']
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -135,6 +190,11 @@ def main():
                     pe.mul_(decay).add_(pm.detach(), alpha=1 - decay)
                 for be, bm in zip(ema.buffers(), model.buffers()):
                     be.copy_(bm)
+                if FT_REF:
+                    for pe, pm in zip(ema_ref.parameters(), refiner.parameters()):
+                        pe.mul_(decay).add_(pm.detach(), alpha=1 - decay)
+                    for be, bm in zip(ema_ref.buffers(), refiner.buffers()):
+                        be.copy_(bm)
                 g2 = targets['orig_joint_img'].to(DEVICE).float()[..., :2]
                 g2 = g2 / torch.tensor([cfg.output_hm_shape[2], cfg.output_hm_shape[1]], device=DEVICE) * 2 - 1
                 gv = meta['orig_joint_trunc'].to(DEVICE).float().reshape(B, 17)
@@ -158,16 +218,34 @@ def main():
             + (bone_log + f' | angle (cos^2) {run["angle"] / count:.4f}'
                f' | w*bone {float(L.w_bone) * run["bone"] / count:.5f}'
                f' | w*angle {float(L.w_angle) * run["angle"] / count:.5f} | total {run["total"] / count:.5f}'
-               if float(L.w_bone) > 0 or float(L.w_angle) > 0 else ''))
+               if float(L.w_bone) > 0 or float(L.w_angle) > 0 else '')
+            + (f' | Refiner: loss 2D {run["ref_loss"] / count:.4f}, loi {run["ref_px"] / count:.2f} px (target mesh)'
+               if FT_REF else ''))
 
+        ref_ep_path = ref_last_path = L.refiner_ckpt
+        if FT_REF:
+            # Refiner EMA, CUNG dinh dang train_refiner2d.py -> load_frozen_refiner(ck['refiner_ckpt']) nap duoc.
+            # Duong dan tuong doi theo goc repo (giong IMGLIFT.refiner_ckpt trong YAML)
+            ref_save = {'epoch': epoch, 'model_state': ema_ref.state_dict(), 'refine2d_arch': ref_arch,
+                        'cfg_file': args.cfg, 'init_refiner_ckpt': L.refiner_ckpt}
+            ref_ep_abs = os.path.join(cfg.checkpoint_dir, f'refiner_epoch_{epoch:02d}.pth.tar')
+            ref_last_abs = os.path.join(cfg.checkpoint_dir, 'refiner_last.pth.tar')
+            torch.save(ref_save, ref_ep_abs)
+            torch.save(ref_save, ref_last_abs)
+            ref_ep_path = os.path.relpath(ref_ep_abs, cfg.root_dir)
+            ref_last_path = os.path.relpath(ref_last_abs, cfg.root_dir)
         ck = {'epoch': epoch, 'model_state': ema.state_dict(), 'imglift_arch': imglift_arch(),
-              'refiner_ckpt': L.refiner_ckpt, 'cfg_file': args.cfg}
+              'refiner_ckpt': ref_ep_path, 'cfg_file': args.cfg}
         torch.save(ck, os.path.join(cfg.checkpoint_dir, f'epoch_{epoch:02d}.pth.tar'))
-        torch.save({**ck, 'raw_model_state': model.state_dict(), 'optim_state': opt.state_dict(),
-                    'sched_state': sched.state_dict()}, last_path)
+        last_ck = {**ck, 'refiner_ckpt': ref_last_path, 'raw_model_state': model.state_dict(),
+                   'optim_state': opt.state_dict(), 'sched_state': sched.state_dict()}
+        if FT_REF:
+            last_ck['refiner_raw_state'] = refiner.state_dict()
+            last_ck['refiner_ema_state'] = ema_ref.state_dict()
+        torch.save(last_ck, last_path)
 
         for name, (loader, reg) in eval_loaders.items():
-            r = eval_img_lifter(ema, refiner, loader, DEVICE, reg, K=int(L.eval_K), S=int(L.eval_S),
+            r = eval_img_lifter(ema, ema_ref if FT_REF else refiner, loader, DEVICE, reg, K=int(L.eval_K), S=int(L.eval_S),
                                 eta=float(L.eta), jpma_max_b=float(L.jpma_max_b))
             log(format_eval(f'{name} ep{epoch} (danh gia nhanh, EMA)', r))
     log('Xong. Bao ket qua bang main/eval_img_lifter.py voi checkpoint/last.pth.tar (epoch cuoi).')

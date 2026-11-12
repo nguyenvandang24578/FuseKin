@@ -63,6 +63,16 @@ def refiner_inputs(refiner, img, j2, jm, n_points=17):
             out['feat_j'].float()[:, :n_points])
 
 
+def refiner_inputs_train(refiner, img, j2, jm, n_points=17):
+    """Nhu refiner_inputs nhung CO gradient (IMGLIFT.refiner_finetune, 2026-11-12). Tra xy, log_b, f8, feat_j, out.
+    xy, log_b detach (2D do loss 2D cua Refiner dinh nghia); f8 giu gradient -> loss 3D cua lifter day backbone;
+    feat_j von detach trong Refiner. out = dict output day du cua Refiner (de tinh loss 2D)."""
+    out = refiner(img, j2 * (jm > 0).unsqueeze(-1).float(), jm.unsqueeze(-1), return_feats=True)
+    assert out['xy'].shape[1] >= n_points, f'Refiner chi co {out["xy"].shape[1]} diem, ImgLifter can {n_points}'
+    return (out['xy'].float()[:, :n_points].detach(), out['log_b'].float()[:, :n_points].detach(), out['f8'].float(),
+            out['feat_j'].float()[:, :n_points], out)
+
+
 def lifter_det(jm, num_ctx=0):
     """Co phat hien cho cond7: 17 khop = (jm > 0); diem day khong co OpenPose -> 0. jm (B,17) -> (B,17+num_ctx)."""
     det = jm > 0

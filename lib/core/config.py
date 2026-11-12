@@ -502,6 +502,14 @@ cfg.IMGLIFT.markov_iters = 0             # 0: duong cu; >0: so vong thong diep c
 cfg.IMGLIFT.markov_gate_positive = False # True: a = softplus(a_raw) + 1e-6, cong luon tang theo log_b
 cfg.IMGLIFT.markov_msg_norm = False     # True: chuan hoa RMS tin nhan moi vong (can markov_iters > 0)
 cfg.IMGLIFT.bone_paper = False           # True: cong thuc (4), var GT tren 16 xuong tung pose; khong don vi
+# Fine-tune Refiner (backbone ResNet + head) CUNG LUC khi train ImgLifter (2026-11-12, nguoi dung duyet). Mac dinh TAT.
+# Loss 3D cua lifter chay vao backbone CHI qua f8 (xy / log_b detach; feat_j von detach trong Refiner) + giu loss 2D
+# cua Refiner (target mesh, 17 khop + diem day, giong train_refiner2d.py) x refiner_loss_w.
+# lr head Refiner = TRAIN.lr x refiner_lr_scale; lr backbone = lr head x REFINE2D.bb_lr_scale.
+# Moi epoch luu Refiner (EMA) canh checkpoint lifter va ghi duong dan vao ck['refiner_ckpt'] -> eval / Student nap tu dong.
+cfg.IMGLIFT.refiner_finetune = False
+cfg.IMGLIFT.refiner_lr_scale = 0.5      # TRAIN.lr 2e-4 -> head 1e-4, backbone 1e-5 (bb_lr_scale 0.1)
+cfg.IMGLIFT.refiner_loss_w = 1.0
 
 """ Test Detail """
 cfg.TEST = edict()
