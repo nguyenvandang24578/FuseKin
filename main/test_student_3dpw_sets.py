@@ -38,7 +38,7 @@ from core.config import cfg, update_config
 update_config(args.cfg)
 
 import __init_path  # noqa: F401
-from models.ARTS import ARTS
+from models.ARTS import get_model
 from utils.jotr_dataset import get_test_dataset
 from utils.jotr_evaluation import evaluate_3dpw_subset
 from funcs_utils import check_data_pararell
@@ -46,7 +46,7 @@ from funcs_utils import check_data_pararell
 
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = ARTS(num_joint=17, embed_dim=cfg.MODEL.hpe_dim).to(device)
+    model = get_model(num_joint=17, embed_dim=cfg.MODEL.hpe_dim).to(device)   # v8_e2e -> V8Net, khong thi ARTS nhu cu
     ck = torch.load(args.ckpt, map_location='cpu', weights_only=False)
     missing, unexpected = model.load_state_dict(check_data_pararell(ck['model_state_dict']), strict=False)
     print(f'===> nap {args.ckpt} (epoch {ck.get("epoch")}) | thieu {len(missing)} | thua {len(unexpected)} key')

@@ -204,4 +204,7 @@ class ARTS(nn.Module):
 
 
 def get_model(num_joint, embed_dim, depth=None):
+    if cfg.MODEL.get('v8_e2e', False):                 # FuseKin v8 end-to-end (2026-11-13)
+        from models.fusekin_v8 import V8Net
+        return V8Net()
     return ARTS(num_joint, embed_dim)

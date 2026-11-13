@@ -1,0 +1,83 @@
+# =====================================================================
+# train_v8_m0.yml (2026-11-13, nhanh git v8-e2e, nguoi dung duyet) -- FuseKin v8, MOC M0: tai tao muc JOTR.
+#   Mang END-TO-END anh lam chinh (lib/models/fusekin_v8.py): ResNet-50 SPIN + heatmap 2D tiem stride 4 (train
+#   end-to-end, lr backbone 1e-4 nhu JOTR) -> encoder 3 lop -> decoder 3 lop (3 token SMPL + 17 query khop), hoi quy
+#   phan du theo tang -> SMPL. KHONG Refiner / ImgLifter / Student cu / HyperGCN / IK (them o M1+).
+#   Giao thuc cong bang: KHONG 3dpw o bat ky dau; test OpenPose (3DPW / OC / PC) + HHRNet (Crowd); OC / PC TOAN BO.
+#   Loss: base._smpl_hard_losses (mesh, khop 3D tu mesh, tham so pose / shape, chieu 2D) qua AWL, ca 3 lop decoder
+#   (refine_history, trong so v3_refine_gamma) + loss khop 3D cua query (ctx_3d, v5_ctx_loss_w).
+#   Ngan sach (nguoi dung chon b): 256k mau / epoch x 20 epoch = 5.1 trieu mau (~1/4 JOTR ~20 trieu).
+#   4 GPU (nguoi dung 17:54): batch TONG 256 = 64 / GPU, GIONG JOTR (train_batch_size 64 / GPU x 4 GPU, lr 1e-4).
+#   Code dung DataParallel -> TRAIN.batch_size la batch TONG; BN tinh rieng tung GPU (64 mau), JOTR dung SyncBN.
+#   Ty le tron giong JOTR (nhom 3D / 2D 50 / 50, trong nhom theo kich thuoc): H36M 0.30, MuCo 0.20, COCO 0.40, CrowdPose 0.10.
+#   Tieu chi M0 (experiment.md muc 33): 3DPW MPJPE (14 khop) <= ~78-79. JOTR 76.4 / 48.7 / 92.6.
+# Chay:
+#   python main/train.py --cfg ./config/train_v8_m0.yml --exp_name v8_m0 --gpu 0,1,2,3
+#   python -u main/test_student_3dpw_sets.py --cfg ./config/train_v8_m0.yml --ckpt experiment/v8_m0/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --ocpc_mode all --gpu 0
+# =====================================================================
+
+update_bbox: True          # giong JOTR yml
+DATASET:
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']   # KHONG 3dpw-train
+  test_list: ['3dpw', '3dpw-oc', '3dpw-pc', '3dpw-crowd']   # danh gia moi epoch (chi log, bao epoch cuoi)
+  pw3d_ocpc_test_only: False   # OC / PC toan bo sequence (giao thuc JOTR / DPMesh)
+  workers: 16              # batch 256: PoseFix ton CPU -> tang worker (chinh theo so nhan CPU server)
+  pw3d_2d_source: 'openpose'     # test: OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd)
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: False
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  posefix_scale: 1.0       # giong JOTR
+  posefix_fast: True
+  fusekin_unified: True
+
+MODEL:
+  name: 'student'          # dung Student_Trainer (khong KD); model that su = V8Net qua v8_e2e
+  v8_e2e: True
+  v8_dim: 256
+  v8_enc_layers: 3
+  v8_dec_layers: 3
+  v8_joint_drop: 0.1
+  resnet_type: 50
+  hpe_dim: 512             # khong dung boi V8Net
+  backbone_pretrained: 'spin'
+  imglift_checkpoint: ''   # khong dung lifter
+  student_use_kd: False
+  init_student_from_teacher: False
+  v7_anchor: False
+  v7_no_pose_param_loss: False   # V8 hoi quy truc tiep tham so pose -> CAN loss tham so pose (nhu JOTR)
+  v7_no_privileged: True         # privileged_3d = ctx_3d -> tat de khong tinh 2 lan
+  v5_ctx_loss_w: 1.0             # loss khop 3D cua 17 query (lop cuoi)
+  v3_bb_finetune: True           # backbone train end-to-end
+  v3_bb_lr_scale: 1.0            # lr backbone = TRAIN.lr = 1e-4 (giong JOTR lr_backbone)
+  v3_bb_heatmap: True
+  v3_heatmap_sigma: 2.0
+  v3_refine_gamma: 0.85          # trong so giam sat cac lop decoder truoc (refine_history)
+  v3_pose2d_noise_prob: 0.0
+
+TRAIN:
+  print_freq: 20
+  batch_size: 256          # TONG tren 4 GPU = 64 / GPU (giong JOTR)
+  shuffle: True
+  dataset_ratio: [0.30, 0.20, 0.40, 0.10]   # Human36M, MuCo, MSCOCO, CrowdPose (giong ty le tron cua JOTR)
+  samples_per_epoch: 256000                  # 1000 iter / epoch voi batch 256
+  begin_epoch: 1
+  end_epoch: 20                # giong JOTR
+  scheduler: 'step'
+  lr: 0.0001
+  lr_step: [15]                # giong JOTR (giam x0.1 o epoch 15)
+  lr_factor: 0.1
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 128
+  shuffle: False
+  select_dataset: '3dpw'
+  save_best_per_set: False
+  final_test_list: []          # bao EPOCH CUOI: test last.pth.tar bang main/test_student_3dpw_sets.py

@@ -217,6 +217,13 @@ cfg.MODEL.difflift_k = 1       # K gia thuyet, gop trung binh
 # Student v4 (2026-11-05): thay DiffLifter bang Refiner 2D day + ImgLifter (ca hai dong bang). '' = TAT (DiffLifter cu).
 cfg.MODEL.imglift_checkpoint = ''          # vd experiment/img_lifter_dense48_3dpw_markov/checkpoint/last.pth.tar
 cfg.MODEL.imglift_refiner_checkpoint = ''  # '' = refiner luu trong checkpoint ImgLifter
+# FuseKin v8 (2026-11-13, nhanh git v8-e2e, nguoi dung duyet): mang END-TO-END anh lam chinh (lib/models/fusekin_v8.py).
+# True -> ARTS.get_model tra V8Net thay ARTS (KHONG nap Refiner / ImgLifter / Student cu). Mac dinh TAT.
+cfg.MODEL.v8_e2e = False
+cfg.MODEL.v8_dim = 256          # so kenh token (encoder / decoder)
+cfg.MODEL.v8_enc_layers = 3     # lop transformer encoder tren 64 token anh
+cfg.MODEL.v8_dec_layers = 3     # lop decoder (moi lop hoi quy phan du SMPL + khop 3D)
+cfg.MODEL.v8_joint_drop = 0.1   # che ngau nhien khop 2D dau vao luc train (giong JOTR)
 cfg.MODEL.imglift_K = 5                    # so gia thuyet, gop trung binh
 cfg.MODEL.imglift_S = 2                    # so buoc DDIM
 # True: 2D cho Student (heatmap [A], PE, [B], feedback [D]) = 17 khop 2D cua Refiner (mask = 1 moi khop) thay 2D detector

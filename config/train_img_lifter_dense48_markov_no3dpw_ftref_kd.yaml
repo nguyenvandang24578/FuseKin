@@ -71,7 +71,7 @@ TRAIN:
   samples_per_epoch: 64000                   # 2000 iter / epoch voi batch 32
   end_epoch: 25
   lr: 0.0002
-  lr_step: [18, 23]
+  lr_step: [10, 18, 23]
   lr_factor: 0.1
 
 TEST:
