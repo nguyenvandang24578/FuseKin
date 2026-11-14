@@ -19,6 +19,11 @@ Lifter chi la NGUON BANG CHUNG (khong neo, khong "sua lifter").
       (ctx_3d, v5_ctx_loss_w).
 
 Giao dien giong ARTS / V8Net -> Student_Trainer / Tester / test_student_3dpw_sets dung nguyen.
+
+v9 reliability (MODEL.v9_reliability, 2026-11-14, nguoi dung duyet; mac dinh TAT): head nho doan log loi THAT cua tung
+nguon o tung khop [3D lifter (met), 2D Refiner ([-1, 1])] tu [anh tai khop, 2D, 3D]; giam sat bang loi that tren tap
+train (base._v9_rel_loss, MODEL.v9_rel_w). Cong g = sigmoid(w * (-log loi du doan, detach) + b) nhan vao token 2D / 3D
+-> nguon cang sai cang it duoc tin khi fuse.
 """
 import math
 
@@ -77,9 +82,19 @@ class V9Head(nn.Module):
     get_coord = V8Head.get_coord
     smpl_from_aa = V8Head.smpl_from_aa
 
-    def __init__(self, dim=256, n_img_enc=2, n_fuse=3, n_dec=3, use_hgcn=True, img_ch=2048, f16_ch=1024):
+    def __init__(self, dim=256, n_img_enc=2, n_fuse=3, n_dec=3, use_hgcn=True, img_ch=2048, f16_ch=1024,
+                 use_rel=False):
         super().__init__()
         self.n_dec = int(n_dec)
+        # ---- [v9_reliability] head doan log loi [3D lifter, 2D Refiner] tung khop + cong ----
+        self.use_rel = bool(use_rel)
+        if self.use_rel:
+            self.rel_head = nn.Sequential(nn.Linear(3 * dim, dim), nn.ReLU(inplace=True), nn.Linear(dim, 2))
+            nn.init.normal_(self.rel_head[-1].weight, std=1e-3)
+            with torch.no_grad():                               # luc dau ~ loi dien hinh: 3D ~7 cm, 2D ~0.06 (~8 px)
+                self.rel_head[-1].bias.copy_(torch.tensor([math.log(0.07), math.log(0.06)]))
+            self.gate_w = nn.Parameter(torch.ones(2))
+            self.gate_b = nn.Parameter(torch.zeros(2))           # luc dau cong ~ sigmoid(2.7) ~ 0.94
         # ---- token anh ----
         self.img_proj = nn.Conv2d(img_ch, dim, 1)
         self.img_enc = nn.ModuleList([EncLayer(dim) for _ in range(int(n_img_enc))])
@@ -151,6 +166,12 @@ class V9Head(nn.Module):
         e2d = self.emb2d(in2d)
         std = hyp.std(dim=1) if hyp.shape[1] > 1 else torch.zeros_like(lift)
         e3d = self.emb3d(torch.cat([lift, std * 10.0], dim=-1).to(mem.dtype))        # std x 10: dua ve bac ~ lift
+        rel_pred = gate = None
+        if self.use_rel:                                                              # [v9_reliability]
+            rel_pred = self.rel_head(torch.cat([img_j, e2d, e3d], dim=-1))            # (B, 17, 2) log loi [3D, 2D]
+            gate = torch.sigmoid(self.gate_w * (-rel_pred.detach()) + self.gate_b)    # cang sai -> cang nho
+            e3d = e3d * gate[..., 0:1]
+            e2d = e2d * gate[..., 1:2]
         if self.training:                                                             # modality dropout cho 3D
             keep = torch.ones(B, N_JOINT, 1, device=e3d.device, dtype=e3d.dtype)
             ps, pj = float(cfg.MODEL.v9_drop3d_sample), float(cfg.MODEL.v9_drop3d_joint)
@@ -195,6 +216,10 @@ class V9Head(nn.Module):
         result['privileged_3d'] = j3d                                                 # tat bang v7_no_privileged
         result['feat_joint'] = jt
         result['feat_global'] = q[:, N_SMPL:].mean(1)
+        if self.use_rel:                                                              # cho base._v9_rel_loss
+            result['v9_rel_pred'] = rel_pred
+            result['v9_rel_gate'] = gate
+            result['v9_ref_xy'] = ref_xy
         return result
 
 
@@ -224,12 +249,14 @@ class V9Net(nn.Module):
         self.img_lifter.eval()
         self.smpl_model = V9Head(dim=int(cfg.MODEL.v9_dim), n_img_enc=int(cfg.MODEL.v9_img_enc),
                                  n_fuse=int(cfg.MODEL.v9_fuse_layers), n_dec=int(cfg.MODEL.v9_smpl_dec),
-                                 use_hgcn=bool(cfg.MODEL.v9_hgcn))
+                                 use_hgcn=bool(cfg.MODEL.v9_hgcn),
+                                 use_rel=bool(cfg.MODEL.get('v9_reliability', False)))
         self.joint_drop = float(cfg.MODEL.v9_joint_drop)
         print(f'===> FuseKin v9: dim {cfg.MODEL.v9_dim} | encoder anh {cfg.MODEL.v9_img_enc} | fuse '
               f'{cfg.MODEL.v9_fuse_layers} lop (HyperGCN {cfg.MODEL.v9_hgcn}) | query SMPL {cfg.MODEL.v9_smpl_dec} lop | '
               f'lifter {cfg.MODEL.imglift_checkpoint} (K={cfg.MODEL.imglift_K}, S={cfg.MODEL.imglift_S}) | '
-              f'bo 3D: mau {cfg.MODEL.v9_drop3d_sample}, khop {cfg.MODEL.v9_drop3d_joint} | che 2D {self.joint_drop}')
+              f'bo 3D: mau {cfg.MODEL.v9_drop3d_sample}, khop {cfg.MODEL.v9_drop3d_joint} | che 2D {self.joint_drop} | '
+              f'reliability {cfg.MODEL.get("v9_reliability", False)} (w {cfg.MODEL.get("v9_rel_w", 0)})')
 
     def train(self, mode=True):
         super().train(mode)

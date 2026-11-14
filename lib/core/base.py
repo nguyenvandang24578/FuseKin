@@ -305,6 +305,35 @@ def _hard_losses(trainer, model_output, targets, meta, gt_fit_joint_cam, fit_joi
     return {k: v / wsum for k, v in tot.items()}
 
 
+def _v9_rel_loss(model_output, gt_pose_input, valid_joint, targets, meta):
+    """v9 reliability (2026-11-14): v9_rel_pred (B, 17, 2) = log loi DU DOAN [3D lifter (met), 2D Refiner ([-1, 1])].
+    Nhan = log loi THAT tren tap train (detach): |lifter - GT 3D| (root-relative), |xy Refiner - GT 2D|.
+    Tra (loss, stats); stats co tuong quan Pearson log loi du doan / that (3D) de theo doi."""
+    pred = model_output['v9_rel_pred'].float()
+    with torch.no_grad():
+        e3 = torch.norm(model_output['lifted_joints_3d'].float() - gt_pose_input.float(), dim=-1)      # (B, 17) met
+        g2 = targets['orig_joint_img'].cuda().float()[..., :2]                                         # khung output_hm
+        g2 = torch.stack([g2[..., 0] / cfg.output_hm_shape[2] * 2 - 1, g2[..., 1] / cfg.output_hm_shape[1] * 2 - 1], -1)
+        e2 = torch.norm(model_output['v9_ref_xy'].float() - g2, dim=-1)                                # (B, 17)
+        v2 = meta['orig_joint_trunc'].cuda().float().reshape(e2.shape)
+        if 'orig_joint_valid' in meta:
+            v2 = v2 * meta['orig_joint_valid'].cuda().float().reshape(e2.shape)
+        v3 = valid_joint.float()
+        t3 = torch.log(e3.clamp_min(1e-3))
+        t2 = torch.log(e2.clamp_min(1e-3))
+    l3 = F.smooth_l1_loss(pred[..., 0], t3, reduction='none')
+    l2 = F.smooth_l1_loss(pred[..., 1], t2, reduction='none')
+    loss = (l3 * v3).sum() / v3.sum().clamp_min(1.0) + (l2 * v2).sum() / v2.sum().clamp_min(1.0)
+    with torch.no_grad():
+        m = v3 > 0
+        a, b = pred[..., 0][m], t3[m]
+        corr = ((a - a.mean()) * (b - b.mean())).mean() / (a.std(unbiased=False) * b.std(unbiased=False) + 1e-8)
+        g = model_output['v9_rel_gate'].float()
+    stats = {'v9_rel': float(loss), 'v9_rel_corr3d': float(corr),
+             'v9_g3': float(g[..., 0].mean()), 'v9_g2': float(g[..., 1].mean())}
+    return loss, stats
+
+
 def _depth_loss(model_output, gt_rootrel, valid_joint):
     """[C] CE mem cho phan bo do sau tung khop: muc tieu Gauss quanh do sau GT (sigma = 1 bin). Tra (loss, mm)."""
     logits = model_output['depth_logits'].float()                                   # (B, J, bins)
@@ -919,6 +948,11 @@ class Student_Trainer:
                 d_loss, d_mm = _depth_loss(model_output, gt_pose_input, valid_joint)
                 loss = loss + float(cfg.MODEL.v3_depth_loss_w) * d_loss
                 depth_stats = {'depth_loss': d_loss.item(), 'depth_err_mm': d_mm}
+            # v9 reliability: giam sat do tin cay tung khop bang loi THAT cua lifter 3D / Refiner 2D (MODEL.v9_rel_w)
+            rel_stats = {}
+            if 'v9_rel_pred' in model_output:
+                rel_loss, rel_stats = _v9_rel_loss(model_output, gt_pose_input, valid_joint, targets, meta)
+                loss = loss + float(cfg.MODEL.v9_rel_w) * rel_loss
 
             # Do gradient tai tham so fusion (KD relation): feature gather cua DataParallel la cac nhanh rieng,
             # khong dung grad theo feature joint gather de tranh log nham bang 0.
@@ -958,6 +992,7 @@ class Student_Trainer:
                 'lift_err_mm': lift_err_mm,
                 **depth_stats,
                 **j29_stats,
+                **rel_stats,
             }
             if self.kd_joint_relation:
                 step_stats['kd_joint_relation'] = step_stats['kd_joint']
@@ -998,7 +1033,9 @@ class Student_Trainer:
                     f'{gate_text}'
                     f'lift: {lift_err_mm:.0f}mm '
                     + (f'depth: {depth_stats["depth_err_mm"]:.0f}mm ' if depth_stats else '')
-                    + (f'j29: {j29_stats["v6_j29_mm"]:.0f}mm ' if j29_stats else '') +
+                    + (f'j29: {j29_stats["v6_j29_mm"]:.0f}mm ' if j29_stats else '')
+                    + (f'rel: {rel_stats["v9_rel"]:.3f} r3d {rel_stats["v9_rel_corr3d"]:.2f} '
+                       f'g3 {rel_stats["v9_g3"]:.2f} g2 {rel_stats["v9_g2"]:.2f} ' if rel_stats else '') +
                     f'priv: {step_stats["privileged_3d"]:.3f} '
                     f'tl: {loss.detach().item():.3f}'
                 )

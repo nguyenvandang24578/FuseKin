@@ -511,3 +511,11 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - YAML `config/train_v9_3dpw.yml` (exp `v9_3dpw`): 1 GPU, batch 64, 32k mẫu / epoch (500 iter) × 20 epoch; lr 1e-4 (backbone ×0.1), giảm ×0.5 ở ep 8 / 12 / 15 / 18; warmup 0.
 - Chạy: `python main/train.py --cfg ./config/train_v9_3dpw.yml --exp_name v9_3dpw --gpu 0`; test: `python -u main/test_student_3dpw_sets.py --cfg ./config/train_v9_3dpw.yml --ckpt experiment/v9_3dpw/checkpoint/last.pth.tar --sets 3dpw --gpu 0`.
 - Mốc đọc kết quả: cột LIFT (lifter no3dpw, 3DPW ~82 MPJPE 14 khớp theo các lần trước — cần lấy đúng số trong log). v9 có ích nếu mesh < LIFT rõ rệt. Kết quả: chưa có.
+
+## 36. v9 + reliability (độ tin cậy từng khớp) — chạy song song v9_3dpw trên server thứ 2 (2026-11-14 12:36, người dùng duyệt, đã code, chưa chạy)
+- Ý tưởng (Claude đề xuất): lifter no3dpw sai thật trên 3dpw-train (log v9: `lift` 72–75 mm) và có GT → dạy Student ĐOÁN lỗi của từng nguồn ở từng khớp rồi dùng để định tuyến fuse. Tính mới (chưa tra tài liệu): giám sát độ tin cậy của lifter đóng băng bằng lỗi thật trên miền nó chưa thấy, định tuyến fuse theo khớp.
+- Code (backup `_to_delete/bak_v9rel_20261114/`: `fusekin_v9.py`, `base.py`, `config.py`): key `MODEL.v9_reliability` (False), `v9_rel_w` (0.1).
+  - `fusekin_v9.py`: `rel_head` MLP([ảnh tại khớp, e2d, e3d]) → 2 số / khớp = log lỗi dự đoán [3D lifter (m), 2D Refiner (đơn vị [-1, 1])], bias khởi tạo log 0.07 / log 0.06. Cổng g = sigmoid(w · (−log lỗi dự đoán, detach) + b) (w = 1, b = 0 lúc đầu → g ≈ 0.94) nhân vào e3d / e2d TRƯỚC modality dropout. Output thêm `v9_rel_pred`, `v9_rel_gate`, `v9_ref_xy`.
+  - `base.py`: `_v9_rel_loss`: nhãn = log ‖lifter − GT 3D‖ (root-relative, khớp hợp lệ `fit_joint_trunc × is_valid_fit`) và log ‖xy Refiner − GT 2D‖ (`orig_joint_img`, mask `orig_joint_trunc × orig_joint_valid`), smooth-L1, × `v9_rel_w`. Log thêm `rel`, `r3d` (tương quan Pearson log lỗi dự đoán / thật, 3D), `g3`, `g2` (cổng trung bình).
+- YAML `config/train_v9_3dpw_rel.yml` (exp `v9_3dpw_rel`) = `train_v9_3dpw.yml` + `v9_reliability: True`, `v9_rel_w: 0.1`. Chạy: `python main/train.py --cfg ./config/train_v9_3dpw_rel.yml --exp_name v9_3dpw_rel --gpu 0`.
+- Theo dõi: `r3d` phải tăng dần (> ~0.5 là head đoán được lỗi); `g3` phải giảm ở khớp lỗi lớn (hiện chỉ log trung bình). So v9_3dpw ở epoch cuối. Kết quả: chưa có.

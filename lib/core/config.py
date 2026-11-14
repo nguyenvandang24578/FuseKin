@@ -246,6 +246,10 @@ cfg.MODEL.v9_hgcn = True          # HyperGCN trong moi lop fuse (chi co tac dung
 cfg.MODEL.v9_drop3d_sample = 0.2  # modality dropout: ti le mau bo HET token 3D luc train
 cfg.MODEL.v9_drop3d_joint = 0.1   # modality dropout: ti le khop bo token 3D luc train
 cfg.MODEL.v9_joint_drop = 0.1     # che ngau nhien khop 2D (heatmap + token 2D) luc train; lifter nhan 2D day du
+# v9 reliability (2026-11-14, nguoi dung duyet): head doan log loi THAT [3D lifter, 2D Refiner] tung khop (giam sat bang
+# GT tren tap train, base._v9_rel_loss) -> cong nhan vao token 2D / 3D. Mac dinh TAT.
+cfg.MODEL.v9_reliability = False
+cfg.MODEL.v9_rel_w = 0.1          # trong so loss do tin cay (smooth-L1 tren log loi)
 cfg.MODEL.imglift_K = 5                    # so gia thuyet, gop trung binh
 cfg.MODEL.imglift_S = 2                    # so buoc DDIM
 # True: 2D cho Student (heatmap [A], PE, [B], feedback [D]) = 17 khop 2D cua Refiner (mask = 1 moi khop) thay 2D detector
