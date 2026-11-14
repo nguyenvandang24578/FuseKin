@@ -250,6 +250,13 @@ cfg.MODEL.v9_joint_drop = 0.1     # che ngau nhien khop 2D (heatmap + token 2D) 
 # GT tren tap train, base._v9_rel_loss) -> cong nhan vao token 2D / 3D. Mac dinh TAT.
 cfg.MODEL.v9_reliability = False
 cfg.MODEL.v9_rel_w = 0.1          # trong so loss do tin cay (smooth-L1 tren log loi)
+# v9 + IK (2026-11-14 23:26, nguoi dung duyet): mesh = IK HybrIK tu khop Student da fuse (ctx_3d) thay hoi quy 6D;
+# query SMPL -> twist, token shape -> dbeta. Can v6_m_path, v7_bone_*, v7_j29_loss_w, v7_dbeta_w, v7_no_pose_param_loss True.
+cfg.MODEL.v9_ik = False
+# v9 reproj (2026-11-14 23:33, nguoi dung duyet): lay mau lai anh theo phep chieu weak-perspective cua khop 3D tam sau
+# moi lop fuse (tru lop cuoi), vi tri giam sat bang GT 2D (base._v9_reproj_loss). Mac dinh TAT.
+cfg.MODEL.v9_reproj = False
+cfg.MODEL.v9_reproj_w = 1.0       # trong so loss vi tri 2D (smooth-L1, don vi [-1, 1])
 cfg.MODEL.imglift_K = 5                    # so gia thuyet, gop trung binh
 cfg.MODEL.imglift_S = 2                    # so buoc DDIM
 # True: 2D cho Student (heatmap [A], PE, [B], feedback [D]) = 17 khop 2D cua Refiner (mask = 1 moi khop) thay 2D detector

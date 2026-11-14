@@ -24,6 +24,19 @@ v9 reliability (MODEL.v9_reliability, 2026-11-14, nguoi dung duyet; mac dinh TAT
 nguon o tung khop [3D lifter (met), 2D Refiner ([-1, 1])] tu [anh tai khop, 2D, 3D]; giam sat bang loi that tren tap
 train (base._v9_rel_loss, MODEL.v9_rel_w). Cong g = sigmoid(w * (-log loi du doan, detach) + b) nhan vao token 2D / 3D
 -> nguon cang sai cang it duoc tin khi fuse.
+
+v9 + IK (MODEL.v9_ik, 2026-11-14 23:26, nguoi dung duyet "dung IK"; mac dinh TAT): bo hoi quy 6D. Mesh = IK HybrIK tu
+CHINH 17 khop Student da fuse (ctx_3d, KHONG phai lifter): J29 = M x khop + delta 7 diem dau chi (token khop),
+beta = beta_xuong(khop) + dbeta (token shape), twist (cos, sin) tu 23 query SMPL (khop 1..23), camera tu token camera.
+Chan doan v9 (experiment.md muc 35): khop da fuse 80.68 nhung mesh 6D 86.36 (mat chu yeu o phan toan cuc) -> dua IK vao.
+Luu y: IK HybrIK detach khop dau vao -> khop da fuse CHI hoc tu loss ctx_3d; mesh loss day twist / dbeta / camera / delta.
+
+v9 reproj (MODEL.v9_reproj, 2026-11-14 23:33, nguoi dung duyet; mac dinh TAT): lay mau lai anh theo phep chieu, lap qua
+cac lop fuse. Sau lop fuse l (tru lop cuoi): khop 3D tam = j3d_head(token) -> fit weak-perspective (s, t) dong kin vao
+vi tri 2D hien tai (trong so 1 / b^2 tu log_b Refiner) -> xy_chieu (vi tri hop cau truc 3D). Vi tri moi = xy hien tai +
+Linear([token, xy_chieu - xy hien tai]) (khoi tao 0 -> luc dau giu xy Refiner) -> lay mau lai F16 tai do, cong vao token
+(Linear khoi tao 0), cap nhat PE vi tri. Giam sat cac vi tri bang GT 2D (base._v9_reproj_loss, MODEL.v9_reproj_w).
+Muc dich: sua loi 2D (nguon loi lon nhat) bang vong "doan 3D -> chieu -> nhin lai anh".
 """
 import math
 
@@ -37,7 +50,8 @@ from models.backbones.resnet import ResNetBackbone
 from models.ARTS import make_heatmaps
 from models.hybrik_smpl import rotmat_to_aa_safe
 from models.fusekin_v8 import EncLayer, DecLayer, CascadeHead, V8Head, rot6d_to_rotmat, SMPL_MEAN_PARAMS
-from models.teacher_student import SMPL_BONE_PAIRS_H36M
+from models.teacher_student import SMPL_BONE_PAIRS_H36M, V7_LIMB_IDX
+from models.fusekin_v8 import V8_LIMB_TOKEN
 
 N_JOINT = 17
 N_SMPL = 24
@@ -83,9 +97,19 @@ class V9Head(nn.Module):
     smpl_from_aa = V8Head.smpl_from_aa
 
     def __init__(self, dim=256, n_img_enc=2, n_fuse=3, n_dec=3, use_hgcn=True, img_ch=2048, f16_ch=1024,
-                 use_rel=False):
+                 use_rel=False, use_ik=False, use_reproj=False):
         super().__init__()
         self.n_dec = int(n_dec)
+        self.use_ik = bool(use_ik)
+        # ---- [v9_reproj] lay mau lai theo phep chieu sau moi lop fuse (tru lop cuoi) ----
+        self.use_reproj = bool(use_reproj)
+        if self.use_reproj:
+            n_up = max(int(n_fuse) - 1, 0)
+            self.rp_off = nn.ModuleList([nn.Linear(dim + 2, 2) for _ in range(n_up)])   # dich vi tri lay mau
+            self.rp_in = nn.ModuleList([nn.Linear(dim, dim) for _ in range(n_up)])      # dac trung moi -> token
+            for m in list(self.rp_off) + list(self.rp_in):
+                nn.init.zeros_(m.weight)
+                nn.init.zeros_(m.bias)
         # ---- [v9_reliability] head doan log loi [3D lifter, 2D Refiner] tung khop + cong ----
         self.use_rel = bool(use_rel)
         if self.use_rel:
@@ -130,17 +154,60 @@ class V9Head(nn.Module):
         mean = np.load(SMPL_MEAN_PARAMS)
         self.register_buffer('init_pose', torch.from_numpy(mean['pose'][:].astype('float32')).reshape(1, N_SMPL, 6))
         init_shape = torch.from_numpy(mean['shape'][:].astype('float32')).reshape(1, 10)
-        self.pose_heads = nn.ModuleList([nn.Linear(dim, 6)] + [nn.Linear(dim + 6, 6) for _ in range(self.n_dec - 1)])
-        for m in self.pose_heads:                               # khoi tao nho: luc dau ~ pose trung binh
-            nn.init.normal_(m.weight, std=1e-3)
-            nn.init.zeros_(m.bias)
-        self.shape_head = CascadeHead(dim, 10, self.n_dec, init_shape)
+        if not self.use_ik:                                     # v9 goc: hoi quy 6D + beta
+            self.pose_heads = nn.ModuleList([nn.Linear(dim, 6)] + [nn.Linear(dim + 6, 6) for _ in range(self.n_dec - 1)])
+            for m in self.pose_heads:                           # khoi tao nho: luc dau ~ pose trung binh
+                nn.init.normal_(m.weight, std=1e-3)
+                nn.init.zeros_(m.bias)
+            self.shape_head = CascadeHead(dim, 10, self.n_dec, init_shape)
         self.cam_head = CascadeHead(dim, 3, self.n_dec)
         # ---- SMPL ----
         from utils.smpl import SMPL as SMPLModel
         self.human_model = SMPLModel()
         self.human_model_layer = self.human_model.layer['neutral']
         self.register_buffer('joint_regressor_t', torch.from_numpy(self.human_model.joint_regressor).float())
+        # ---- [v9_ik] IK HybrIK tu khop Student. Ten 'hybrik' BAT BUOC (Student_Trainer._v6_j29_loss doc no) ----
+        if self.use_ik:
+            import os
+            from models.hybrik_smpl import HybrIKSMPL
+            reg_path = os.path.join(cfg.DATASET.jotr_data_root, 'Human36M', 'J_regressor_h36m_correct.npy')
+            self.hybrik = HybrIKSMPL(self.human_model_layer, np.load(reg_path))
+            Mmap = np.load(cfg.MODEL.v6_m_path).astype(np.float32)
+            assert Mmap.shape == (29, 17), f'v6_m_path phai la ma tran (29, 17), nhan {Mmap.shape}'
+            self.register_buffer('ik_M', torch.from_numpy(Mmap))
+            # delta 7 diem dau chi tu token khop da fuse (moi diem 1 head rieng, khoi tao 0)
+            self.ik_dlimb_w = nn.Parameter(torch.zeros(len(V7_LIMB_IDX), dim, 3))
+            self.ik_dlimb_b = nn.Parameter(torch.zeros(len(V7_LIMB_IDX), 3))
+            self.twist_head = CascadeHead(dim, 2, self.n_dec)    # twist (cos, sin) += ..., tu query khop SMPL 1..23
+            self.dbeta_head = CascadeHead(dim, 10, self.n_dec)   # dbeta tu token shape
+
+    def ik_outputs(self, j29, beta0, tw, dbeta, cam_raw, is_train):
+        """[v9_ik] J29 (B, 29, 3) + beta0 (B, 10) + twist cong them (B, 23, 2) + dbeta (B, 10) -> IK -> SMPL."""
+        B = j29.shape[0]
+        beta = (beta0 + dbeta.float()).clamp(-5.0, 5.0)                               # an toan dau train
+        phis = self.hybrik.default_phis(B, j29.device, torch.float32) + tw.float()
+        rot_mats = self.hybrik.ik(j29, beta, phis)                                    # (B, 24, 3, 3)
+        aa = rotmat_to_aa_safe(rot_mats.reshape(-1, 3, 3)).reshape(B, N_SMPL, 3)
+        out = self.smpl_from_aa(aa, beta, cam_raw, is_train)
+        out['root_pose_6d'] = rot_mats[:, 0, :, :2].reshape(B, 6)
+        out['v7_j29'] = j29                                                           # loss J29 (7 diem dau chi)
+        out['v7_dbeta'] = dbeta.float()                                               # rang buoc |dbeta|^2
+        out['v7_beta0'] = beta0
+        return out
+
+    def reproject_step(self, i, jt, xy_cur, ref_logb):
+        """[v9_reproj] khop 3D tam (tu token) -> fit weak-perspective vao xy hien tai -> vi tri lay mau moi (B, 17, 2)."""
+        p3 = self.j3d_head(jt).float()
+        P = p3[..., :2] - p3[:, 0:1, :2]                                              # XY camera (truc trung anh)
+        w = 1.0 / torch.exp(ref_logb.float()).clamp_min(0.25) ** 2                     # (B, 17) tin khop chac hon
+        ws = w.sum(1, keepdim=True)[..., None]
+        Pm = (w[..., None] * P).sum(1, keepdim=True) / ws
+        xm = (w[..., None] * xy_cur).sum(1, keepdim=True) / ws
+        Pc, xc = P - Pm, xy_cur - xm
+        s = ((w * (Pc * xc).sum(-1)).sum(1) / (w * (Pc ** 2).sum(-1)).sum(1).clamp_min(1e-8))[:, None, None]
+        xy_proj = s * Pc + xm                                                          # (B, 17, 2) hop cau truc 3D
+        d = self.rp_off[i](torch.cat([jt.float(), (xy_proj - xy_cur).detach()], dim=-1))
+        return (xy_cur + d).clamp(-1.2, 1.2)
 
     def smpl_outputs(self, pose6d, shape, cam_raw, is_train):
         """pose6d (B, 24, 6) -> dict output SMPL (nhu V8 / Student)."""
@@ -183,10 +250,18 @@ class V9Head(nn.Module):
         jt = self.tok_norm(img_j + e2d + e3d)                                         # (B, 17, D)
         jpos = self.joint_id.weight[None] + point_pos(ref_xy, h, w, D).to(mem.dtype)  # (B, 17, D)
         # ---- [2] fuse: self-attn khop -> cross-attn anh -> FFN -> HyperGCN ----
+        xy_cur, rp_xys = ref_xy.float(), []
         for i, layer in enumerate(self.fuse):
             jt = layer(jt, jpos, mem, mpos)
             if self.hgcn is not None:
                 jt = self.hgcn[i](jt.unsqueeze(1)).squeeze(1)
+            if self.use_reproj and i < len(self.fuse) - 1:                            # [v9_reproj]
+                xy_cur = self.reproject_step(i, jt, xy_cur, ref_logb)
+                rp_xys.append(xy_cur)
+                feat = F.grid_sample(f, xy_cur[:, :, None, :].to(f.dtype), mode='bilinear',
+                                     align_corners=False).squeeze(-1).transpose(1, 2)  # (B, 17, D)
+                jt = jt + self.rp_in[i](feat)
+                jpos = self.joint_id.weight[None] + point_pos(xy_cur, h, w, D).to(mem.dtype)
         j3d = self.j3d_head(jt)
         j3d = j3d - j3d[:, 0:1]                                                       # root-relative tai Pelvis
         # ---- [3] query SMPL ----
@@ -196,26 +271,49 @@ class V9Head(nn.Module):
         qpos = self.smpl_qpos.weight[None]
         dmem = torch.cat([jt, mem], dim=1)
         dpos = torch.cat([jpos + self.mem_type.weight[0], (mpos + self.mem_type.weight[1]).expand(B, -1, -1)], dim=1)
-        pose = shape = cam = None
+        if self.use_ik:                                                               # [v9_ik] dau vao IK (chung moi lop)
+            pose17 = j3d.float()
+            j29 = torch.einsum('jk,bkc->bjc', self.ik_M, pose17)                      # (B, 29, 3)
+            dlimb = torch.einsum('bpd,pdc->bpc', jt[:, V8_LIMB_TOKEN].float(), self.ik_dlimb_w) + self.ik_dlimb_b
+            d29 = torch.zeros_like(j29)
+            d29[:, V7_LIMB_IDX] = dlimb
+            j29 = j29 + d29
+            with torch.no_grad():                                                     # beta tu do dai xuong khop Student
+                beta0 = self.hybrik.beta_from_bones(pose17.detach(), int(cfg.MODEL.v7_bone_gn_iters),
+                                                    float(cfg.MODEL.v7_bone_beta_reg))
+        pose = shape = cam = tw = dbeta = None
         per_layer = []
         for i, layer in enumerate(self.dec):
             q = self.dec_norm(layer(q, qpos, dmem, dpos))
             pt = q[:, :N_SMPL]
+            cam = self.cam_head(i, q[:, N_SMPL + 1], cam)
+            if self.use_ik:
+                tw = self.twist_head(i, pt[:, 1:], tw)                                # (B, 23, 2)
+                dbeta = self.dbeta_head(i, q[:, N_SMPL], dbeta)                       # (B, 10)
+                per_layer.append(('ik', tw, dbeta, cam))
+                continue
             if i == 0:
                 pose = self.init_pose + self.pose_heads[0](pt)                       # (B, 24, 6)
             else:
                 pose = pose + self.pose_heads[i](torch.cat([pt, pose], dim=-1))
             shape = self.shape_head(i, q[:, N_SMPL], shape)
-            cam = self.cam_head(i, q[:, N_SMPL + 1], cam)
-            per_layer.append((pose, shape, cam))
-        result = self.smpl_outputs(*per_layer[-1], is_train)
-        result['refine_history'] = [self.smpl_outputs(p, s, c, is_train) for (p, s, c) in per_layer[:-1]] \
-            if is_train else []
+            per_layer.append(('6d', pose, shape, cam))
+
+        def layer_out(it):
+            if it[0] == 'ik':
+                return self.ik_outputs(j29, beta0, it[1], it[2], it[3], is_train)
+            return self.smpl_outputs(it[1], it[2], it[3], is_train)
+
+        result = layer_out(per_layer[-1])
+        result['refine_history'] = [layer_out(it) for it in per_layer[:-1]] if is_train else []
         result['ctx_3d'] = j3d                                                        # loss ctx (v5_ctx_loss_w)
         result['lifted_joints_3d'] = (lift - lift[:, 0:1]).detach()                  # cot LIFT = pose lifter
         result['privileged_3d'] = j3d                                                 # tat bang v7_no_privileged
         result['feat_joint'] = jt
         result['feat_global'] = q[:, N_SMPL:].mean(1)
+        if self.use_reproj and rp_xys:                                                # cho base._v9_reproj_loss
+            result['v9_rp_xy'] = torch.stack(rp_xys, dim=1)                          # (B, L, 17, 2)
+            result['v9_rp_ref'] = ref_xy                                              # moc: xy Refiner
         if self.use_rel:                                                              # cho base._v9_rel_loss
             result['v9_rel_pred'] = rel_pred
             result['v9_rel_gate'] = gate
@@ -250,13 +348,20 @@ class V9Net(nn.Module):
         self.smpl_model = V9Head(dim=int(cfg.MODEL.v9_dim), n_img_enc=int(cfg.MODEL.v9_img_enc),
                                  n_fuse=int(cfg.MODEL.v9_fuse_layers), n_dec=int(cfg.MODEL.v9_smpl_dec),
                                  use_hgcn=bool(cfg.MODEL.v9_hgcn),
-                                 use_rel=bool(cfg.MODEL.get('v9_reliability', False)))
+                                 use_rel=bool(cfg.MODEL.get('v9_reliability', False)),
+                                 use_ik=bool(cfg.MODEL.get('v9_ik', False)),
+                                 use_reproj=bool(cfg.MODEL.get('v9_reproj', False)))
+        if cfg.MODEL.get('v9_ik', False):
+            assert cfg.MODEL.get('v7_no_pose_param_loss', False), \
+                'v9_ik: goc do IK quyet dinh -> dat MODEL.v7_no_pose_param_loss True'
         self.joint_drop = float(cfg.MODEL.v9_joint_drop)
         print(f'===> FuseKin v9: dim {cfg.MODEL.v9_dim} | encoder anh {cfg.MODEL.v9_img_enc} | fuse '
               f'{cfg.MODEL.v9_fuse_layers} lop (HyperGCN {cfg.MODEL.v9_hgcn}) | query SMPL {cfg.MODEL.v9_smpl_dec} lop | '
               f'lifter {cfg.MODEL.imglift_checkpoint} (K={cfg.MODEL.imglift_K}, S={cfg.MODEL.imglift_S}) | '
               f'bo 3D: mau {cfg.MODEL.v9_drop3d_sample}, khop {cfg.MODEL.v9_drop3d_joint} | che 2D {self.joint_drop} | '
-              f'reliability {cfg.MODEL.get("v9_reliability", False)} (w {cfg.MODEL.get("v9_rel_w", 0)})')
+              f'reliability {cfg.MODEL.get("v9_reliability", False)} (w {cfg.MODEL.get("v9_rel_w", 0)}) | '
+              f'IK tu khop Student {cfg.MODEL.get("v9_ik", False)} | lay mau lai theo phep chieu '
+              f'{cfg.MODEL.get("v9_reproj", False)} (w {cfg.MODEL.get("v9_reproj_w", 0)})')
 
     def train(self, mode=True):
         super().train(mode)

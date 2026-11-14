@@ -1,0 +1,99 @@
+# =====================================================================
+# train_v9_3dpw_ik.yml (2026-11-14 23:26, nguoi dung duyet "dung IK") -- v9 + IK. GIONG HET train_v9_3dpw.yml, chi doi
+#   duong ra mesh: IK HybrIK tu CHINH 17 khop Student da fuse (ctx_3d) thay hoi quy 6D (chan doan v9: khop da fuse 80.68,
+#   mesh 6D 86.36). Query SMPL -> twist, token shape -> dbeta, beta = beta_xuong + dbeta. Bo loss tham so pose,
+#   them loss J29 7 diem dau chi + |dbeta|^2. So voi v9_3dpw (86.36) va tang ctx cua chinh no.
+# --- mo ta v9 goc ---
+#   Student HOI QUY mesh tu anh + 2D + 3D (lib/models/fusekin_v9.py), lifter chi la nguon bang chung:
+#   [1] 17 token bang chung (anh F16 tai khop + 2D OpenPose / Refiner / log_b + 3D lifter mean / do lech gia thuyet)
+#   [2] fuse 3 lop (self-attn khop -> cross-attn 64 token anh -> FFN -> HyperGCN) [3] 24 query SMPL doc cap xuong
+#   -> 6D tung khop (tu pose trung binh) + beta + camera [4] SMPL. Modality dropout 3D (mau 0.2, khop 0.1).
+#   Lifter = ImgLifter no3dpw DONG BANG (khong thay 3DPW -> loi cua no tren 3dpw-train giong luc test).
+#   Giao thuc (nguoi dung chot 11:03 / 11:56): train CHI 3dpw-train (2D OpenPose), test CHI 3dpw (OpenPose).
+#   KHONG so truc tiep voi bang JOTR / DPMesh (giao thuc khac). Bao epoch cuoi (last.pth.tar).
+#   Thu nho de train nhanh: 32k mau / epoch x 20 epoch = 640k mau; batch 64 tren 1 GPU.
+#   lr 1e-4 (backbone x 0.1: du lieu nho, tranh pha dac trung SPIN), giam x0.5 o ep 8 / 12 / 15 / 18 (nguoi dung 10:45).
+# Chay (1 GPU):
+#   python main/train.py --cfg ./config/train_v9_3dpw_ik.yml --exp_name v9_3dpw_ik --gpu 0
+#   python -u main/test_student_3dpw_sets.py --cfg ./config/train_v9_3dpw_ik.yml --ckpt experiment/v9_3dpw_ik/checkpoint/last.pth.tar --sets 3dpw --gpu 0
+# =====================================================================
+
+update_bbox: True
+DATASET:
+  train_list: ['3dpw-train']   # CHI 3dpw-train
+  test_list: ['3dpw']          # CHI 3dpw-test (danh gia moi epoch, chi log)
+  pw3d_ocpc_test_only: False
+  workers: 8
+  pw3d_2d_source: 'openpose'   # train 3dpw-train va test 3dpw deu OpenPose
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: False
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  posefix_scale: 1.0
+  posefix_fast: True
+  fusekin_unified: True
+  drop_raw_smpl_stats: True    # bo meta raw_smpl_* cua 3dpw-train (nhu YAML lifter co 3dpw)
+
+MODEL:
+  name: 'student'              # dung Student_Trainer (khong KD); model that su = V9Net qua v9_e2e
+  v9_e2e: True
+  v9_dim: 256
+  v9_img_enc: 2
+  v9_fuse_layers: 3
+  v9_smpl_dec: 3
+  v9_hgcn: True
+  v9_drop3d_sample: 0.2
+  v9_drop3d_joint: 0.1
+  v9_joint_drop: 0.1
+  # ---- [MOI] IK tu khop Student ----
+  v9_ik: True
+  v6_m_path: 'data_final/h36m17_to_smpl29.npy'
+  v7_bone_gn_iters: 3
+  v7_bone_beta_reg: 0.001
+  v7_dbeta_w: 0.01
+  v7_j29_loss_w: 1.0
+  imglift_checkpoint: 'experiment/img_lifter_dense48_markov_no3dpw/checkpoint/last.pth.tar'   # Refiner lay tu ckpt
+  imglift_K: 5
+  imglift_S: 2
+  resnet_type: 50
+  hpe_dim: 512                 # khong dung boi V9Net
+  backbone_pretrained: 'spin'
+  student_use_kd: False
+  init_student_from_teacher: False
+  v7_anchor: False
+  v7_no_pose_param_loss: True  # IK quyet dinh goc -> bo loss tham so pose
+  v7_no_privileged: True       # privileged_3d = ctx_3d -> tat de khong tinh 2 lan
+  v5_ctx_loss_w: 1.0           # loss khop 3D phu tu 17 token khop da fuse
+  v3_bb_finetune: True         # backbone train end-to-end
+  v3_bb_lr_scale: 0.1          # lr backbone = 1e-5
+  v3_bb_heatmap: True
+  v3_heatmap_sigma: 2.0
+  v3_refine_gamma: 0.85        # trong so giam sat cac lop decoder truoc (refine_history)
+  v3_pose2d_noise_prob: 0.0
+
+TRAIN:
+  print_freq: 20
+  batch_size: 64               # 1 GPU
+  shuffle: True
+  dataset_ratio: [1.0]
+  samples_per_epoch: 32000     # 500 iter / epoch
+  begin_epoch: 1
+  end_epoch: 20
+  scheduler: 'step'
+  lr: 0.0001
+  lr_step: [8, 12, 15, 18]     # giam 4 lan (nguoi dung 10:45)
+  lr_factor: 0.5               # 1e-4 -> 5e-5 -> 2.5e-5 -> 1.25e-5 -> 6.25e-6
+  warmup_epochs: 0             # warmup_epochs 1 cu khong co tac dung (ep1 da = lr day du)
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 64
+  shuffle: False
+  select_dataset: '3dpw'
+  save_best_per_set: False
+  final_test_list: []          # bao EPOCH CUOI: test last.pth.tar bang main/test_student_3dpw_sets.py

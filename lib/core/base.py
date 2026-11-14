@@ -334,6 +334,26 @@ def _v9_rel_loss(model_output, gt_pose_input, valid_joint, targets, meta):
     return loss, stats
 
 
+def _v9_reproj_loss(model_output, targets, meta):
+    """v9 reproj (2026-11-14): giam sat cac vi tri lay mau lai v9_rp_xy (B, L, 17, 2) [-1, 1] bang GT 2D (orig_joint_img),
+    mask orig_joint_trunc x orig_joint_valid. Tra (loss, stats); stats: loi px (crop 256) cua xy Refiner va lop cuoi."""
+    xy = model_output['v9_rp_xy'].float()
+    with torch.no_grad():
+        g2 = targets['orig_joint_img'].cuda().float()[..., :2]
+        g2 = torch.stack([g2[..., 0] / cfg.output_hm_shape[2] * 2 - 1, g2[..., 1] / cfg.output_hm_shape[1] * 2 - 1], -1)
+        v = meta['orig_joint_trunc'].cuda().float().reshape(g2.shape[:2])
+        if 'orig_joint_valid' in meta:
+            v = v * meta['orig_joint_valid'].cuda().float().reshape(g2.shape[:2])
+        nv = v.sum().clamp_min(1.0)
+    err = F.smooth_l1_loss(xy, g2[:, None].expand_as(xy), reduction='none', beta=0.05).sum(-1)   # (B, L, 17)
+    loss = (err * v[:, None]).sum() / (nv * xy.shape[1])
+    with torch.no_grad():
+        half = cfg.input_img_shape[1] / 2.0                                       # [-1, 1] -> px crop
+        px_ref = (torch.norm(model_output['v9_rp_ref'].float() - g2, dim=-1) * v).sum() / nv * half
+        px_last = (torch.norm(xy[:, -1] - g2, dim=-1) * v).sum() / nv * half
+    return loss, {'v9_rp': float(loss), 'v9_rp_px_ref': float(px_ref), 'v9_rp_px': float(px_last)}
+
+
 def _depth_loss(model_output, gt_rootrel, valid_joint):
     """[C] CE mem cho phan bo do sau tung khop: muc tieu Gauss quanh do sau GT (sigma = 1 bin). Tra (loss, mm)."""
     logits = model_output['depth_logits'].float()                                   # (B, J, bins)
@@ -953,6 +973,11 @@ class Student_Trainer:
             if 'v9_rel_pred' in model_output:
                 rel_loss, rel_stats = _v9_rel_loss(model_output, gt_pose_input, valid_joint, targets, meta)
                 loss = loss + float(cfg.MODEL.v9_rel_w) * rel_loss
+            # v9 reproj: giam sat vi tri lay mau lai trong khoi fuse bang GT 2D (MODEL.v9_reproj_w)
+            rp_stats = {}
+            if 'v9_rp_xy' in model_output:
+                rp_loss, rp_stats = _v9_reproj_loss(model_output, targets, meta)
+                loss = loss + float(cfg.MODEL.v9_reproj_w) * rp_loss
 
             # Do gradient tai tham so fusion (KD relation): feature gather cua DataParallel la cac nhanh rieng,
             # khong dung grad theo feature joint gather de tranh log nham bang 0.
@@ -993,6 +1018,7 @@ class Student_Trainer:
                 **depth_stats,
                 **j29_stats,
                 **rel_stats,
+                **rp_stats,
             }
             if self.kd_joint_relation:
                 step_stats['kd_joint_relation'] = step_stats['kd_joint']
@@ -1035,7 +1061,8 @@ class Student_Trainer:
                     + (f'depth: {depth_stats["depth_err_mm"]:.0f}mm ' if depth_stats else '')
                     + (f'j29: {j29_stats["v6_j29_mm"]:.0f}mm ' if j29_stats else '')
                     + (f'rel: {rel_stats["v9_rel"]:.3f} r3d {rel_stats["v9_rel_corr3d"]:.2f} '
-                       f'g3 {rel_stats["v9_g3"]:.2f} g2 {rel_stats["v9_g2"]:.2f} ' if rel_stats else '') +
+                       f'g3 {rel_stats["v9_g3"]:.2f} g2 {rel_stats["v9_g2"]:.2f} ' if rel_stats else '')
+                    + (f'rp2d: {rp_stats["v9_rp_px_ref"]:.1f}->{rp_stats["v9_rp_px"]:.1f}px ' if rp_stats else '') +
                     f'priv: {step_stats["privileged_3d"]:.3f} '
                     f'tl: {loss.detach().item():.3f}'
                 )
