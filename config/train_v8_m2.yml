@@ -1,0 +1,99 @@
+# =====================================================================
+# train_v8_m2.yml (2026-11-14, nhanh git v8-e2e, nguoi dung duyet "lam M2 lun, bo qua M1") -- FuseKin v8, M2.
+#   = M0 (train_v8_m0.yml) + 4 phan rieng cua FuseKin (lib/models/fusekin_v8.py, moi phan 1 key):
+#     v8_lifter    : Refiner 2D + ImgLifter no3dpw DONG BANG (K=5, S=2, gop mean) -> pose 3D cong vao 17 query khop,
+#                    head khop 3D lop 0 = lifter + phan du (decoder SUA pose lifter thay vi doan tu dau).
+#     v8_hyp_tokens: 5 x 17 gia thuyet lifter -> 85 token noi vao bo nho decoder (cung 64 token anh).
+#     v8_ik        : mesh = IK HybrIK tu khop 3D da sua cua MOI lop decoder (nhu Student v7: J29 = M x pose17 + delta
+#                    7 diem dau chi, twist, beta_xuong + dbeta). Bo head 6D -> bo loss tham so pose.
+#     v8_hgcn      : 1 khoi HyperGCN (HyperDiff) tren 17 token khop sau moi lop decoder.
+#   Train TU DAU (khong khoi tao tu M0). Giao thuc nhu M0: KHONG 3dpw o bat ky dau; test OpenPose (3DPW / OC / PC) +
+#   HHRNet (Crowd); OC / PC TOAN BO; bao epoch cuoi (last.pth.tar).
+#   Loss: nhu M0 (mesh, khop 3D tu mesh, shape, chieu 2D qua AWL, ca 3 lop decoder) + ctx_3d (khop da sua lop cuoi)
+#         + J29 7 diem dau chi (v7_j29_loss_w) + |dbeta|^2 (v7_dbeta_w). KHONG loss tham so pose.
+#   Batch: Refiner (ResNet-50) + ImgLifter (5 x 2 buoc) chay them moi mau -> ton VRAM hon M0 -> batch TONG 128
+#   (32 / GPU x 4), lr 5e-5 (ty le tuyen tinh theo batch so voi JOTR 256 / 1e-4). Neu OOM: batch 96, lr 3.75e-5.
+#   Ngan sach: 256k mau / epoch x 20 epoch (nhu M0, so sanh truc tiep M0 vs M2).
+# Chay:
+#   python main/train.py --cfg ./config/train_v8_m2.yml --exp_name v8_m2 --gpu 0,1,2,3
+#   python -u main/test_student_3dpw_sets.py --cfg ./config/train_v8_m2.yml --ckpt experiment/v8_m2/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --ocpc_mode all --gpu 0
+# =====================================================================
+
+update_bbox: True          # giong JOTR yml
+DATASET:
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']   # KHONG 3dpw-train
+  test_list: ['3dpw', '3dpw-oc', '3dpw-pc', '3dpw-crowd']   # danh gia moi epoch (chi log, bao epoch cuoi)
+  pw3d_ocpc_test_only: False   # OC / PC toan bo sequence (giao thuc JOTR / DPMesh)
+  workers: 16
+  pw3d_2d_source: 'openpose'     # test: OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd)
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: False
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  posefix_scale: 1.0       # giong JOTR (va giong lifter no3dpw)
+  posefix_fast: True
+  fusekin_unified: True
+
+MODEL:
+  name: 'student'          # dung Student_Trainer (khong KD); model that su = V8Net qua v8_e2e
+  v8_e2e: True
+  v8_dim: 256
+  v8_enc_layers: 3
+  v8_dec_layers: 3
+  v8_joint_drop: 0.1       # chi che heatmap backbone; lifter nhan 2D detector day du
+  # ---- M2 ----
+  v8_lifter: True
+  v8_hyp_tokens: True
+  v8_ik: True
+  v8_hgcn: True
+  imglift_checkpoint: 'experiment/img_lifter_dense48_markov_no3dpw/checkpoint/last.pth.tar'   # Refiner lay tu ckpt
+  imglift_K: 5
+  imglift_S: 2
+  v6_m_path: 'data_final/h36m17_to_smpl29.npy'
+  v7_bone_gn_iters: 3
+  v7_bone_beta_reg: 0.001   # nhu train_student_no3dpw.yml
+  v7_dbeta_w: 0.01
+  v7_j29_loss_w: 1.0
+  v7_no_pose_param_loss: True    # goc do IK quyet dinh
+  # ---- giong M0 ----
+  resnet_type: 50
+  hpe_dim: 512             # khong dung boi V8Net
+  backbone_pretrained: 'spin'
+  student_use_kd: False
+  init_student_from_teacher: False
+  v7_anchor: False
+  v7_no_privileged: True         # privileged_3d = ctx_3d -> tat de khong tinh 2 lan
+  v5_ctx_loss_w: 1.0             # loss khop 3D da sua (lop cuoi)
+  v3_bb_finetune: True           # backbone train end-to-end
+  v3_bb_lr_scale: 1.0
+  v3_bb_heatmap: True
+  v3_heatmap_sigma: 2.0
+  v3_refine_gamma: 0.85          # trong so giam sat cac lop decoder truoc (refine_history)
+  v3_pose2d_noise_prob: 0.0
+
+TRAIN:
+  print_freq: 20
+  batch_size: 128          # TONG tren 4 GPU = 32 / GPU (Refiner + ImgLifter ton them VRAM)
+  shuffle: True
+  dataset_ratio: [0.30, 0.20, 0.40, 0.10]   # Human36M, MuCo, MSCOCO, CrowdPose (nhu M0)
+  samples_per_epoch: 256000                  # 2000 iter / epoch voi batch 128
+  begin_epoch: 1
+  end_epoch: 20
+  scheduler: 'step'
+  lr: 0.00005              # 1e-4 x 128 / 256
+  lr_step: [15]
+  lr_factor: 0.1
+  warmup_epochs: 1
+  min_lr: 0.000001
+  optimizer: 'adam'
+  wandb: True
+
+TEST:
+  batch_size: 64
+  shuffle: False
+  select_dataset: '3dpw'
+  save_best_per_set: False
+  final_test_list: []          # bao EPOCH CUOI: test last.pth.tar bang main/test_student_3dpw_sets.py

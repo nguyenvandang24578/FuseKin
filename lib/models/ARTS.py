@@ -204,6 +204,9 @@ class ARTS(nn.Module):
 
 
 def get_model(num_joint, embed_dim, depth=None):
+    if cfg.MODEL.get('v9_e2e', False):                 # FuseKin v9: hoi quy mesh tu anh + 2D + 3D (2026-11-14)
+        from models.fusekin_v9 import V9Net
+        return V9Net()
     if cfg.MODEL.get('v8_e2e', False):                 # FuseKin v8 end-to-end (2026-11-13)
         from models.fusekin_v8 import V8Net
         return V8Net()

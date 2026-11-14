@@ -224,6 +224,28 @@ cfg.MODEL.v8_dim = 256          # so kenh token (encoder / decoder)
 cfg.MODEL.v8_enc_layers = 3     # lop transformer encoder tren 64 token anh
 cfg.MODEL.v8_dec_layers = 3     # lop decoder (moi lop hoi quy phan du SMPL + khop 3D)
 cfg.MODEL.v8_joint_drop = 0.1   # che ngau nhien khop 2D dau vao luc train (giong JOTR)
+# FuseKin v8 M2 (2026-11-14, nguoi dung duyet "lam M2 lun, bo qua M1"): them phan rieng cua FuseKin vao V8. Mac dinh TAT.
+#   v8_lifter    : nap Refiner + ImgLifter (dong bang, imglift_checkpoint / imglift_K / imglift_S); pose lifter cong vao
+#                  17 query khop (Linear(3, D)) va lam diem xuat phat cua head khop 3D (lop 0 = lifter + phan du).
+#   v8_hyp_tokens: K x 17 gia thuyet lifter -> token (Linear(3, D) + ID khop + ID gia thuyet), noi vao bo nho decoder.
+#   v8_ik        : mesh = IK HybrIK tu khop 3D da sua (J29 = M x pose17 + delta 7 diem dau chi, twist, beta_xuong + dbeta)
+#                  thay hoi quy 6D. Dung lai v6_m_path, v7_bone_*, v7_j29_loss_w, v7_dbeta_w; dat v7_no_pose_param_loss True.
+#   v8_hgcn      : HyperGCN (HGraph.create_layers, 1 khoi) tren 17 token khop sau MOI lop decoder.
+cfg.MODEL.v8_lifter = False
+cfg.MODEL.v8_hyp_tokens = False
+cfg.MODEL.v8_ik = False
+cfg.MODEL.v8_hgcn = False
+# FuseKin v9 (2026-11-14, nguoi dung duyet, lib/models/fusekin_v9.py): Student HOI QUY mesh tu anh + 2D + 3D, lifter chi
+# la nguon bang chung (khong neo). True -> ARTS.get_model tra V9Net (can imglift_checkpoint). Mac dinh TAT.
+cfg.MODEL.v9_e2e = False
+cfg.MODEL.v9_dim = 256
+cfg.MODEL.v9_img_enc = 2          # lop encoder tren 64 token anh F32
+cfg.MODEL.v9_fuse_layers = 3      # lop fuse (self-attn khop -> cross-attn anh -> FFN -> HyperGCN)
+cfg.MODEL.v9_smpl_dec = 3         # lop decoder query SMPL (24 khop + shape + camera)
+cfg.MODEL.v9_hgcn = True          # HyperGCN trong moi lop fuse (chi co tac dung khi v9_e2e)
+cfg.MODEL.v9_drop3d_sample = 0.2  # modality dropout: ti le mau bo HET token 3D luc train
+cfg.MODEL.v9_drop3d_joint = 0.1   # modality dropout: ti le khop bo token 3D luc train
+cfg.MODEL.v9_joint_drop = 0.1     # che ngau nhien khop 2D (heatmap + token 2D) luc train; lifter nhan 2D day du
 cfg.MODEL.imglift_K = 5                    # so gia thuyet, gop trung binh
 cfg.MODEL.imglift_S = 2                    # so buoc DDIM
 # True: 2D cho Student (heatmap [A], PE, [B], feedback [D]) = 17 khop 2D cua Refiner (mask = 1 moi khop) thay 2D detector

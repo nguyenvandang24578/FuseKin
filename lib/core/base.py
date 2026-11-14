@@ -624,11 +624,13 @@ def load_model_weights(model, ckpt_path, skip_prefixes=('pose_lifter.', 'pmce_li
 
     # 3) loc: bo lifter cu, module kien truc cu, key lech shape
     own = model.state_dict()
+    # V8 (fusekin_v8): ten 'smpl_model.shape_head.' trung LEGACY_KEY_PARTS cua Student cu -> KHONG loc legacy cho V8
+    is_v8 = getattr(model, 'mode', '') in ('v8', 'v9')
     filtered, skipped, legacy, shape_bad = {}, [], [], []
     for k, v in state.items():
         if k.startswith(skip_prefixes):
             skipped.append(k)
-        elif k.startswith('smpl_model.') and any(p in k for p in LEGACY_KEY_PARTS):
+        elif not is_v8 and k.startswith('smpl_model.') and any(p in k for p in LEGACY_KEY_PARTS):
             legacy.append(k)
         elif k in own and own[k].shape != v.shape:
             shape_bad.append((k, tuple(v.shape), tuple(own[k].shape)))
