@@ -575,6 +575,25 @@ cfg.IMGLIFT.kd_nce_feat = 'hidden'
 # Khoi tao lifter (+ Refiner neu refiner_finetune) tu last.pth.tar cua run khac (raw + EMA), KHONG nap optimizer.
 # '' = train tu dau (nhu cu). Bo qua khi --resume_training.
 cfg.IMGLIFT.init_ckpt = ''
+# --- SD lifter (2026-11-15, nguoi dung duyet, experiment.md muc 44): thay f8 ResNet-50 cua Refiner bang dac trung
+# Stable Diffusion 1.5 + ControlNet theo DPMesh (lib/models/sd_feature.py). Decoder ImgLifter, Refiner (dong bang),
+# xy / log_b / feat_j giu nguyen. Mac dinh TAT. Khong dung chung voi refiner_finetune / KD.
+cfg.IMGLIFT.sd_enable = False
+cfg.IMGLIFT.sd_ckpt = ''                 # control_sd15_openpose.pth (ControlNet 1.0 day du: SD 1.5 + ControlNet, ~5.7 GB)
+cfg.IMGLIFT.sd_lora_rank = 64            # LoRA tren U-Net (DPMesh r = 64)
+cfg.IMGLIFT.sd_train_control = 'none'    # 'none' = A0 (ControlNet dong bang, giong DPMesh) | 'in_zero' = A | 'full' = B
+cfg.IMGLIFT.sd_ctrl_in_init = 'copy_latent'   # conv dau ControlNet (4 + 17 kenh): chep 4 kenh latent | 'random' (DPMesh)
+cfg.IMGLIFT.sd_hm_size = 32              # heatmap = luoi latent (256 / 8), DPMesh input_hm_shape 32
+cfg.IMGLIFT.sd_hm_sigma = 2.5            # DPMesh sigma
+cfg.IMGLIFT.sd_hm_mask_det = True        # khop det = 0 (detector sot / input_drop) -> heatmap 0 (prompt van co toa do)
+cfg.IMGLIFT.sd_latent_scale = 1.0        # DPMesh khong nhan 0.18215 (VPDEncoder: encode(x).mode())
+cfg.IMGLIFT.sd_img_pm1 = False           # False = anh [0,1] vao VAE (giong DPMesh) | True = [-1,1]
+cfg.IMGLIFT.sd_bf16 = True               # autocast bf16 + trong so dong bang luu bf16 (tham so train fp32)
+cfg.IMGLIFT.sd_grad_ckpt = False         # gradient checkpointing ResBlock (chi khi thieu bo nho)
+cfg.IMGLIFT.sd_lr_scale = 1.0            # lr tham so SD = TRAIN.lr x he so (DPMesh lr_backbone = lr)
+cfg.IMGLIFT.sd_eval_ablate = False       # moi epoch: them danh gia nhanh f8 = 0 tren tap eval dau tien
+# Tich luy gradient (chung, 2026-11-15): optimizer.step() sau moi grad_accum batch. 1 = nhu cu.
+cfg.IMGLIFT.grad_accum = 1
 
 """ Test Detail """
 cfg.TEST = edict()

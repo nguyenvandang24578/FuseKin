@@ -6,6 +6,8 @@ eval_img_lifter: tren loader 3DPW (dau vao OpenPose / HHRNet nhu benchmark):
   GT 3D = H36M regressor x mesh GT, root-relative (cung dinh nghia mesh voi muc tieu train).
   Bao MPJPE17 / PA-MPJPE17 (mm) cho mean, jpma, oracle min-K (chi do tiem nang) va (tuy chon) lifter cu voi OpenPose.
   ablate_img=True: dat dac trung anh cua lifter (f8, feat_j) = 0, giu 2D Refiner -> do lifter co dung anh khong.
+  SD lifter (IMGLIFT.sd_enable, 2026-11-15): sd_enc khac None -> f8 lay tu SDFeatureEncoder (lib/models/sd_feature.py)
+  thay f8 Refiner; ablate_sd=True: chi f8 SD = 0 (giu feat_j Refiner) -> do dong gop rieng cua SD.
 """
 import numpy as np
 import torch
@@ -43,6 +45,45 @@ def load_img_lifter(path, dev):
     model.load_state_dict(ck['model_state'], strict=True)
     print(f'===> Nap ImgLifter {path} (epoch {ck.get("epoch")}, refiner {ck.get("refiner_ckpt")})')
     return model.to(dev).eval(), ck
+
+
+def sd_arch():
+    """Kien truc / quy uoc SDFeatureEncoder tu cfg.IMGLIFT (luu ck['sd_arch'] de eval / resume dung lai)."""
+    L = cfg.IMGLIFT
+    return {'num_joints': 17, 'lora_rank': int(L.sd_lora_rank), 'hm_size': int(L.sd_hm_size),
+            'hm_sigma': float(L.sd_hm_sigma), 'hm_mask_det': bool(L.sd_hm_mask_det),
+            'train_control': str(L.sd_train_control), 'ctrl_in_init': str(L.sd_ctrl_in_init),
+            'latent_scale': float(L.sd_latent_scale), 'img_pm1': bool(L.sd_img_pm1), 'bf16': bool(L.sd_bf16),
+            'grad_ckpt': bool(L.sd_grad_ckpt)}
+
+
+def build_sd(arch, sd_ckpt, dev, log=print):
+    """Xay SDFeatureEncoder, nap SD goc (sd_ckpt) + LoRA, dua len dev. Trong so train chua nap (xem load_sd_lifter)."""
+    from models.sd_feature import build_sd_encoder
+    return build_sd_encoder(arch, sd_ckpt, log=log).to(dev)
+
+
+def load_sd_lifter(ck, dev, sd_ckpt='', log=print):
+    """Checkpoint train_img_lifter co 'sd_arch' -> SDFeatureEncoder (EMA, eval) | None neu khong phai SD lifter.
+    sd_ckpt rong = duong dan SD goc luu trong ck['sd_ckpt']."""
+    if 'sd_arch' not in ck:
+        return None
+    m = build_sd(ck['sd_arch'], sd_ckpt or ck['sd_ckpt'], dev, log=log)
+    m.load_trainable_state(ck['sd_state'])
+    for p in m.parameters():
+        p.requires_grad = False
+    return m.eval()
+
+
+def sd_image_feat(sd_enc, img, xy, det, ablate=False):
+    """f8 SD (B,2048,8,8) float32 tu anh + 17 khop dau cua xy Refiner ([-1,1]) + det (B,>=17).
+    ablate=True: tra 0 (khong chay SD)."""
+    B = img.shape[0]
+    if ablate:
+        return torch.zeros(B, 2048, 8, 8, device=img.device, dtype=torch.float32)
+    with torch.autocast('cuda', dtype=torch.bfloat16, enabled=bool(sd_enc.bf16)):
+        f8 = sd_enc(img, xy[:, :17], det[:, :17])
+    return f8.float()
 
 
 def load_frozen_refiner(path, dev):
@@ -115,7 +156,8 @@ def reproj_errors(pred, g2, valid):
 
 @torch.no_grad()
 def eval_img_lifter(lifter, refiner, loader, dev, regressor, K=10, S=4, eta=1.0, jpma_max_b=3.0,
-                    ablate_img=False, old_lifter=None, max_samples=0, seed=0, train_split=False):
+                    ablate_img=False, old_lifter=None, max_samples=0, seed=0, train_split=False,
+                    sd_enc=None, ablate_sd=False):
     """train_split=True (2026-11-05, do loi dau vao tren tap TRAIN): GT = targets['orig_joint_cam'] (muc tieu train
     lifter, H36M-17 tu mesh, root-relative), bo mau is_valid_fit = 0; regressor khong dung (None)."""
     from models.ARTS import diff_lift
@@ -172,6 +214,8 @@ def eval_img_lifter(lifter, refiner, loader, dev, regressor, K=10, S=4, eta=1.0,
 
         nc = int(getattr(lifter, 'num_ctx', 0))
         xy, log_b, f8, fj = refiner_inputs(refiner, img, j2, jm, 17 + nc)
+        if sd_enc is not None:                                              # SD lifter: f8 tu SD thay Refiner
+            f8 = sd_image_feat(sd_enc, img, xy, lifter_det(jm, 0), ablate=ablate_sd)
         if ablate_img:
             f8, fj = torch.zeros_like(f8), torch.zeros_like(fj)
         cond7 = ImgLifter.make_cond7(xy, log_b, lifter_det(jm, nc), cam)
@@ -199,12 +243,14 @@ def eval_img_lifter(lifter, refiner, loader, dev, regressor, K=10, S=4, eta=1.0,
         d['miss_ratio'] = v['miss'][1] / max(v['miss'][1] + v['vis'][1], 1)
         return d
     return {'n': seen, 'K': K, 'S': S, 'ablate_img': bool(ablate_img), 'n_skip_invalid': n_skip,
+            'sd': sd_enc is not None, 'ablate_sd': bool(ablate_sd and sd_enc is not None),
             'res': {k: summ(v) for k, v in acc.items()}}
 
 
 def format_eval(name, r):
     s = f'[{name}] n={r["n"]} K={r["K"]} S={r["S"]}' + (f' | bo {r["n_skip_invalid"]} mau is_valid_fit=0'
-                                                          if r.get('n_skip_invalid') else '') + (' | ABLATE anh (f8, feat_j = 0)' if r['ablate_img'] else '')
+                                                          if r.get('n_skip_invalid') else '') + (' | ABLATE anh (f8, feat_j = 0)' if r['ablate_img'] else '') + (
+        (' | f8 = SD' + (' | ABLATE SD (f8 = 0, giu feat_j)' if r.get('ablate_sd') else '')) if r.get('sd') else '')
     lines = [s]
     for k, v in r['res'].items():
         rp = f' | lech 2D {v["reproj_px"]:5.2f} px' if 'reproj_px' in v else ''

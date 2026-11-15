@@ -12,6 +12,10 @@ IMGLIFT.refiner_finetune (2026-11-12, mac dinh TAT): mo khoa Refiner, train cung
   Refiner EMA luu moi epoch thanh checkpoint/refiner_epoch_XX.pth.tar va refiner_last.pth.tar, ck['refiner_ckpt'] tro toi do.
 IMGLIFT.kd_teacher_ckpt (2026-11-12, mac dinh TAT): KD tu lifter teacher GT 2D (dong bang) sang lifter nay, cung t / nhieu,
   MSE token an 17 khop da layer_norm x IMGLIFT.kd_w. IMGLIFT.init_ckpt: khoi tao tu last.pth.tar cua run khac.
+IMGLIFT.sd_enable (2026-11-15, mac dinh TAT): SD lifter -- f8 lay tu SDFeatureEncoder (Stable Diffusion 1.5 + ControlNet,
+  lib/models/sd_feature.py) thay f8 Refiner; train LoRA + outmodules + kp_lifting (+ ControlNet theo sd_train_control)
+  cung lifter, EMA rieng cho phan SD; ck luu 'sd_arch', 'sd_ckpt', 'sd_state' (EMA, chi tham so train), last them
+  'sd_raw_state'. IMGLIFT.grad_accum: tich luy gradient (1 = nhu cu).
 Moi epoch: danh gia nhanh tren IMGLIFT.eval_sets (chi LOG). Bao ket qua theo EPOCH CUOI (lich co dinh).
 
 Chay:
@@ -54,7 +58,7 @@ from models.img_lifter import ImgLifter
 from utils.jotr_dataset import get_test_dataset
 from utils.img_lifter_tools import (build_img_lifter, imglift_arch, load_frozen_refiner, refiner_inputs,
                                     refiner_inputs_train, lifter_det, eval_img_lifter, format_eval,
-                                    load_img_lifter)
+                                    load_img_lifter, sd_arch, build_sd, sd_image_feat)
 from models.refiner2d import refiner_losses
 
 random.seed(args.seed)
@@ -105,6 +109,21 @@ def main():
     for p in ema.parameters():
         p.requires_grad = False
     log(f'ImgLifter: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M tham so')
+    SD = bool(L.get('sd_enable', False))
+    sd_enc = sd_ema = None
+    sd_pairs = []
+    if SD:
+        assert not FT_REF, 'sd_enable khong dung chung refiner_finetune (f8 Refiner khong con dung)'
+        assert not L.get('kd_teacher_ckpt', ''), 'sd_enable chua ho tro KD'
+        assert not L.get('init_ckpt', ''), 'sd_enable chua ho tro init_ckpt'
+        assert L.sd_ckpt, 'Can IMGLIFT.sd_ckpt (control_sd15_openpose.pth)'
+        sd_enc = build_sd(sd_arch(), L.sd_ckpt, DEVICE, log=log)
+        sd_enc.train()
+        sd_ema = copy.deepcopy(sd_enc).eval()                               # EMA chi cap nhat tham so train
+        for p in sd_ema.parameters():
+            p.requires_grad = False
+        de, dm = dict(sd_ema.named_parameters()), dict(sd_enc.named_parameters())
+        sd_pairs = [(de[n], dm[n]) for n in sd_enc._trainable_names]
     if FT_REF:
         # Nhom tham so: lifter (lr TRAIN.lr) | head Refiner | backbone Refiner (lr nho, giu dac trung pretrain)
         lr_h = cfg.TRAIN.lr * float(L.refiner_lr_scale)
@@ -115,6 +134,14 @@ def main():
                                  {'params': refiner.backbone_parameters(), 'lr': lr_b, 'weight_decay': wd_r}],
                                 lr=cfg.TRAIN.lr, weight_decay=float(L.weight_decay))
         log(f'===> lr lifter {cfg.TRAIN.lr:.1e} | head Refiner {lr_h:.1e} | backbone Refiner {lr_b:.1e}')
+    elif SD:
+        # Nhom tham so: lifter (TRAIN.lr) | SD train (TRAIN.lr x sd_lr_scale; DPMesh lr_backbone = lr), cung weight decay
+        lr_sd = cfg.TRAIN.lr * float(L.sd_lr_scale)
+        opt = torch.optim.AdamW([{'params': list(model.parameters())},
+                                 {'params': sd_enc.trainable_parameters(), 'lr': lr_sd}],
+                                lr=cfg.TRAIN.lr, weight_decay=float(L.weight_decay))
+        log(f'===> lr lifter {cfg.TRAIN.lr:.1e} | SD {lr_sd:.1e} | lr_step {list(cfg.TRAIN.lr_step)} x {cfg.TRAIN.lr_factor}'
+            f' | grad_accum {int(L.grad_accum)} -> batch hieu dung {cfg.TRAIN.batch_size * int(L.grad_accum)}')
     else:
         opt = torch.optim.AdamW(model.parameters(), lr=cfg.TRAIN.lr, weight_decay=float(L.weight_decay))
     sched = torch.optim.lr_scheduler.MultiStepLR(opt, milestones=list(cfg.TRAIN.lr_step), gamma=cfg.TRAIN.lr_factor)
@@ -143,6 +170,12 @@ def main():
             raise ValueError('YAML khac kien truc/quy uoc Markov cua checkpoint; hay tao run moi')
         model.load_state_dict(ck['raw_model_state'], strict=True)
         ema.load_state_dict(ck['model_state'], strict=True)
+        if SD:
+            assert ck.get('sd_arch') == sd_arch(), f'YAML khac sd_arch cua checkpoint: {ck.get("sd_arch")} vs {sd_arch()}'
+            sd_enc.load_trainable_state(ck['sd_raw_state'])
+            sd_ema.load_trainable_state(ck['sd_state'])
+        else:
+            assert 'sd_arch' not in ck, 'checkpoint la SD lifter nhung YAML tat sd_enable'
         if FT_REF:
             assert 'refiner_raw_state' in ck, 'checkpoint khong co Refiner fine-tune -> hay tao run moi'
             refiner.load_state_dict(ck['refiner_raw_state'], strict=True)
@@ -200,6 +233,10 @@ def main():
         model.train()
         if FT_REF:
             refiner.train()
+        if SD:
+            sd_enc.train()
+        ACC = max(int(L.get('grad_accum', 1)), 1)
+        n_iter = len(train_loader)
         run, nb = {'loss_mm': 0.0, 'xy_err_px': 0.0, 'bone': 0.0, 'angle': 0.0, 'total': 0.0,
                    'ref_loss': 0.0, 'ref_px': 0.0, 'kd': 0.0, 'kd_nce': 0.0, 'kd_f8': 0.0}, 0
         pbar = tqdm(train_loader, desc=f'Epoch {epoch}')
@@ -221,6 +258,9 @@ def main():
             if float(L.train_xy_noise) > 0:                                       # b: o luoi 64 -> [-1,1] = / 32
                 b = torch.exp(log_b).clamp(max=8.0)                               # chan 8 o (32 px): log_b toi da 6
                 xy = xy + torch.randn_like(xy) * (b / 32.0 * float(L.train_xy_noise)).unsqueeze(-1)
+            if SD:
+                # f8 SD tu cung xy (da cong nhieu) + det (sau input_drop) ma lifter thay -> thay f8 Refiner
+                f8 = sd_image_feat(sd_enc, img, xy, lifter_det(jm_in, 0))
             cond7 = ImgLifter.make_cond7(xy, log_b, lifter_det(jm_in, NC), cam)
             if KD:
                 # Cung buoc t va cung nhieu cho teacher / student -> token an so sanh duoc
@@ -293,19 +333,26 @@ def main():
                 loss = loss + float(L.refiner_loss_w) * ref_loss
                 run['ref_loss'] += float(ref_loss)
                 run['ref_px'] += ref_parts['err_px']
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
+            # Tich luy gradient: ACC = 1 -> giong het ban cu (zero_grad, backward, step, EMA moi batch)
+            if i % ACC == 0:
+                opt.zero_grad()
+            (loss / ACC if ACC > 1 else loss).backward()
+            do_step = (i + 1) % ACC == 0 or (i + 1) == n_iter
+            if do_step:
+                opt.step()
             with torch.no_grad():
-                for pe, pm in zip(ema.parameters(), model.parameters()):
-                    pe.mul_(decay).add_(pm.detach(), alpha=1 - decay)
-                for be, bm in zip(ema.buffers(), model.buffers()):
-                    be.copy_(bm)
-                if FT_REF:
-                    for pe, pm in zip(ema_ref.parameters(), refiner.parameters()):
+                if do_step:
+                    for pe, pm in zip(ema.parameters(), model.parameters()):
                         pe.mul_(decay).add_(pm.detach(), alpha=1 - decay)
-                    for be, bm in zip(ema_ref.buffers(), refiner.buffers()):
+                    for be, bm in zip(ema.buffers(), model.buffers()):
                         be.copy_(bm)
+                    if FT_REF:
+                        for pe, pm in zip(ema_ref.parameters(), refiner.parameters()):
+                            pe.mul_(decay).add_(pm.detach(), alpha=1 - decay)
+                        for be, bm in zip(ema_ref.buffers(), refiner.buffers()):
+                            be.copy_(bm)
+                    for pe, pm in sd_pairs:                                     # SD: chi tham so train
+                        pe.mul_(decay).add_(pm.detach(), alpha=1 - decay)
                 g2 = targets['orig_joint_img'].to(DEVICE).float()[..., :2]
                 g2 = g2 / torch.tensor([cfg.output_hm_shape[2], cfg.output_hm_shape[1]], device=DEVICE) * 2 - 1
                 gv = meta['orig_joint_trunc'].to(DEVICE).float().reshape(B, 17)
@@ -354,18 +401,27 @@ def main():
             ref_last_path = os.path.relpath(ref_last_abs, cfg.root_dir)
         ck = {'epoch': epoch, 'model_state': ema.state_dict(), 'imglift_arch': imglift_arch(),
               'refiner_ckpt': ref_ep_path, 'cfg_file': args.cfg}
+        if SD:
+            ck.update({'sd_arch': sd_arch(), 'sd_ckpt': L.sd_ckpt, 'sd_state': sd_ema.trainable_state()})
         torch.save(ck, os.path.join(cfg.checkpoint_dir, f'epoch_{epoch:02d}.pth.tar'))
         last_ck = {**ck, 'refiner_ckpt': ref_last_path, 'raw_model_state': model.state_dict(),
                    'optim_state': opt.state_dict(), 'sched_state': sched.state_dict()}
+        if SD:
+            last_ck['sd_raw_state'] = sd_enc.trainable_state()
         if FT_REF:
             last_ck['refiner_raw_state'] = refiner.state_dict()
             last_ck['refiner_ema_state'] = ema_ref.state_dict()
         torch.save(last_ck, last_path)
 
-        for name, (loader, reg) in eval_loaders.items():
+        for ei, (name, (loader, reg)) in enumerate(eval_loaders.items()):
             r = eval_img_lifter(ema, ema_ref if FT_REF else refiner, loader, DEVICE, reg, K=int(L.eval_K), S=int(L.eval_S),
-                                eta=float(L.eta), jpma_max_b=float(L.jpma_max_b))
+                                eta=float(L.eta), jpma_max_b=float(L.jpma_max_b), sd_enc=sd_ema)
             log(format_eval(f'{name} ep{epoch} (danh gia nhanh, EMA)', r))
+            if SD and ei == 0 and bool(L.get('sd_eval_ablate', False)):
+                # Chan doan som: f8 SD = 0 (giu feat_j Refiner) -> SD co dong gop khong
+                r = eval_img_lifter(ema, refiner, loader, DEVICE, reg, K=int(L.eval_K), S=int(L.eval_S),
+                                    eta=float(L.eta), jpma_max_b=float(L.jpma_max_b), sd_enc=sd_ema, ablate_sd=True)
+                log(format_eval(f'{name} ep{epoch} (danh gia nhanh, EMA, ABLATE SD)', r))
     log('Xong. Bao ket qua bang main/eval_img_lifter.py voi checkpoint/last.pth.tar (epoch cuoi).')
 
 

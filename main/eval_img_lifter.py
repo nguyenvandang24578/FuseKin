@@ -4,6 +4,8 @@ main/eval_img_lifter.py -- Danh gia ImgLifter tren 3DPW / OC / PC / Crowd, 2D de
 Bao MPJPE17 / PA-MPJPE17 (mm, GT = H36M regressor x mesh) cho gop mean / jpma, oracle min-K (chi do tiem nang)
 va (--old_lifter_ckpt) DiffLifter cu voi OpenPose tren CUNG mau de so truc tiep.
 --ablate_img: dac trung anh cua lifter = 0 (giu 2D Refiner) -> lifter co dung anh khong.
+SD lifter (ck co 'sd_arch', 2026-11-15): tu nap SDFeatureEncoder (SD goc = ck['sd_ckpt'] hoac --sd_ckpt, + sd_state EMA);
+  --ablate_sd: chi f8 SD = 0 (giu feat_j Refiner) -> dong gop rieng cua SD.
 OC / PC mac dinh TOAN BO (giao thuc JOTR); --ocpc_mode test = chi sequence test.
 --train_sets (2026-11-05): do loi lifter tren tap TRAIN dung nhu luc train (2D GT + PoseFix / OpenPose 3dpw-train,
 co augmentation), GT = orig_joint_cam, bo mau is_valid_fit = 0; moi bo lay ngau nhien --max_samples mau (seed).
@@ -37,6 +39,8 @@ parser.add_argument('--S', type=int, default=4)
 parser.add_argument('--eta', type=float, default=1.0)
 parser.add_argument('--jpma_max_b', type=float, default=3.0, help='jpma: chi chon theo 2D o khop co b <= nguong')
 parser.add_argument('--ablate_img', action='store_true')
+parser.add_argument('--ablate_sd', action='store_true', help='SD lifter: f8 SD = 0, giu feat_j Refiner')
+parser.add_argument('--sd_ckpt', type=str, default='', help="SD lifter: rong = ck['sd_ckpt'] (control_sd15_openpose.pth)")
 parser.add_argument('--max_samples', type=int, default=0, help='0 = toan bo tap')
 parser.add_argument('--batch_size', type=int, default=0, help='0 = cfg.TEST.batch_size')
 parser.add_argument('--seed', type=int, default=0)
@@ -56,13 +60,15 @@ import __init_path  # noqa: F401
 import random
 import numpy as np
 from utils.jotr_dataset import get_test_dataset, get_train_dataset
-from utils.img_lifter_tools import load_img_lifter, load_frozen_refiner, eval_img_lifter, format_eval
+from utils.img_lifter_tools import load_img_lifter, load_frozen_refiner, eval_img_lifter, format_eval, load_sd_lifter
 
 
 def main():
     dev = torch.device('cuda')
     lifter, ck = load_img_lifter(args.ckpt, dev)
     refiner = load_frozen_refiner(args.refiner_ckpt or ck['refiner_ckpt'], dev)
+    sd_enc = load_sd_lifter(ck, dev, sd_ckpt=args.sd_ckpt)                 # None neu khong phai SD lifter
+    assert sd_enc is not None or not args.ablate_sd, '--ablate_sd chi dung cho SD lifter'
     old = None
     if args.old_lifter_ckpt:
         from models.ARTS import build_diff_lifter
@@ -78,7 +84,8 @@ def main():
             ds = Subset(ds, list(range(args.max_samples)))
         loader = DataLoader(ds, batch_size=bs, shuffle=False, num_workers=cfg.DATASET.workers)
         r = eval_img_lifter(lifter, refiner, loader, dev, reg, K=args.K, S=args.S, eta=args.eta,
-                            jpma_max_b=args.jpma_max_b, ablate_img=args.ablate_img, old_lifter=old, seed=args.seed)
+                            jpma_max_b=args.jpma_max_b, ablate_img=args.ablate_img, old_lifter=old, seed=args.seed,
+                            sd_enc=sd_enc, ablate_sd=args.ablate_sd)
         print(format_eval(label, r))
         summary[label] = r
     for name in [s.strip() for s in args.train_sets.split(',') if s.strip()]:
@@ -94,7 +101,7 @@ def main():
                             worker_init_fn=lambda w: np.random.seed(args.seed + w))
         r = eval_img_lifter(lifter, refiner, loader, dev, None, K=args.K, S=args.S, eta=args.eta,
                             jpma_max_b=args.jpma_max_b, ablate_img=args.ablate_img, seed=args.seed,
-                            train_split=True)
+                            train_split=True, sd_enc=sd_enc, ablate_sd=args.ablate_sd)
         label = f'TRAIN {name} (lay {len(ds)} / {n})'
         print(format_eval(label, r))
         summary[label] = r
