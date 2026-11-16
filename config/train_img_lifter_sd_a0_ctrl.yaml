@@ -1,0 +1,86 @@
+# =====================================================================
+# train_img_lifter_sd_a0_ctrl (2026-11-17, nguoi dung duyet, experiment.md muc 50) = DOI CHUNG cho SD lifter A0.
+#   GIONG HET config/train_img_lifter_sd_a0.yaml (20 epoch, lr hang 2e-4, batch 16 x grad_accum 4, cung du lieu,
+#   decoder, Refiner dong bang), CHI tat sd_enable -> f8 lay tu ResNet-50 cua Refiner nhu lifter no3dpw cu.
+#   Muc dich: tach phan cai thien cua SD A0 (§49) do SD hay do lich train (lifter cu: 25 epoch, lr x0.1 o 18 / 23).
+#   Cac key sd_* con lai khong co tac dung khi sd_enable False.
+# Chay:
+#   python main/train_img_lifter.py --cfg config/train_img_lifter_sd_a0_ctrl.yaml --exp_name img_lifter_sd_a0_ctrl --gpu 0
+#   python main/eval_img_lifter.py --cfg config/train_img_lifter_sd_a0_ctrl.yaml --ckpt experiment/img_lifter_sd_a0_ctrl/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --ocpc_mode all --gpu 0
+# =====================================================================
+
+update_bbox: True
+DATASET:
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']   # KHONG 3dpw-train
+  workers: 8
+  pw3d_2d_source: 'openpose'
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: False
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  posefix_scale: 1.0
+  posefix_fast: True
+  fusekin_unified: True
+  drop_raw_smpl_stats: True
+
+TRAIN:
+  print_freq: 20
+  batch_size: 16                             # micro-batch (4 / bo); x grad_accum 4 = 64
+  shuffle: True
+  dataset_ratio: [0.25, 0.25, 0.25, 0.25]
+  samples_per_epoch: 64000                   # giu nhu lifter cu
+  end_epoch: 20                              # DPMesh
+  lr: 0.0002
+  lr_step: [999]                             # lr hang (DPMesh lr_dec_factor 1)
+  lr_factor: 1.0
+
+TEST:
+  batch_size: 32
+  shuffle: False
+
+REFINE2D:
+  deconv_ch: 256
+
+IMGLIFT:
+  refiner_ckpt: 'experiment/refiner2d_dense48_scratch/checkpoint/last.pth.tar'
+  num_ctx: 48
+  markov_layer: True
+  markov_gate_b: True
+  w_bone: 0.5
+  w_angle: 0.1
+  embed_dim: 512
+  depth: 8
+  num_heads: 8
+  mlp_ratio: 2.0
+  drop_path: 0.1
+  timesteps: 1000
+  scale: 3.0
+  train_xy_noise: 0.5
+  input_drop_prob: 0.1                       # = che 10% khop cua DPMesh (det = 0 -> heatmap 0)
+  weight_decay: 0.01                         # DPMesh 0.01
+  ema_decay: 0.999
+  eval_sets: ['3dpw', '3dpw-pc', '3dpw-crowd']
+  eval_max_samples: 3000
+  eval_K: 5
+  eval_S: 2
+  eta: 1.0
+  jpma_max_b: 3.0
+  grad_accum: 4
+  # --- SD lifter ---
+  sd_enable: False                           # DOI CHUNG: f8 tu Refiner (ResNet-50) nhu lifter cu
+  sd_ckpt: 'data_final/pretrained/control_sd15_openpose.pth'   # SUA cho dung server
+  sd_lora_rank: 64
+  sd_train_control: 'none'                   # A0
+  sd_ctrl_in_init: 'copy_latent'
+  sd_hm_size: 32
+  sd_hm_sigma: 2.5
+  sd_hm_mask_det: True
+  sd_latent_scale: 1.0
+  sd_img_pm1: False
+  sd_bf16: True
+  sd_grad_ckpt: False
+  sd_lr_scale: 1.0
+  sd_eval_ablate: False                      # (khong co SD)
