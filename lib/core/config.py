@@ -245,6 +245,9 @@ cfg.MODEL.v9_smpl_dec = 3         # lop decoder query SMPL (24 khop + shape + ca
 cfg.MODEL.v9_hgcn = True          # HyperGCN trong moi lop fuse (chi co tac dung khi v9_e2e)
 cfg.MODEL.v9_drop3d_sample = 0.2  # modality dropout: ti le mau bo HET token 3D luc train
 cfg.MODEL.v9_drop3d_joint = 0.1   # modality dropout: ti le khop bo token 3D luc train
+# Chan doan (2026-11-16): luc TEST bo HET token 3D (moi mau, moi khop -> miss3d), chi con anh + 2D. Mac dinh tat.
+# Bat qua main/test_student_3dpw_sets.py --drop3d.
+cfg.MODEL.v9_test_drop3d = False
 cfg.MODEL.v9_joint_drop = 0.1     # che ngau nhien khop 2D (heatmap + token 2D) luc train; lifter nhan 2D day du
 # v9 reliability (2026-11-14, nguoi dung duyet): head doan log loi THAT [3D lifter, 2D Refiner] tung khop (giam sat bang
 # GT tren tap train, base._v9_rel_loss) -> cong nhan vao token 2D / 3D. Mac dinh TAT.

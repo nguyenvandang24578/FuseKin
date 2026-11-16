@@ -616,3 +616,29 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - **Chẩn đoán sớm:** `sd_eval_ablate: True` → mỗi epoch thêm quick-eval 3DPW (3000 mẫu) với f8 SD = 0 (giữ feat_j). Nếu gần bằng bản đầy đủ → SD không đóng góp → dừng sớm.
 - **File:** mới `lib/models/sd_encoder/{blocks,unet,vae,lora}.py`, `lib/models/sd_feature.py`, `config/train_img_lifter_sd_a0.yaml`; sửa `lib/core/config.py` (key `IMGLIFT.sd_*`, `grad_accum`, mặc định tắt / 1), `lib/utils/img_lifter_tools.py`, `main/train_img_lifter.py`, `main/eval_img_lifter.py` (backup `_to_delete/bak_sdlifter_20261115/`).
 - **Chưa có kết quả.**
+- **Quyết định (2026-11-15 21:59, người dùng):** run `img_lifter_sd_a0` đã chạy (1.12 it/s ≈ 60 phút/epoch, ≈ 21–23 giờ cho 20 epoch; bộ nhớ dùng 36 GB / còn ~85 GB). **Hướng chính vẫn dùng lifter cũ** (no3dpw); SD lifter chỉ thay vào khi thực sự hiệu nghiệm (tiêu chí: 3DPW đủ, epoch cuối, tốt hơn ≥ 2 mm so với 74.66 / 49.72 và `--ablate_sd` cho thấy SD có đóng góp).
+
+## 45. Kết quả v9_3dpw_rel (v9 6D + reliability, resume ep16 → 20) (2026-11-15 22:24, người dùng gửi log train)
+- Config `train_v9_3dpw_rel.yml` = `train_v9_3dpw.yml` + `v9_reliability` (w 0.1); **pose 6D, không IK, không F1**. Bị dừng ep16 do lỗi máy, resume `--resume_training`.
+- Eval 3DPW (35515 mẫu, 14 khớp, eval trong vòng train) theo epoch, MPJPE / PA / MPVPE:
+  ep16 85.09 / 53.76 / 101.18 · ep17 85.97 / 54.68 / 102.55 · ep18 84.53 / 53.66 / 100.65 · ep19 85.24 / 53.93 / 101.16 · **ep20 (last) 85.29 / 53.55 / 101.27**.
+- So v9 6D (§42, last): 86.36 / 54.29 / 102.03 → **−1.07 / −0.74 / −0.76 mm**. Dao động ep16–20 của chính run này 84.53–85.97 → chênh **nằm trong nhiễu** (1 seed).
+- Thống kê train (ep20): `r3d 0.91` = tương quan Pearson log lỗi 3D lifter dự đoán / thật **trên tập train**; `g3 0.90`, `g2 0.96` = cổng trung bình cho 3D / 2D (gần 1 → gần như không giảm trọng số).
+- Nhận xét (giả thuyết, Claude): head dự đoán được lỗi lifter trên train (r3d cao) nhưng cổng gần mở hoàn toàn → mô hình ít dùng thông tin tin cậy; cải thiện ≤ ~1 mm, không đủ kết luận. r3d trên test chưa đo. Chưa có số tách lift / ctx / mesh (cần `test_student_3dpw_sets.py`).
+
+## 46. Kế hoạch v9_full_ik_rp — IK + F1 trên giao thức đủ dữ liệu (2026-11-15 22:26, người dùng duyệt; chưa chạy)
+- `config/train_v9_full_ik_rp.yml` = `train_v9_3dpw_ik_rp.yml` (§42, 3dpw-only last 80.41 / 54.14 / 97.11), **chỉ đổi dữ liệu**: train Human36M / MuCo / MSCOCO / CrowdPose (0.25 mỗi bộ, 2D GT + PoseFix), không 3dpw-train; `samples_per_epoch` 64000 (1000 iter/epoch, batch 64). Giữ kiến trúc, loss, lr 1e-4 (backbone ×0.1, ×0.5 ở 8/12/15/18), 20 epoch, lifter no3dpw đóng băng.
+- Cả pipeline không thấy 3DPW → báo 3DPW / OC / PC (toàn bộ sequence) / Crowd ở `last.pth.tar`, **so được với bảng chính JOTR / DPMesh**. Dùng làm baseline cho các ablation tiếp (reliability, H1, F2, bỏ detach trước IK).
+- Ước lượng (chưa đo trên máy này): ~37 phút/epoch → ~12 giờ.
+
+## 47. Kết quả v9_full_ik_rp (§46) — IK + F1, đủ dữ liệu, last ep20 (2026-11-16 19:25, người dùng chạy test và báo)
+| tập | n | MPJPE | PA | MPVPE | LIFT | LIFT-PA | lift → token/ctx → mesh |
+|---|---:|---:|---:|---:|---:|---:|---|
+| 3DPW | 35515 | 82.45 | 55.23 | 101.06 | 82.03 | 53.84 | 82.03 → 81.43 → 82.45 |
+| 3DPW-OC (toàn bộ) | 20243 | 86.35 | 59.09 | 104.47 | 83.25 | 57.75 | 83.25 → 84.76 → 86.35 |
+| 3DPW-PC (toàn bộ) | 2218 | 98.70 | 69.51 | 123.11 | 94.31 | 69.47 | 94.31 → 98.66 → 98.70 |
+| 3DPW-Crowd | 1923 | 92.81 | 60.15 | 116.42 | 90.47 | 60.16 | 90.47 → 91.04 → 92.81 |
+- Script ghi nhãn "(toàn bộ, rò rỉ)" cho OC/PC, nhưng ở đây cả pipeline không train 3DPW → không rò rỉ; so được với bảng §2.
+- So DPMesh (§2): 3DPW +8.9, OC +15.5, PC +16.5, Crowd +12.9 mm. So 3dpw-only IK+F1 (§42, 80.41 / 54.14 / 97.11): 3DPW xấu hơn 2.0 mm (giao thức khác, chỉ tham khảo).
+- Quan sát: **mesh xấu hơn lifter trên cả 4 tập** (MPJPE +0.4 / +3.1 / +4.4 / +2.3; PA 3DPW +1.4). Trên OC / PC / Crowd, fusion (token/ctx) đã xấu hơn lift (+1.5 / +4.4 / +0.6) → Student không sửa được lifter ở vùng che khuất mà còn làm xấu đi; trên 3DPW gần như chép lifter (−0.6 ở ctx).
+- Giả thuyết (Claude, chưa kiểm chứng): Student vẫn bám pose 3D của lifter; nhánh ảnh + 2D không đủ mạnh để vượt lifter, nhất là khi bị che.

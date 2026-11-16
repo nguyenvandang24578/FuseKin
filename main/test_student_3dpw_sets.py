@@ -29,6 +29,8 @@ parser.add_argument('--gpu', type=str, default='0')
 parser.add_argument('--sets', type=str, default='3dpw,3dpw-oc,3dpw-pc')
 parser.add_argument('--ocpc_mode', type=str, default='both', choices=['test', 'all', 'both'])
 parser.add_argument('--batch_size', type=int, default=0, help='0 = cfg.TEST.batch_size')
+parser.add_argument('--drop3d', action='store_true',
+                    help='V9 chan doan: bo HET token 3D lifter (miss3d) luc test, chi con anh + 2D')
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
@@ -36,6 +38,8 @@ import torch
 from torch.utils.data import DataLoader
 from core.config import cfg, update_config
 update_config(args.cfg)
+if args.drop3d:
+    cfg.MODEL.v9_test_drop3d = True
 
 import __init_path  # noqa: F401
 from models.ARTS import get_model
@@ -85,7 +89,8 @@ def main():
             print(f'[{label}] LOI: {type(e).__name__}: {e}')
 
     print('\n' + '=' * 78)
-    print(f'{args.ckpt} | epoch {ck.get("epoch")} | {cfg.MODEL.name}')
+    print(f'{args.ckpt} | epoch {ck.get("epoch")} | {cfg.MODEL.name}'
+          + (' | TAT 3D (v9_test_drop3d: token 3D = miss3d, chi anh + 2D)' if args.drop3d else ''))
     print(f'{"tap":<28} | {"n":>6} | {"MPJPE":>7} | {"PA-MPJPE":>8} | {"MPVPE":>7} | {"LIFT":>7} | {"LIFT-PA":>7}'
           '   (mm, 14 khop)')
     print('-' * 98)

@@ -247,6 +247,8 @@ class V9Head(nn.Module):
             if pj > 0:
                 keep = keep * (torch.rand(B, N_JOINT, 1, device=e3d.device) >= pj).to(e3d.dtype)
             e3d = keep * e3d + (1 - keep) * self.miss3d
+        elif bool(cfg.MODEL.get('v9_test_drop3d', False)):                            # chan doan: test khong 3D
+            e3d = self.miss3d.expand_as(e3d)
         jt = self.tok_norm(img_j + e2d + e3d)                                         # (B, 17, D)
         jpos = self.joint_id.weight[None] + point_pos(ref_xy, h, w, D).to(mem.dtype)  # (B, 17, D)
         # ---- [2] fuse: self-attn khop -> cross-attn anh -> FFN -> HyperGCN ----
