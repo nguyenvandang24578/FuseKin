@@ -266,6 +266,15 @@ class V9Head(nn.Module):
                 jpos = self.joint_id.weight[None] + point_pos(xy_cur, h, w, D).to(mem.dtype)
         j3d = self.j3d_head(jt)
         j3d = j3d - j3d[:, 0:1]                                                       # root-relative tai Pelvis
+        blend_a = float(cfg.MODEL.get('v9_test_blend', -1.0))
+        if not self.training and blend_a >= 0:                                        # chan doan D2: tron voi lifter
+            lr_ = (lift - lift[:, 0:1]).to(j3d.dtype)
+            if str(cfg.MODEL.get('v9_test_blend_mode', 'global')) == 'opmask':
+                wb = torch.where(op_mask.to(j3d.dtype) > 0, torch.full_like(op_mask, blend_a, dtype=j3d.dtype),
+                                 torch.ones_like(op_mask, dtype=j3d.dtype))         # (B, 17, 1): khop sot -> lifter
+            else:
+                wb = blend_a
+            j3d = wb * lr_ + (1 - wb) * j3d
         # ---- [3] query SMPL ----
         bp = self.bone_pairs
         bone = self.bone_proj(torch.cat([jt[:, bp[:, 0]], jt[:, bp[:, 1]]], dim=-1))  # (B, 24, D)

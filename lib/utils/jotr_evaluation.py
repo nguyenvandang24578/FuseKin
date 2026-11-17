@@ -2,10 +2,12 @@ import torch
 from tqdm import tqdm
 
 
-def evaluate_3dpw_subset(model, dataset, loader, device='cuda', with_lifter=False):
+def evaluate_3dpw_subset(model, dataset, loader, device='cuda', with_lifter=False, post_fn=None):
     """Danh gia mesh tren 1 tap 3DPW bang dataset.evaluate: MPJPE / PA-MPJPE (14 khop) va MPVPE, mm.
     Teacher: dau vao = GT 3D H36M-17 hoi quy tu mesh GT (root-relative, met) + 2D Halpe cho PE.
-    Student: dau vao = 2D Halpe -> DiffLifter (can cam_bbox)."""
+    Student: dau vao = 2D Halpe -> DiffLifter (can cam_bbox).
+    post_fn (2026-11-17, chan doan, mac dinh None = nhu cu): post_fn(outputs, model_inputs, target_mesh, dataset) -> outputs,
+    goi ngay sau model(); co the sua mesh / khop va them outputs['extra_stages'] = {ten: (B, 17, 3)} (do 14 khop)."""
     from core.config import cfg
     model.eval()
     accumulated = {'mpjpe': [], 'pa_mpjpe': [], 'mpvpe': []}
@@ -51,6 +53,8 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda', with_lifter=Fals
                     joints_mask=model_inputs.get('joints_mask'),
                     cam_bbox=model_inputs.get('cam_bbox'),   # DiffLifter
                 )
+            if post_fn is not None:
+                outputs = post_fn(outputs, model_inputs, target_mesh_tensor, dataset)
 
             if with_lifter and 'lifted_joints_3d' in outputs:
                 reg = torch.as_tensor(dataset.h36m_joint_regressor, device=device, dtype=target_mesh_tensor.dtype)
@@ -71,6 +75,8 @@ def evaluate_3dpw_subset(model, dataset, loader, device='cuda', with_lifter=Fals
                     _acc14('ctx', outputs['ctx_3d'].float())
                 for it, h in enumerate(outputs.get('refine_history', []) or []):          # tang 2-3: mesh truoc [D]
                     _acc14(f'mesh_it{it}', torch.einsum('jk,bkc->bjc', reg, h['smpl_mesh_cam'].float()))
+                for k, j17 in (outputs.get('extra_stages') or {}).items():                # chan doan them (post_fn)
+                    _acc14(k, j17.float())
             pred_mesh = outputs['smpl_mesh_cam'].detach().cpu().numpy()
             target_mesh = target_mesh_tensor.detach().cpu().numpy()
             batch_outputs = [

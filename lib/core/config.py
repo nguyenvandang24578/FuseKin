@@ -248,6 +248,11 @@ cfg.MODEL.v9_drop3d_joint = 0.1   # modality dropout: ti le khop bo token 3D luc
 # Chan doan (2026-11-16): luc TEST bo HET token 3D (moi mau, moi khop -> miss3d), chi con anh + 2D. Mac dinh tat.
 # Bat qua main/test_student_3dpw_sets.py --drop3d.
 cfg.MODEL.v9_test_drop3d = False
+# Chan doan D2 (2026-11-17, GOPY.MD): luc TEST tron khop 3D Student (ctx) voi lifter TRUOC IK:
+#   j3d = w * lift + (1 - w) * ctx. v9_test_blend < 0 = tat (mac dinh). Mode 'global': w = v9_test_blend moi khop;
+#   'opmask': w = 1 o khop OpenPose sot (op_mask = 0), w = v9_test_blend o khop co. Bat qua test_student_3dpw_sets.py --blend.
+cfg.MODEL.v9_test_blend = -1.0
+cfg.MODEL.v9_test_blend_mode = 'global'
 cfg.MODEL.v9_joint_drop = 0.1     # che ngau nhien khop 2D (heatmap + token 2D) luc train; lifter nhan 2D day du
 # v9 reliability (2026-11-14, nguoi dung duyet): head doan log loi THAT [3D lifter, 2D Refiner] tung khop (giam sat bang
 # GT tren tap train, base._v9_rel_loss) -> cong nhan vao token 2D / 3D. Mac dinh TAT.

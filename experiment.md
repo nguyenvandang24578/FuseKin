@@ -642,3 +642,54 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - So DPMesh (§2): 3DPW +8.9, OC +15.5, PC +16.5, Crowd +12.9 mm. So 3dpw-only IK+F1 (§42, 80.41 / 54.14 / 97.11): 3DPW xấu hơn 2.0 mm (giao thức khác, chỉ tham khảo).
 - Quan sát: **mesh xấu hơn lifter trên cả 4 tập** (MPJPE +0.4 / +3.1 / +4.4 / +2.3; PA 3DPW +1.4). Trên OC / PC / Crowd, fusion (token/ctx) đã xấu hơn lift (+1.5 / +4.4 / +0.6) → Student không sửa được lifter ở vùng che khuất mà còn làm xấu đi; trên 3DPW gần như chép lifter (−0.6 ở ctx).
 - Giả thuyết (Claude, chưa kiểm chứng): Student vẫn bám pose 3D của lifter; nhánh ảnh + 2D không đủ mạnh để vượt lifter, nhất là khi bị che.
+
+## 48. Chẩn đoán v9_full_ik_rp TẮT 3D lúc test (`--drop3d`, token 3D = miss3d mọi mẫu / khớp) (2026-11-16 20:05, người dùng chạy và báo)
+| tập | có 3D (§47) MPJPE / PA | **tắt 3D** MPJPE / PA / MPVPE | chênh MPJPE / PA | DPMesh MPJPE |
+|---|---|---|---|---:|
+| 3DPW | 82.45 / 55.23 | 89.59 / 56.25 / 106.95 | +7.1 / +1.0 | 73.6 |
+| OC | 86.35 / 59.09 | 91.98 / 59.99 / 109.04 | +5.6 / +0.9 | 70.9 |
+| PC | 98.70 / 69.51 | 109.79 / 74.54 / 133.48 | +11.1 / +5.0 | 82.2 |
+| Crowd | 92.81 / 60.15 | 103.03 / 62.16 / 122.74 | +10.2 / +2.0 | 79.9 |
+- Chuỗi tầng (tắt 3D): 3DPW token/ctx 89.91 → mesh 89.59; OC 91.06 → 91.98; PC 111.25 → 109.79; Crowd 104.04 → 103.03.
+- Code: key `MODEL.v9_test_drop3d` (mặc định tắt), cờ `--drop3d` trong `main/test_student_3dpw_sets.py` (backup `_to_delete/bak_v9_testdrop3d_20261116/`).
+- Lưu ý: lúc train chỉ 20% mẫu bỏ 3D → số này có thể đánh giá thấp nhánh ảnh + 2D.
+- Nhận xét (giả thuyết, Claude): (1) nhánh ảnh + 2D của Student kém DPMesh 16–28 mm MPJPE và ~9 mm PA (3DPW 56.25 vs 47.4) → nút thắt chính là năng lực ảnh + 2D, không chỉ cách dùng 3D; (2) trên 3DPW / OC, bỏ 3D làm MPJPE xấu 6–7 mm nhưng PA chỉ ~1 mm → 3D lifter chủ yếu đóng góp phần bị PA loại bỏ (hướng toàn cục / tỉ lệ), ít đóng góp hình dạng tư thế; trên PC / Crowd 3D giúp cả PA (+5 / +2 mm).
+
+## 49. Kết quả SD lifter A0 (`img_lifter_sd_a0`, §44) — last ep20, K10 S4, OC/PC toàn bộ (2026-11-17 01:24, người dùng chạy và báo)
+| tập | SD A0 mean MPJPE17 / PA | lifter no3dpw last (§ dòng 387, K10 S4) | chênh | oracle min-K SD / cũ | khớp sót / có (SD) |
+|---|---|---|---|---|---|
+| 3DPW (35515) | 73.65 / 48.46 | 74.80 / 49.87 | −1.15 / −1.41 | 66.60 / 67.25 | 91.61 / 70.04 |
+| OC (20243) | 72.78 / 51.24 | 75.49 / 53.47 | −2.71 / −2.23 | 65.19 / 67.42 | 89.78 / 69.54 |
+| PC (2218) | 83.36 / 62.96 | 85.49 / 64.06 | −2.13 / −1.10 | 76.07 / 77.00 | 111.19 / 74.32 |
+| Crowd (1923) | 80.73 / 53.90 | 83.22 / 56.47 | −2.49 / −2.57 | 73.30 / 75.19 | 107.38 / 75.09 |
+- jpma / hyp_don_le SD: 3DPW 74.37 / 74.54, OC 73.39 / 74.26, PC 84.41 / 85.10, Crowd 81.56 / 82.49. Lệch 2D 4.55 / 5.05 / 6.12 / 5.70 px.
+- Đánh giá theo tiêu chí §44: 3DPW −1.15 (**chưa đạt** ≥ 2 mm); OC / PC / Crowd −2.1 đến −2.7 (đạt), cải thiện lớn hơn trên tập che khuất. Khớp detector sót gần như không đổi (3DPW 91.6 vs 91.1 cũ).
+- Yếu tố gây nhiễu còn nguyên: lịch khác (SD 20 epoch lr hằng, batch 16×4; cũ 25 epoch, lr ×0.1 ở 18/23), 1 seed mỗi bên.
+- **`--ablate_sd`** (f8 SD = 0, giữ feat_j Refiner; người dùng báo 2026-11-17 10:35), mean MPJPE17 / PA: 3DPW 79.54 / 51.47 (+5.89 / +3.01 so với đủ SD) | OC 82.85 / 56.82 (+10.07 / +5.58) | PC 86.95 / 65.35 (+3.59 / +2.39) | Crowd 87.27 / 58.23 (+6.54 / +4.33). Khớp sót / có 3DPW 99.46 / 75.53 (đủ SD 91.61 / 70.04).
+- Nhận xét: lifter **phụ thuộc rõ vào f8 SD** (bỏ đi xấu 3.6–10 mm, lớn nhất ở OC), cả khớp sót lẫn khớp có. Lưu ý: f8 = 0 nằm ngoài phân bố train (lifter chưa từng thấy) → ablate đo mức phụ thuộc, KHÔNG đo phần hơn ResNet; phần hơn ResNet cần run đối chứng §50.
+
+## 50. Đối chứng SD A0: lifter ResNet cùng lịch SD (`img_lifter_sd_a0_ctrl`) (2026-11-17 01:26, người dùng duyệt; chưa chạy)
+- `config/train_img_lifter_sd_a0_ctrl.yaml` = `train_img_lifter_sd_a0.yaml`, chỉ `sd_enable: False` (f8 từ ResNet-50 Refiner). Cùng 20 epoch, lr hằng 2e-4, batch 16 × grad_accum 4, dữ liệu, decoder.
+- Đọc: SD A0 (§49) − đối chứng = phần do SD; đối chứng − lifter cũ (74.80 / 75.49 / 85.49 / 83.22) = phần do lịch train.
+- **Kết quả đối chứng** (người dùng báo 2026-11-17 11:36; dòng tiêu đề không có "f8 = SD" → đúng run không SD; last, K10 S4, OC/PC toàn bộ), mean MPJPE17 / PA:
+  | tập | đối chứng (ResNet, lịch SD) | SD A0 (§49) | SD − đối chứng | đối chứng − lifter cũ |
+  |---|---|---|---|---|
+  | 3DPW | 75.08 / 49.79 | 73.65 / 48.46 | **−1.43 / −1.33** | +0.28 / −0.08 |
+  | OC | 75.47 / 53.41 | 72.78 / 51.24 | **−2.69 / −2.17** | −0.02 / −0.06 |
+  | PC | 84.07 / 63.60 | 83.36 / 62.96 | −0.71 / −0.64 | −1.42 / −0.46 |
+  | Crowd | 81.61 / 55.57 | 80.73 / 53.90 | −0.88 / −1.67 | −1.61 / −0.90 |
+  Oracle min-K đối chứng: 67.06 / 67.06 / 76.01 / 73.40. Khớp sót / có 3DPW 92.10 / 71.66.
+- Nhận xét (Claude): đổi lịch train gần như không đổi 3DPW / OC (≤ 0.3 mm), giúp PC / Crowd ~1.5 mm (2 tập nhỏ, nhiễu lớn). **Phần do SD**: 3DPW −1.4, OC −2.7 (2 tập lớn, đáng tin hơn), PC −0.7, Crowd −0.9. → SD có lợi thật nhưng vừa phải; 3DPW chưa đạt ≥ 2 mm. Chi phí: SD 1.29 tỷ tham số, ~60 phút / epoch.
+
+## 51. Detector ViTPose cho 3DPW (2026-11-17, người dùng muốn thử detector khác; chưa chạy)
+- Bối cảnh: SD lifter chỉ giúp ~1.4–2.7 mm (§50); người dùng muốn thử 2D tốt hơn OpenPose.
+- Môi trường: server `arts` (mmpose chính thức 0.29 không có ViTPose) → cài repo ViTPose gốc (`ViTAE-Transformer/ViTPose`, fork mmpose 0.x, backbone `ViT`), nới giới hạn mmcv 1.5.0 → 1.7.0 trong `ViTPose/mmpose/__init__.py` (mmcv 1.7.0 đang có; cài mmcv-full 1.5.0 thất bại do ổ `/` đầy). Trọng số `vitpose-h-multi-coco.pth` (như ARTS) ở `pose_detector/`.
+- Tool mới `tools/extract_vitpose_3dpw.py`: ViTPose (API như `ARTS/main/run_demo.py`) → COCO-17 đổi sang **định dạng Halpe-26** (Neck = trung điểm vai, Hip = trung điểm hông, đỉnh đầu + bàn chân score 0 → H36M Head_top bị bỏ như OpenPose), dùng lại hàm chọn bbox / vòng lặp / vẽ hình của `extract_halpe26_3dpw.py`. Ra `3DPW_{split}_halpe26_vitpose{,_opbox}.json`. Dùng trong FuseKin: `pw3d_2d_source: 'halpe26'` + `pw3d_halpe_suffix: '_vitpose'` (không sửa dataset).
+- Kế hoạch: (1) thử ít ảnh + xem hình; (2) trích test / oc / pc / validation, bbox `gt` và `openpose_best`; (3) so độ chính xác 2D với OpenPose / Halpe (`compare_2d_sources.py`) trước khi đụng tới lifter.
+- **Bổ sung (2026-11-17 14:03, người dùng yêu cầu):** trích ViTPose trên **3DPW train / validation / test / oc / pc** với 2 kiểu bbox: (1) `gt` = bbox annotation (đuôi `_vitpose`); (2) `gt2d` = bbox ôm 17 khớp 2D GT H36M (từ mesh GT, gồm cả khớp bị che) ×1.25 (đuôi `_vitpose_gt2dbox`). Tool mới `tools/dump_pw3d_gt2d.py` (env jotr_new, xuất `3DPW_{tag}_gt2d_h36m.json`, cùng định nghĩa 2D GT với nhánh đánh giá FuseKin); `extract_vitpose_3dpw.py` thêm `--bbox_source gt2d` (backup `_to_delete/bak_vitpose_20261117/`). Ghi chú: bbox (2) dùng 2D GT của tập test. Dataset PW3D chỉ đọc `pw3d_halpe_suffix` cho split ≠ train → file train có đuôi chưa được dataset dùng.
+
+## 52. Chẩn đoán D1 / D2 theo `GOPY.MD` (2026-11-17, người dùng duyệt "code luôn"; đã code, chưa chạy)
+- Bối cảnh: `GOPY.MD` (góp ý ngoài) nêu: Student (`V9Head`) không nhận `cam_bbox` (đã xác nhận trên code: `cam_bbox` chỉ vào lifter); HybrIK detach khớp đầu vào (`hybrik_lbs.py:732`, đã xác nhận); fusion làm xấu lifter trên OC / PC / Crowd. Claude đánh giá: phần "mâu thuẫn view_rot kéo ngược chiều" bị phóng đại; các mức "lợi ích kỳ vọng" là ước đoán.
+- **D1** (`--view_rot fwd|inv`): xoay mesh / ctx / token của Student quanh gốc bằng `view_rot(dx, dy)` từ `cam_bbox` (hoặc nghịch đảo) trước khi đo. Nếu `--drop3d` + `fwd` giảm MPJPE rõ (PA gần như không đổi) → Student thiếu `cam_bbox` dự đoán trong hệ camera "nhìn thẳng tâm bbox".
+- **D2** (`--blend a,b,...`, `--blend_mode global|opmask`, `--oracle_lc`): trộn khớp 3D trước IK `j3d = w·lift + (1−w)·ctx` (key `MODEL.v9_test_blend` mặc định −1 = tắt, `v9_test_blend_mode`); `opmask`: khớp OpenPose sót dùng lifter. `oracle_lc` = mỗi khớp chọn lift / ctx gần GT hơn (chỉ đo trần, không báo cáo). w = 0 phải tái tạo đúng §47 (kiểm tra).
+- Code: `lib/core/config.py` (2 key), `lib/models/fusekin_v9.py` (trộn chỉ khi test + key bật), `lib/utils/jotr_evaluation.py` (`post_fn` tùy chọn, `extra_stages`), `main/test_student_3dpw_sets.py` (cờ mới). Backup `_to_delete/bak_d1d2_20261117/`.
