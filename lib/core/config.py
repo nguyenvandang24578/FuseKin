@@ -265,6 +265,24 @@ cfg.MODEL.v9_ik = False
 # moi lop fuse (tru lop cuoi), vi tri giam sat bang GT 2D (base._v9_reproj_loss). Mac dinh TAT.
 cfg.MODEL.v9_reproj = False
 cfg.MODEL.v9_reproj_w = 1.0       # trong so loss vi tri 2D (smooth-L1, don vi [-1, 1])
+# --- H1 + H2 (2026-11-17, nguoi dung duyet, PLAN_H1H2.md muc 6; tat ca mac dinh TAT) ---
+# H1b: IK HybrIK kha vi (lib/models/hybrik_ik_grad.py): xuong du doan khong detach, bo big_diff, Pelvis giai tich.
+cfg.MODEL.v9_ik_grad = False
+# H1a: moi lop decoder SMPL du doan phan du cho 29 diem J29 (cong don, khoi tao 0); 22 diem than gioi han
+#   v9_res29_body_max x tanh (met), 7 diem dau chi (V7_LIMB_IDX) tu do. Loss J29 29 diem moi lop (v9_j29_all_w,
+#   he so lop v3_refine_gamma) + phat |delta than|^2 (v9_res29_reg_w). Can v9_ik.
+cfg.MODEL.v9_ik_res29 = False
+cfg.MODEL.v9_res29_body_max = 0.04
+cfg.MODEL.v9_res29_reg_w = 0.01
+cfg.MODEL.v9_j29_all_w = 1.0
+# H2: cong theo khop tron khop Student (j3d_s) voi lifter truoc IK: j3d = g.detach() * lift + (1 - g.detach()) * j3d_s.detach()
+#   (j3d_s chi hoc tu loss ctx, g chi hoc tu BCE voi nhan g* chuan hoa theo tung khop, v9_gate_w); mat 3D -> g = 0.
+cfg.MODEL.v9_gate = False
+cfg.MODEL.v9_gate_w = 0.1
+# H2b: luot fuse thu hai (chung trong so) voi token 3D = miss3d cho moi mau -> j3d_vis, loss GT 3D (v9_vis_aux_w).
+#   Chi la loss phu, khong dua vao tron.
+cfg.MODEL.v9_vis_aux = False
+cfg.MODEL.v9_vis_aux_w = 0.5
 cfg.MODEL.imglift_K = 5                    # so gia thuyet, gop trung binh
 cfg.MODEL.imglift_S = 2                    # so buoc DDIM
 # True: 2D cho Student (heatmap [A], PE, [B], feedback [D]) = 17 khop 2D cua Refiner (mask = 1 moi khop) thay 2D detector
