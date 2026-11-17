@@ -30,6 +30,7 @@ Vi du (tu thu muc goc FuseKin):
       --splits test oc pc validation --bbox_source openpose_best
 """
 import argparse
+import json
 import os
 import os.path as osp
 import sys
@@ -51,7 +52,10 @@ def parse_args():
     p.add_argument('--out_dir', default='', help='Mac dinh = data_root')
     p.add_argument('--vis_num', type=int, default=0, help='So anh ve kiem tra moi split (0 = tat)')
     p.add_argument('--vis_dir', default='debug_vitpose')
-    p.add_argument('--bbox_source', default='gt', choices=['gt', 'openpose', 'openpose_best', 'combo'])
+    p.add_argument('--bbox_source', default='gt', choices=['gt', 'openpose', 'openpose_best', 'combo', 'gt2d'],
+                   help="gt2d: bbox om 17 khop 2D GT H36M (file tu tools/dump_pw3d_gt2d.py) x --gt2d_expand")
+    p.add_argument('--gt2d_expand', type=float, default=1.25, help='he so noi bbox tu 2D GT (giong op_expand)')
+    p.add_argument('--gt2d_dir', default='', help='thu muc chua 3DPW_{split}_gt2d_h36m.json (mac dinh = data_root)')
     p.add_argument('--op_expand', type=float, default=1.25, help='he so noi bbox tu khop OpenPose')
     p.add_argument('--op_min_joints', type=int, default=6, help='it hon so khop OpenPose nay -> dung bbox GT')
     p.add_argument('--out_suffix', default=None,
@@ -63,8 +67,39 @@ def parse_args():
                    help='ve K nguoi ma Halpe CU lech OpenPose: [Halpe cu] | [ViTPose] | [OpenPose]')
     a = p.parse_args()
     if a.out_suffix is None:
-        a.out_suffix = '_vitpose' if a.bbox_source == 'gt' else '_vitpose_opbox'
+        a.out_suffix = {'gt': '_vitpose', 'gt2d': '_vitpose_gt2dbox'}.get(a.bbox_source, '_vitpose_opbox')
     return a
+
+
+def gt2d_box(j, expand):
+    """j (17, 3) [x, y, in_img] 2D GT -> bbox xyxy om CA 17 khop (ke ca bi che / ngoai anh), noi expand quanh tam."""
+    j = np.asarray(j, dtype=np.float32)
+    x0, y0 = j[:, 0].min(), j[:, 1].min()
+    x1, y1 = j[:, 0].max(), j[:, 1].max()
+    cx, cy, w, h = (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) * expand, (y1 - y0) * expand
+    return [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2]
+
+
+_infer_orig = H.infer
+
+
+def infer(model, img, anns, args):
+    """Them che do 'gt2d' cho H.infer; cac che do khac goi ham goc. Nguoi khong co 2D GT -> bbox GT annotation."""
+    if args.bbox_source != 'gt2d':
+        return _infer_orig(model, img, anns, args)
+    boxes = []
+    for a in anns:
+        j = args.gt2d.get(str(a['id']))
+        if j is None:
+            args.gt2d_miss += 1
+            boxes.append(H.gt_box(a))
+        else:
+            boxes.append(gt2d_box(j, args.gt2d_expand))
+    k, s = model(img, bboxes=boxes)
+    return np.asarray(k), np.asarray(s), boxes
+
+
+H.infer = infer   # run_split goi H.infer -> dung ban co 'gt2d'
 
 
 def coco17_to_halpe26(k17):
@@ -110,7 +145,16 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     model = ViTPoseModel(args.pose_config, args.pose_ckpt, args.device)
     for split in args.splits:
+        if args.bbox_source == 'gt2d':
+            p = osp.join(args.gt2d_dir or args.data_root, f'3DPW_{split}_gt2d_h36m.json')
+            assert osp.isfile(p), f'Khong thay {p}. Chay truoc: python tools/dump_pw3d_gt2d.py --tags {split}'
+            with open(p) as f:
+                args.gt2d = json.load(f)
+            args.gt2d_miss = 0
+            print(f'[{split}] 2D GT: {p} ({len(args.gt2d)} nguoi)')
         H.run_split(model, args, split, out_dir)
+        if args.bbox_source == 'gt2d':
+            print(f'[{split}] nguoi khong co 2D GT (dung bbox annotation): {args.gt2d_miss}')
 
 
 if __name__ == '__main__':
