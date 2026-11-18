@@ -8,6 +8,8 @@ Dau ra  : <out_dir>/lowconf.jpg, random.jpg, highconf.jpg, worst.jpg (luoi cac n
           GT 2D CrowdPose (crowdpose_train.json, 14 khop) ve x trang + xuong trang mong (2026-11-18 bo sung).
           worst.jpg = nguoi lech GT nhieu nhat: loi = TB khoang cach 12 khop tay chan (GT co, ViTPose score > 0.3)
           / chieu cao bbox; > --err_thr thuong la nham nguoi (uoc luong tho, nguong tu chon).
+          --separate (mac dinh BAT): moi nguoi 1 anh rieng <out_dir>/<nhom>/<hang>_id<ann_id>.jpg thay vi luoi;
+          --no_separate de quay lai luoi. --tile_w / --tile_h: kich thuoc moi anh.
           <out_dir>/stats.json (thong ke score tren khop CO THAT, khong tinh dinh dau + 6 diem ban chan score 0)
 Mau     : do score < 0.3 | vang 0.3..0.6 | xanh > 0.6 ; khop score = 0 khong ve.
 Khop co that = COCO-17 (0..16) + Neck (18) + Hip (19); bo 17 (dinh dau) va 20..25 (ban chan) vi luon score 0.
@@ -28,6 +30,7 @@ REAL = list(range(17)) + [18, 19]
 EDGES = ((0, 1), (0, 2), (1, 3), (2, 4), (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),
          (5, 11), (6, 12), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16))
 TILE_W, TILE_H = 256, 320
+SEPARATE = False
 # 12 khop tay chan CrowdPose (0..11: vai, khuyu, co tay, hong, goi, co chan, trai truoc phai) = COCO 5..16
 CP2COCO = list(range(5, 17))
 GT_EDGES = ((0, 1), (0, 2), (2, 4), (1, 3), (3, 5), (0, 6), (1, 7), (6, 7), (6, 8), (8, 10), (7, 9), (9, 11))
@@ -45,6 +48,11 @@ def parse_args():
     p.add_argument('--cols', type=int, default=6)
     p.add_argument('--min_h', type=float, default=0, help='chi xet nguoi co bbox cao >= min_h px (0 = khong loc)')
     p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--separate', dest='separate', action='store_true', default=True,
+                   help='moi nguoi 1 file anh rieng (mac dinh)')
+    p.add_argument('--no_separate', dest='separate', action='store_false', help='gop thanh luoi nhu cu')
+    p.add_argument('--tile_w', type=int, default=0, help='0 = 512 khi separate, 256 khi luoi')
+    p.add_argument('--tile_h', type=int, default=0, help='0 = 640 khi separate, 320 khi luoi')
     p.add_argument('--err_thr', type=float, default=0.2, help='nguong loi / chieu cao bbox de dem nghi nham nguoi')
     p.add_argument('--out_dir', default='output/vis_vitpose_crowdpose')
     return p.parse_args()
@@ -88,6 +96,23 @@ def make_tile(img, bbox, kp, aid, ms, gt=None, err=None):
 
 
 def make_grid(idx, kpts, ids, ann_info, img_dir, cols, path, gts=None, errs=None):
+    if SEPARATE:
+        # moi nguoi 1 file: <out_dir>/<nhom>/<hang>_id<ann_id>.jpg (hang = thu tu trong nhom)
+        d = osp.splitext(path)[0]
+        os.makedirs(d, exist_ok=True)
+        n = 0
+        for r, i in enumerate(idx):
+            fname, bbox = ann_info[int(ids[i])]
+            img = cv2.imread(osp.join(img_dir, fname))
+            if img is None:
+                continue
+            ms = kpts[i, REAL, 2].mean()
+            t = make_tile(img, bbox, kpts[i], int(ids[i]), ms,
+                          None if gts is None else gts[i], None if errs is None else errs[i])
+            cv2.imwrite(osp.join(d, f'{r:03d}_id{int(ids[i])}.jpg'), t)
+            n += 1
+        print(f'luu {n} anh -> {d}/')
+        return
     tiles = []
     for i in idx:
         fname, bbox = ann_info[int(ids[i])]
@@ -107,7 +132,11 @@ def make_grid(idx, kpts, ids, ann_info, img_dir, cols, path, gts=None, errs=None
 
 
 def main():
+    global TILE_W, TILE_H, SEPARATE
     args = parse_args()
+    SEPARATE = bool(args.separate)
+    TILE_W = args.tile_w or (512 if SEPARATE else 256)
+    TILE_H = args.tile_h or (640 if SEPARATE else 320)
     npz = args.npz or osp.join(args.data_root, 'CrowdPose_train_halpe26_vitpose.npz')
     z = np.load(npz)
     ids, kpts = z['ann_id'], z['kpts']
