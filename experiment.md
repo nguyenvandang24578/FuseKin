@@ -754,3 +754,35 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - File mới: `lib/models/vit_lifter.py`, `lib/utils/vit_lifter_tools.py`, `main/train_vit_lifter.py`, `main/eval_vit_lifter.py`, `config/train_vit_lifter_3dpw.yaml`. Sửa: `lib/core/config.py` (`DATASET.pw3d_halpe_train_suffix`, `IMGLIFT.vit_glob_img / vit_enc_pretrained / vit_logb_eps`, mặc định tắt / như cũ), `data_final/PW3D/dataset.py` (split train đọc `pw3d_halpe_train_suffix`, mặc định '' = như cũ). Backup `_to_delete/bak_vitlifter_20261118/`.
 - YAML: train `3DPW_train_halpe26_vitpose.json` (bbox GT), test `_vitpose_opbox`; 25 epoch × 32000 mẫu, lr 2e-4, step [18, 23]; eval nhanh 3DPW / OC / PC (OC/PC chỉ seq test). Encoder không lưu trong checkpoint (nạp lại SPIN).
 - Rủi ro (giả thuyết): ít dữ liệu (chỉ 3dpw-train) → dễ overfit; encoder đóng băng có thể không đủ cho độ sâu; train bbox GT vs test bbox OpenPose lệch nhẹ.
+- **Log train VitLifter ep15–25 (người dùng gửi 2026-11-18 20:52; đánh giá nhanh EMA, 3000 mẫu, K5 S2, MPJPE17 / PA; OC/PC chỉ seq test):**
+  | ep | train MPJPE x0 | 3DPW | OC | PC |
+  |---|---|---|---|---|
+  | 15 | 23.64 | 75.82 / 47.82 | 73.75 / 47.49 | 67.78 / 56.47 |
+  | 18 (lr ↓) | 22.06 | 76.23 / 47.56 | 74.77 / 47.31 | 67.07 / 55.89 |
+  | 20 | 16.65 | 76.89 / 47.46 | 75.82 / 47.38 | 66.82 / 55.91 |
+  | **25 (last)** | 15.14 | **77.73 / 47.60** | **76.96 / 47.42** | **66.89 / 54.98** |
+  Lệch 2D (3D dự đoán chiếu, fit s+t, so GT 2D mesh): 3DPW 4.42, OC 5.15, PC 4.09 px. Lỗi 2D ViTPose so GT 2D mesh (khớp conf > 0.3): train 12.4, 3DPW 15.14, OC 18.02, PC 7.86 px. Khớp thiếu (6%) vs có: 3DPW 109.6 / 75.6.
+- Nhận xét (Claude, giả thuyết): (1) **Overfit rõ**: train x0 23.6 → 15.1 mm trong khi 3DPW 75.8 → 77.7, OC 73.8 → 77.0 (PC phẳng) — do chỉ có 3dpw-train. Báo `last` theo quy tắc, không chọn epoch theo test. (2) Lỗi 2D ViTPose 12–18 px so GT 2D mesh phần lớn có thể là **lệch định nghĩa khớp** COCO (hông, cổ, đầu) so với khớp H36M hồi quy từ mesh, không hẳn lỗi detector; pose 3D chiếu lại chỉ lệch ~4.4 px → lifter đã tự bù lệch định nghĩa (chưa kiểm chứng theo từng khớp). (3) Không so trực tiếp với lifter cũ (dữ liệu train khác; số nhanh 3000 mẫu K5 S2). Mốc tham khảo lifter no3dpw OpenPose K10 S4 (§40): 3DPW 74.80 / 49.87 — VitLifter PA tốt hơn ~2.3, MPJPE kém ~2.9, khác dữ liệu train nên chỉ gợi ý. (4) Cần chạy `main/eval_vit_lifter.py` đủ tập K10 S4 để có số chính thức.
+
+## 56. Log train E4 `v9_full_h1h2_vis` ep1–9 (§53; người dùng gửi 2026-11-18 20:59; đang train, chưa có last)
+- Cấu hình: H1b + H1a + H2 + H2b, lifter `img_lifter_dense48_markov_no3dpw`, 4 bộ × 0.25, 64000 mẫu / epoch, ~63 phút / epoch. Đánh giá mỗi epoch: 3DPW đầy đủ (35515, OpenPose), 14 khớp. Không NaN / crash.
+
+| ep | lr | 3DPW MPJPE / PA / MPVPE | lỗi trộn / j3d_s / lifter (train, mm) | J29 lớp cuối (mm) | g TB (g*) | BCE cổng |
+|---|---|---|---|---|---|---|
+| 1 | 1e-4 | 97.95 / 60.33 / 123.05 | 95.1 / 157.9 / 68.2 | 185.6 | 0.562 (0.563) | 0.676 |
+| 2 | 1e-4 | 90.99 / 59.40 / 112.04 | 79.3 / 113.2 / 68.3 | 134.8 | 0.556 (0.556) | 0.676 |
+| 3 | 1e-4 | 97.00 / 63.18 / 119.97 | 78.5 / 111.6 / 68.2 | 130.5 | 0.557 (0.556) | 0.675 |
+| 4 | 1e-4 | 89.51 / 59.28 / 112.33 | 76.3 / 105.3 / 67.7 | 123.5 | 0.553 (0.553) | 0.676 |
+| 5 | 1e-4 | 89.96 / 57.80 / 111.62 | 74.9 / 99.1 / 68.4 | 119.3 | 0.551 (0.551) | 0.676 |
+| 6 | 1e-4 | 88.86 / 58.42 / 111.12 | 77.0 / 107.8 / 68.2 | 126.0 | 0.555 (0.555) | 0.670 |
+| 7 | 1e-4 | 89.32 / 58.82 / 112.51 | 74.8 / 100.7 / 68.2 | 120.1 | 0.552 (0.552) | 0.672 |
+| 8 | 1e-4 | 89.86 / 59.25 / 111.86 | 73.9 / 98.2 / 68.0 | 117.7 | 0.551 (0.551) | 0.671 |
+| 9 | 5e-5 | 90.68 / 59.11 / 113.25 | 72.6 / 92.9 / 67.9 | 113.8 | 0.548 (0.547) | 0.673 |
+
+- Từ log (số liệu): 3DPW đi ngang 88.9–90.7 từ ep4; lỗi trộn (72.6) vẫn **cao hơn lifter một mình (67.9)** sau 9 epoch; BCE cổng gần như không giảm (0.676 → 0.673); phạt Δ thân H1a ~2e-6 (phần dư thân gần 0). Mốc `v9_full_ik_rp` chỉ có last ep20 (82.45) → chưa so được theo epoch.
+- **Đánh giá của người dùng (2026-11-18 22:11): bản E4 đang train là TỆ.** E1 / E2 / E3 chưa train (thiếu máy) → không tách được thành phần gây hại; mốc `v9_full_ik_rp` không có số theo epoch để so.
+- Chắc chắn (từ log): (1) code H1 / H2 chạy ổn định, không NaN; (2) cổng H2 không chọn được theo khớp: g TB ≈ g* TB ≈ 0.55, BCE đứng yên, lỗi trộn (72.6) > lifter một mình (67.9) suốt 9 epoch → trộn kéo khớp lifter về phía `j3d_s`; (3) phần dư thân H1a gần 0 (nếu H1a có tác dụng thì nhờ 7 điểm đầu chi); (4) 3DPW đi ngang 89–91 từ ep4, giảm lr ở ep9 không giúp.
+- `j3d_s` = 3D 17 khớp do Student tự đoán (`j3d_head` sau các lớp fuse; token nhận ảnh + 2D + 3D lifter, 3D bị bỏ ngẫu nhiên khi train). Số train 93 mm gồm cả mẫu bỏ 3D nên không so công bằng với lifter; ở test mốc §47 `j3d_s` (token/ctx) 81.43 ≈ lifter 82.03. Bằng chứng nhánh ảnh + 2D yếu là §48 (tắt 3D: 89.6, kém lifter ~7 mm).
+- Giả thuyết (Claude): cổng chỉ có ích khi hai nguồn tốt ở những khớp KHÁC nhau; hiện `j3d_s` không tốt hơn lifter ở khớp nào đáng kể → cổng không có gì để học. Nút thắt vẫn là nhánh ảnh + 2D (§48), không phải cách trộn / IK.
+- Chưa rút ra: H1 một mình có giúp không (cần E1).
+- **Tool visual (2026-11-18 22:33, người dùng duyệt):** `tools/vis_vit_lifter.py` (mới, không sửa file cũ): mỗi mẫu 1 hàng = ảnh crop + 2D ViTPose (màu theo conf) + GT 2D | pose 3D trục 3D matplotlib GT (xanh lá) + pred (đỏ), góc camera | cùng pose góc bên cạnh; khớp ViTPose thiếu = vòng rỗng. Mỗi tập (`3dpw-train-noaug`, OC/PC seq test, Crowd) 8 mẫu ngẫu nhiên + 8 mẫu MPJPE cao nhất trong 2000 mẫu, K10 S4. Chưa chạy.
