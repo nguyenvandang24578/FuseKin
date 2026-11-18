@@ -9,6 +9,11 @@ main/eval_refiner2d.py -- Danh gia Refiner 2D tren 3DPW / OC / PC / Crowd voi 2D
 Dieu kien di tiep (ke hoach 2026-11-03): % khop xa tren PC / Crowd thap hon op VA lifter MPJPE17 voi refine /
 refine_fill thap hon op tren 3DPW va Crowd.
 OC / PC mac dinh TOAN BO (giao thuc JOTR); --ocpc_mode test = chi sequence test.
+--src_2d (2026-11-18): nguon 2D detector dau vao Refiner, nhieu gia tri cach dau phay -> chay lan luot + bang so sanh:
+  openpose (mac dinh, chuan benchmark) | vitpose (ViTPose bbox GT) | vitpose_opbox (ViTPose bbox OpenPose) |
+  halpe | halpe_opbox. ViTPose / Halpe doc 3DPW_{split}_halpe26{hau to}.json (tools/extract_vitpose_3dpw.py),
+  nguong score = DATASET.halpe26_conf_thr. Loi 2D: % kich thuoc nguoi (12 khop tay chan) + px crop 256 (17 khop).
+  vd: --src_2d openpose,vitpose_opbox
 
 Chay:
   python main/eval_refiner2d.py --cfg config/train_refiner2d_jotr.yaml \
@@ -35,7 +40,15 @@ parser.add_argument('--fill_max_b', type=float, default=3.0,
 parser.add_argument('--max_samples', type=int, default=0, help='0 = toan bo tap')
 parser.add_argument('--batch_size', type=int, default=0, help='0 = cfg.TEST.batch_size')
 parser.add_argument('--gpu', type=str, default='0')
+parser.add_argument('--src_2d', type=str, default='openpose',
+                    help='openpose | vitpose | vitpose_opbox | halpe | halpe_opbox (nhieu: cach dau phay)')
 args = parser.parse_args()
+# nguon 2D -> (DATASET.pw3d_2d_source, DATASET.pw3d_halpe_suffix)
+SRC_2D = {'openpose': ('openpose', ''), 'vitpose': ('halpe26', '_vitpose'), 'vitpose_opbox': ('halpe26', '_vitpose_opbox'),
+          'halpe': ('halpe26', ''), 'halpe_opbox': ('halpe26', '_opbox')}
+SRCS = [x.strip() for x in args.src_2d.split(',') if x.strip()]
+for x in SRCS:
+    assert x in SRC_2D, f'--src_2d khong hop le: {x} (chon trong {list(SRC_2D)})'
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
 import torch
@@ -44,7 +57,6 @@ from torch.utils.data import DataLoader, Subset
 from core.config import cfg, update_config
 update_config(args.cfg)
 cfg.DATASET.pw3d_test_gt2d = True          # dataset tra GT 2D (targets['orig_joint_img'], meta orig_joint_trunc)
-assert cfg.DATASET.pw3d_2d_source == 'openpose', 'Benchmark: dau vao 3DPW la OpenPose / HHRNet (pw3d_2d_source openpose)'
 
 import __init_path  # noqa: F401
 from utils.jotr_dataset import get_test_dataset
@@ -60,9 +72,11 @@ def main():
         lifter = build_diff_lifter(args.lifter_ckpt, 1, 1).to(dev).eval()
     bs = args.batch_size or cfg.TEST.batch_size
     summary = {}
-    for name in [s.strip() for s in args.sets.split(',') if s.strip()]:
+    for src in SRCS:
+      cfg.DATASET.pw3d_2d_source, cfg.DATASET.pw3d_halpe_suffix = SRC_2D[src]
+      for name in [s.strip() for s in args.sets.split(',') if s.strip()]:
         cfg.DATASET.pw3d_ocpc_test_only = (args.ocpc_mode == 'test') and name in ('3dpw-oc', '3dpw-pc')
-        label = name + (' (chi seq test)' if cfg.DATASET.pw3d_ocpc_test_only else '')
+        label = f'{src} | ' + name + (' (chi seq test)' if cfg.DATASET.pw3d_ocpc_test_only else '')
         ds = get_test_dataset(name, None)
         reg = ds.h36m_joint_regressor
         if args.max_samples and args.max_samples < len(ds):
@@ -72,6 +86,19 @@ def main():
                          regressor=reg, fill_max_b=args.fill_max_b)
         print(format_result(label, r))
         summary[label] = r
+    # Bang so sanh nguon 2D (detector dau vao vs sau Refiner)
+    print('\n' + '=' * 104)
+    print(f'{"nguon 2D | tap":<34} | {"n":>6} | {"det loi%":>8} {"xa%":>6} {"bo%":>6} {"px":>6} | '
+          f'{"Ref loi%":>8} {"xa%":>6} {"px":>6} {"px moi khop":>11}')
+    print('-' * 104)
+    for label, r in summary.items():
+        o, f, p = r['d2']['op'], r['d2']['refine'], r['px']
+        print(f'{label:<34} | {r["n"]:>6} | {o["err_pct"]:8.2f} {o["far_pct"]:6.2f} {o["miss_pct"]:6.2f} '
+              f'{p["op_det"]:6.2f} | {f["err_pct"]:8.2f} {f["far_pct"]:6.2f} {p["refine_det"]:6.2f} '
+              f'{p["refine_all"]:11.2f}')
+    print('=' * 104)
+    print('det = 2D detector dau vao; Ref = sau Refiner. loi% / xa% (> far_ratio x kich thuoc nguoi) / bo%: 12 khop tay '
+          'chan; px: 17 khop, crop 256, tren khop detector co; px moi khop: Refiner tren moi khop GT trong khung.')
     out = os.path.join(cfg.output_dir, 'eval_refiner2d.json')
     with open(out, 'w', encoding='utf-8') as f:
         json.dump({'ckpt': args.ckpt, 'epoch': ck.get('epoch'), 'lifter_ckpt': args.lifter_ckpt, 'cfg': args.cfg,

@@ -101,6 +101,9 @@ def eval_refiner(model, loader, dev, far_ratio=0.2, lifter=None, regressor=None,
     logb_all, loge_all = [], []
     j17 = {k: np.zeros(17) for k in ('e_op', 'e_ref', 'disp', 'n')}     # (c) loi tung khop, ca 17 khop
     dense_acc = [0.0, 0.0, 0.0]                                          # Refiner day: tong loi, so diem, so diem xa
+    # (2026-11-18) loi 2D theo pixel crop 256 (17 khop): [tong, so khop] cho detector / Refiner tren khop detector co,
+    # va Refiner tren MOI khop GT trong khung (ke ca khop detector bo sot)
+    px = {'op_det': [0.0, 0.0], 'refine_det': [0.0, 0.0], 'refine_all': [0.0, 0.0]}
     reg = torch.as_tensor(regressor, dtype=torch.float32, device=dev) if regressor is not None else None
     seen = 0
     for inputs, targets, meta in loader:
@@ -142,6 +145,10 @@ def eval_refiner(model, loader, dev, far_ratio=0.2, lifter=None, regressor=None,
         j17['e_ref'] += ((torch.norm(rx - g2, dim=-1) / size) * sel17).sum(0).cpu().numpy()
         j17['disp'] += ((torch.norm(rx - j2, dim=-1) / size) * sel17).sum(0).cpu().numpy()
         j17['n'] += sel17.sum(0).cpu().numpy()
+        for k, (xy, msk) in (('op_det', (j2, det & gin)), ('refine_det', (rx, det & gin)), ('refine_all', (rx, gin))):
+            e_px = torch.norm(xy - g2, dim=-1) * hm[0] / 2 * (cfg.input_img_shape[1] / cfg.output_hm_shape[2])
+            px[k][0] += float((e_px * msk.float()).sum())
+            px[k][1] += float(msk.float().sum())
         cnt = {}
         for v, (xy, m) in cand.items():
             cnt[v] = far_counts(xy, m, g2, gin, far_ratio)
@@ -179,6 +186,8 @@ def eval_refiner(model, loader, dev, far_ratio=0.2, lifter=None, regressor=None,
                                               'err_refine': 100 * float(j17['e_ref'][j] / max(j17['n'][j], 1)),
                                               'disp': 100 * float(j17['disp'][j] / max(j17['n'][j], 1))}
                               for j in range(17)}
+    res['px'] = {k: v[0] / max(v[1], 1.0) for k, v in px.items()}
+    res['px_n'] = {k: int(v[1]) for k, v in px.items()}
     lb, le = np.concatenate(logb_all), np.concatenate(loge_all)
     res['corr_logb_logerr'] = float(np.corrcoef(lb, le)[0, 1]) if lb.size > 2 else float('nan')
     if lifter is not None:
@@ -198,6 +207,10 @@ def format_result(name, r):
     lines.append(f'  op -> refine: sua {r["fixed_joints"]} khop xa, lam hong {r["broken_joints"]} khop | '
                  f'dien {r["fill_pct_of_missing"]:.1f}% khop bo sot (b <= {r["fill_max_b"]}) | '
                  f'corr(log b, log loi) {r["corr_logb_logerr"]:.3f}')
+    if 'px' in r:
+        p = r['px']
+        lines.append(f'  loi 2D (px crop 256, 17 khop): detector {p["op_det"]:.2f} | Refiner {p["refine_det"]:.2f} '
+                     f'(cung khop detector co) | Refiner moi khop GT trong khung {p["refine_all"]:.2f}')
     if 'lift_mpjpe17' in r:
         lines.append('  lifter MPJPE17 (mm): ' + ' | '.join(f'{v} {x:.2f}' for v, x in r['lift_mpjpe17'].items()))
     if 'dense' in r:
