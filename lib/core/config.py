@@ -286,6 +286,17 @@ cfg.MODEL.v9_gate_w = 0.1
 #   Chi la loss phu, khong dua vao tron.
 cfg.MODEL.v9_vis_aux = False
 cfg.MODEL.v9_vis_aux_w = 0.5
+# --- FuseKin v10 (2026-11-18, nguoi dung duyet, lib/models/fusekin_v10.py): mang END-TO-END CHI NHAN ANH + 2D ---
+#   KHONG dung ImgLifter, KHONG dung Refiner2D, KHONG dung IK. Dung Khoi The tich 3D 8x8x8 + Lay mau Dong (V3D + F16)
+#   + AdaptiveHyperGCN + VPoser dong bang. Mac dinh TAT.
+cfg.MODEL.v10_e2e = False
+cfg.MODEL.v10_dim = 256
+cfg.MODEL.v10_enc_layers = 3
+cfg.MODEL.v10_dec_layers = 4
+cfg.MODEL.v10_vol_depth = 8
+cfg.MODEL.v10_joint_drop = 0.1
+cfg.MODEL.v10_vposer_ckpt = 'data_final/base_data/human_model_files/smpl/VPOSER_CKPT'
+cfg.MODEL.v10_j17_all_w = 1.0
 cfg.MODEL.imglift_K = 5                    # so gia thuyet, gop trung binh
 cfg.MODEL.imglift_S = 2                    # so buoc DDIM
 # True: 2D cho Student (heatmap [A], PE, [B], feedback [D]) = 17 khop 2D cua Refiner (mask = 1 moi khop) thay 2D detector

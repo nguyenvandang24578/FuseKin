@@ -703,8 +703,8 @@ def load_model_weights(model, ckpt_path, skip_prefixes=('pose_lifter.', 'pmce_li
 
     # 3) loc: bo lifter cu, module kien truc cu, key lech shape
     own = model.state_dict()
-    # V8 (fusekin_v8): ten 'smpl_model.shape_head.' trung LEGACY_KEY_PARTS cua Student cu -> KHONG loc legacy cho V8
-    is_v8 = getattr(model, 'mode', '') in ('v8', 'v9')
+    # V8 / V9 / V10: ten 'smpl_model.shape_head.' / 'vposer.' trung LEGACY_KEY_PARTS cua Student cu -> KHONG loc legacy
+    is_v8 = getattr(model, 'mode', '') in ('v8', 'v9', 'v10')
     filtered, skipped, legacy, shape_bad = {}, [], [], []
     for k, v in state.items():
         if k.startswith(skip_prefixes):
@@ -1035,6 +1035,17 @@ class Student_Trainer:
                 vis_loss = ((v_err * valid_joint).sum(-1) / n_valid).mean()
                 loss = loss + float(cfg.MODEL.v9_vis_aux_w) * vis_loss
                 vis_stats = {'v9_vis': float(vis_loss)}
+            # [V10] giam sat khop 3D cua cac lop decoder trung gian (lop cuoi da co ctx_3d)
+            if 'v10_j17_layers' in model_output and len(model_output['v10_j17_layers']) > 1:
+                j17_hist = model_output['v10_j17_layers'][:-1]
+                gma10, T10 = float(cfg.MODEL.v3_refine_gamma), len(j17_hist)
+                j17_tot, j17_ws = 0.0, 0.0
+                for li, j17l in enumerate(j17_hist):
+                    wl = gma10 ** (T10 - li)
+                    e17 = F.smooth_l1_loss(j17l, gt_pose_input, reduction='none', beta=priv_beta).mean(-1)
+                    l17 = ((e17 * valid_joint).sum(-1) / n_valid).mean()
+                    j17_tot, j17_ws = j17_tot + wl * l17, j17_ws + wl
+                loss = loss + float(cfg.MODEL.get('v10_j17_all_w', 1.0)) * (j17_tot / j17_ws)
 
             # Do gradient tai tham so fusion (KD relation): feature gather cua DataParallel la cac nhanh rieng,
             # khong dung grad theo feature joint gather de tranh log nham bang 0.
