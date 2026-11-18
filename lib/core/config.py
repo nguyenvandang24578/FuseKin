@@ -135,6 +135,9 @@ cfg.DATASET.halpe_gt_mask_thr = 0.0
 # Hau to file Halpe-26 cua 3DPW (test / OC / PC / Crowd): '' = 3DPW_{tag}_halpe26.json (trich bang bbox GT, cu);
 # '_opbox' = trich bang bbox tu khop OpenPose cua dung nguoi (tools/extract_halpe26_3dpw.py --bbox_source openpose_best)
 cfg.DATASET.pw3d_halpe_suffix = ''
+# Hau to file Halpe-26 cho split TRAIN cua 3DPW (2026-11-18, ViT lifter): '' = 3DPW_train_halpe26.json (nhu cu);
+# vd '_vitpose' = 2D ViTPose (tools/extract_vitpose_3dpw.py). Chi co tac dung khi pw3d_2d_source = 'halpe26'.
+cfg.DATASET.pw3d_halpe_train_suffix = ''
 # THU NGHIEM ORACLE (2026-10-29): thay 2D dau vao (Halpe) bang GT 2D (orig_joint_img, khung hm) o MOI bo train / test,
 # mask = khop GT trong khung crop (conf 1). Dung cho ca lifter (lift_only) va Student. Tu bat pw3d_test_gt2d.
 # GT 2D: H36M / MuCo = khop mocap chieu; MSCOCO / CrowdPose / 3DPW = H36M-17 hoi quy tu mesh SMPL chieu. Crop van tu Halpe.
@@ -618,6 +621,12 @@ cfg.IMGLIFT.sd_bf16 = True               # autocast bf16 + trong so dong bang lu
 cfg.IMGLIFT.sd_grad_ckpt = False         # gradient checkpointing ResBlock (chi khi thieu bo nho)
 cfg.IMGLIFT.sd_lr_scale = 1.0            # lr tham so SD = TRAIN.lr x he so (DPMesh lr_backbone = lr)
 cfg.IMGLIFT.sd_eval_ablate = False       # moi epoch: them danh gia nhanh f8 = 0 tren tap eval dau tien
+# --- ViT lifter (2026-11-18, nguoi dung duyet; lib/models/vit_lifter.py, main/train_vit_lifter.py) ---
+# KHONG Refiner: dieu kien 2D = ViTPose (xy, det, log_b = -log(conf)), anh = ResNet-50 DONG BANG (f8 cho cross-attn,
+# feat_j lay mau tu f16 tai khop). Dung chung cac key IMGLIFT (embed_dim, depth, markov_*, w_bone ...). Mac dinh TAT.
+cfg.IMGLIFT.vit_glob_img = False         # True: cong vector anh toan cuc (TB f8) vao moi token (kieu GraphormerNet)
+cfg.IMGLIFT.vit_enc_pretrained = 'spin'  # trong so ResNet-50 dong bang
+cfg.IMGLIFT.vit_logb_eps = 0.01          # log_b = -log(max(conf, eps)); khop thieu -> -log(eps)
 # Tich luy gradient (chung, 2026-11-15): optimizer.step() sau moi grad_accum batch. 1 = nhu cu.
 cfg.IMGLIFT.grad_accum = 1
 

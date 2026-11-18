@@ -730,3 +730,27 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - **Kết quả `stats.json` (người dùng báo 2026-11-18 11:04; `lowconf.jpg` người dùng xem):** 35659 người. Trên **19 khớp có thật**: score TB **0.743**, tỉ lệ > 0.3 = **89.2%** (số 65.2% ở log trên 26 khớp bị kéo xuống do 7 khớp score 0: 0.892 × 19/26 = 0.652, khớp log). Người có score TB < 0.3: **2.07%** (~738 người); < 0.5: **10.4%** (~3711 người). Score TB từng khớp: mũi / mắt 0.86, tai 0.82, vai 0.83, khuỷu 0.78, cổ tay 0.75, hông 0.68, gối 0.64–0.65, cổ chân **0.54**, Neck 0.79, Hip 0.66. Theo chiều cao bbox (4 phân vị, mỗi nhóm ~8900 người): 17–142 px 0.618 (89.2% → 78.6% khớp > 0.3), 142–280 px 0.735 (89.5%), 280–510 px 0.769 (91.5%), 510–999 px 0.849 (97.1%).
 - Quan sát `lowconf.jpg` (người dùng báo ảnh): 24 người thấp nhất (score 0.06–0.12) hầu hết bbox chỉ bao một mảnh nhỏ của người (nắm tay, gáy, mũi giày, vai) → ViTPose rải điểm lung tung.
 - Nhận xét (Claude, giả thuyết): (1) trên khớp có thật ViTPose không tệ (89% > 0.3); phần thấp tập trung ở thân dưới (gối, cổ chân) và người nhỏ, phù hợp che khuất / cắt khung của CrowdPose. (2) Nhóm xấu thật sự (TB < 0.3) chỉ ~2%, TB < 0.5 ~10%. (3) Chưa biết chất lượng nhãn SMPL NeuralAnnot của nhóm này (fit_thr = None cho CrowdPose).
+
+## 55. Refiner 2D hiện tại (train GT + PoseFix) với đầu vào OpenPose vs ViTPose (bbox OpenPose) trên 3DPW (2026-11-18 11:49, người dùng chạy và báo)
+- Lệnh: `main/eval_refiner2d.py --src_2d openpose,vitpose_opbox --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd` (ckpt last; thêm `--src_2d` + lỗi px, backup `_to_delete/bak_eval_refiner_vit_20261118/`). Lỗi 2D (không phải MPJPE): loi% / xa% / bo% trên 12 khớp tay chân; px trên 17 khớp, crop 256. det = 2D detector; Ref = sau Refiner; "px mọi khớp" = Refiner trên mọi khớp GT trong khung.
+
+| nguồn \| tập | n | det loi% | det xa% | det bỏ% | det px | Ref loi% | Ref xa% | Ref px | Ref px mọi khớp |
+|---|---|---|---|---|---|---|---|---|---|
+| openpose \| 3dpw | 35515 | 5.55 | 0.21 | 4.87 | 11.72 | 3.25 | 0.07 | 6.48 | **6.90** |
+| openpose \| oc | 20243 | 6.01 | 0.42 | 4.87 | 12.39 | 3.63 | 0.15 | 7.16 | **7.79** |
+| openpose \| pc | 2218 | 5.35 | 0.46 | 14.79 | 11.15 | 3.36 | 0.33 | 6.56 | **8.23** |
+| openpose \| crowd | 1923 | 5.78 | 0.66 | 6.57 | 11.53 | 3.58 | 0.54 | 6.82 | **7.89** |
+| vitpose_opbox \| 3dpw | 35515 | 6.06 | 0.56 | 0.14 | 13.28 | 3.63 | 0.29 | 7.30 | 7.30 |
+| vitpose_opbox \| oc | 20243 | 6.38 | 0.57 | 0.16 | 13.85 | 4.00 | 0.30 | 8.06 | 8.15 |
+| vitpose_opbox \| pc | 2218 | 6.22 | 1.27 | 0.61 | 13.26 | 4.29 | 1.22 | 8.32 | 8.58 |
+| vitpose_opbox \| crowd | 1923 | 6.22 | 1.35 | 0.67 | 13.21 | 4.10 | 1.27 | 7.93 | 8.24 |
+
+- Số so công bằng là "Ref px mọi khớp" (cùng tập khớp GT cho hai nguồn): OpenPose + Refiner tốt hơn ViTPose + Refiner ~0.35–0.4 px trên cả 4 tập (6.90 vs 7.30, 7.79 vs 8.15, 8.23 vs 8.58, 7.89 vs 8.24). Cột det loi% / px **không** cùng tập khớp (ViTPose gần như không bỏ khớp: 0.14–0.67% vs 4.87–14.79%, nên tập "khớp có" của ViTPose chứa cả khớp khó mà OpenPose bỏ).
+- Nhận xét (Claude, giả thuyết): (1) ViTPose ở ngưỡng 0.3 giữ gần hết khớp kể cả khớp bị che đoán sai → xa% cao hơn 2–4 lần, Refiner không được "báo thiếu" để tự điền. (2) Refiner train với nhiễu PoseFix mô phỏng kiểu lỗi detector bottom-up/OpenPose, chưa thấy kiểu lỗi ViTPose. (3) Chưa thử ngưỡng score cao hơn (0.5) hay Refiner train lại với ViTPose → chưa kết luận ViTPose kém hơn về bản chất.
+
+## 55. VitLifter — lifter ViTPose + ảnh, KHÔNG Refiner, chỉ train 3dpw-train (2026-11-18 12:28, người dùng duyệt "code luôn"; code xong, chưa chạy)
+- Lý do (người dùng): Refiner sinh ra để sửa lỗi OpenPose; ViTPose đủ tốt nên bỏ Refiner. Vẫn dùng ảnh + 2D → 3D. Người dùng không muốn ablation, nhờ Claude chọn một cấu hình (Claude chọn giữ denoiser ImgLifter + vector ảnh toàn cục kiểu GraphormerNet người dùng gửi; bỏ temporal / hai luồng). Mục đích: thử nghiệm, KHÔNG so bảng chính.
+- Kiến trúc: ResNet-50 SPIN **đóng băng** (BN eval, không heatmap vào backbone) → f8 (cross-attn 64 token như cũ) + `feat_j` lấy mẫu song tuyến f16 (1024 kênh) tại 2D ViTPose (khớp thiếu = 0) + g = TB(f8) → Linear cộng vào điều kiện mọi token (`vit_glob_img`). Điều kiện 2D: xy ViTPose, det = conf > 0.3, `log_b = -log(max(conf, 0.01))` (cổng Markov). Đầu vào chính diffusion vẫn là GT 3D cộng nhiễu (train), nhiễu thuần (test). Denoiser / Markov / loss xương-góc dùng nguyên ImgLifter (`num_ctx 0`), không sửa `img_lifter.py`.
+- File mới: `lib/models/vit_lifter.py`, `lib/utils/vit_lifter_tools.py`, `main/train_vit_lifter.py`, `main/eval_vit_lifter.py`, `config/train_vit_lifter_3dpw.yaml`. Sửa: `lib/core/config.py` (`DATASET.pw3d_halpe_train_suffix`, `IMGLIFT.vit_glob_img / vit_enc_pretrained / vit_logb_eps`, mặc định tắt / như cũ), `data_final/PW3D/dataset.py` (split train đọc `pw3d_halpe_train_suffix`, mặc định '' = như cũ). Backup `_to_delete/bak_vitlifter_20261118/`.
+- YAML: train `3DPW_train_halpe26_vitpose.json` (bbox GT), test `_vitpose_opbox`; 25 epoch × 32000 mẫu, lr 2e-4, step [18, 23]; eval nhanh 3DPW / OC / PC (OC/PC chỉ seq test). Encoder không lưu trong checkpoint (nạp lại SPIN).
+- Rủi ro (giả thuyết): ít dữ liệu (chỉ 3dpw-train) → dễ overfit; encoder đóng băng có thể không đủ cho độ sâu; train bbox GT vs test bbox OpenPose lệch nhẹ.

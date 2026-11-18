@@ -148,7 +148,9 @@ class PW3D(torch.utils.data.Dataset):
         if self.use_halpe26:
             # oc/pc co id annotation rieng -> dung file Halpe rieng (3DPW_oc_halpe26.json / 3DPW_pc_halpe26.json)
             halpe_tag = {'3dpw-oc': 'oc', '3dpw-pc': 'pc'}.get(self.data_name, self.data_split)
-            sfx = cfg.DATASET.get('pw3d_halpe_suffix', '') if self.data_split != 'train' else ''
+            # split train dung hau to rieng (pw3d_halpe_train_suffix, mac dinh '' = nhu cu)
+            sfx = (cfg.DATASET.get('pw3d_halpe_suffix', '') if self.data_split != 'train'
+                   else cfg.DATASET.get('pw3d_halpe_train_suffix', ''))
             halpe_path = osp.join(self.data_path, f'3DPW_{halpe_tag}_halpe26{sfx}.json')
             if not osp.isfile(halpe_path):
                 raise FileNotFoundError(f"{halpe_path} khong ton tai. Chay tools/extract_halpe26_3dpw.py --splits {halpe_tag}")
