@@ -4,7 +4,10 @@ tap trung vao cac mau confidence thap. Khong sua file nao co san, khong dung mod
 
 Dau vao : <data_root>/CrowdPose_train_halpe26_vitpose.npz (ann_id, kpts (N, 26, 3) [x, y, score], pixel anh goc)
           <data_root>/annotations/crowdpose_train.json (lay file_name + bbox theo ann_id)
-Dau ra  : <out_dir>/lowconf.jpg, random.jpg, highconf.jpg  (luoi cac nguoi, ve xuong + khop mau theo score)
+Dau ra  : <out_dir>/lowconf.jpg, random.jpg, highconf.jpg, worst.jpg (luoi cac nguoi, ve xuong + khop mau theo score)
+          GT 2D CrowdPose (crowdpose_train.json, 14 khop) ve x trang + xuong trang mong (2026-11-18 bo sung).
+          worst.jpg = nguoi lech GT nhieu nhat: loi = TB khoang cach 12 khop tay chan (GT co, ViTPose score > 0.3)
+          / chieu cao bbox; > --err_thr thuong la nham nguoi (uoc luong tho, nguong tu chon).
           <out_dir>/stats.json (thong ke score tren khop CO THAT, khong tinh dinh dau + 6 diem ban chan score 0)
 Mau     : do score < 0.3 | vang 0.3..0.6 | xanh > 0.6 ; khop score = 0 khong ve.
 Khop co that = COCO-17 (0..16) + Neck (18) + Hip (19); bo 17 (dinh dau) va 20..25 (ban chan) vi luon score 0.
@@ -25,6 +28,9 @@ REAL = list(range(17)) + [18, 19]
 EDGES = ((0, 1), (0, 2), (1, 3), (2, 4), (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),
          (5, 11), (6, 12), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16))
 TILE_W, TILE_H = 256, 320
+# 12 khop tay chan CrowdPose (0..11: vai, khuyu, co tay, hong, goi, co chan, trai truoc phai) = COCO 5..16
+CP2COCO = list(range(5, 17))
+GT_EDGES = ((0, 1), (0, 2), (2, 4), (1, 3), (3, 5), (0, 6), (1, 7), (6, 7), (6, 8), (8, 10), (7, 9), (9, 11))
 
 
 def sc_color(s):
@@ -39,11 +45,12 @@ def parse_args():
     p.add_argument('--cols', type=int, default=6)
     p.add_argument('--min_h', type=float, default=0, help='chi xet nguoi co bbox cao >= min_h px (0 = khong loc)')
     p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--err_thr', type=float, default=0.2, help='nguong loi / chieu cao bbox de dem nghi nham nguoi')
     p.add_argument('--out_dir', default='output/vis_vitpose_crowdpose')
     return p.parse_args()
 
 
-def make_tile(img, bbox, kp, aid, ms):
+def make_tile(img, bbox, kp, aid, ms, gt=None, err=None):
     """Cat quanh bbox x1.25, dat vao o TILE_W x TILE_H, ve xuong theo score."""
     H, W = img.shape[:2]
     x1, y1, x2, y2 = bbox
@@ -58,6 +65,16 @@ def make_tile(img, bbox, kp, aid, ms):
     # bbox goc (xanh duong nhat)
     cv2.rectangle(canvas, (int((x1 - a) * sc), int((y1 - b) * sc)), (int((x2 - a) * sc), int((y2 - b) * sc)),
                   (255, 160, 0), 1)
+    if gt is not None:                                   # GT 2D CrowdPose: xuong trang mong + dau x
+        gp = (gt[:, :2] - np.array([a, b])) * sc
+        for i, j in GT_EDGES:
+            if gt[i, 2] > 0 and gt[j, 2] > 0:
+                cv2.line(canvas, tuple(int(v) for v in gp[i]), tuple(int(v) for v in gp[j]), (255, 255, 255), 1)
+        for i in range(len(gt)):
+            if gt[i, 2] > 0:
+                x, y = int(gp[i, 0]), int(gp[i, 1])
+                cv2.line(canvas, (x - 4, y - 4), (x + 4, y + 4), (255, 255, 255), 2)
+                cv2.line(canvas, (x - 4, y + 4), (x + 4, y - 4), (255, 255, 255), 2)
     for i, j in EDGES:
         if kp[i, 2] > 0 and kp[j, 2] > 0:
             cv2.line(canvas, tuple(int(v) for v in pts[i]), tuple(int(v) for v in pts[j]),
@@ -65,11 +82,12 @@ def make_tile(img, bbox, kp, aid, ms):
     for i in REAL:
         if kp[i, 2] > 0:
             cv2.circle(canvas, tuple(int(v) for v in pts[i]), 3, sc_color(kp[i, 2]), -1)
-    cv2.putText(canvas, f'id {aid} s {ms:.2f}', (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+    txt = f'id {aid} s {ms:.2f}' + (f' e {err:.2f}' if err is not None and np.isfinite(err) else '')
+    cv2.putText(canvas, txt, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
     return canvas
 
 
-def make_grid(idx, kpts, ids, ann_info, img_dir, cols, path):
+def make_grid(idx, kpts, ids, ann_info, img_dir, cols, path, gts=None, errs=None):
     tiles = []
     for i in idx:
         fname, bbox = ann_info[int(ids[i])]
@@ -77,7 +95,8 @@ def make_grid(idx, kpts, ids, ann_info, img_dir, cols, path):
         if img is None:
             continue
         ms = kpts[i, REAL, 2].mean()
-        tiles.append(make_tile(img, bbox, kpts[i], int(ids[i]), ms))
+        tiles.append(make_tile(img, bbox, kpts[i], int(ids[i]), ms,
+                               None if gts is None else gts[i], None if errs is None else errs[i]))
     if not tiles:
         return
     while len(tiles) % cols:
@@ -96,10 +115,14 @@ def main():
     with open(osp.join(args.data_root, 'annotations/crowdpose_train.json')) as f:
         d = json.load(f)
     files = {im['id']: im['file_name'] for im in d['images']}
-    ann_info = {}
+    cats = d.get('categories', [])
+    if cats and 'keypoints' in cats[0]:
+        print('Ten khop GT CrowdPose:', cats[0]['keypoints'])         # kiem tra thu tu khop (12 dau = tay chan)
+    ann_info, ann_kp = {}, {}
     for a in d['annotations']:
         x, y, w, h = [float(v) for v in a['bbox']]
         ann_info[int(a['id'])] = (files[a['image_id']], [x, y, x + w, y + h])
+        ann_kp[int(a['id'])] = np.array(a['keypoints'], dtype=np.float32).reshape(-1, 3)
     bh = np.array([ann_info[int(i)][1][3] - ann_info[int(i)][1][1] for i in ids])
 
     sc = kpts[:, :, 2]
@@ -118,6 +141,18 @@ def main():
         m = (bh >= qs[q]) & (bh <= qs[q + 1])
         st['theo_chieu_cao_bbox'][f'{qs[q]:.0f}-{qs[q + 1]:.0f}px'] = {
             'n': int(m.sum()), 'score_TB': float(real[m].mean()), 'ti_le_>0.3': float((real[m] > 0.3).mean())}
+    # Loi ViTPose so GT tren 12 khop tay chan, chia chieu cao bbox (NaN neu < 3 khop dung duoc)
+    gts = np.stack([ann_kp[int(i)] for i in ids])                       # (N,14,3)
+    g12, v12 = gts[:, :12, :2], gts[:, :12, 2] > 0
+    p12, s12 = kpts[:, CP2COCO, :2], kpts[:, CP2COCO, 2] > 0.3
+    m = v12 & s12
+    d12 = np.linalg.norm(p12 - g12, axis=-1)
+    nm = m.sum(1)
+    err = np.where(nm >= 3, (d12 * m).sum(1) / np.maximum(nm, 1) / np.maximum(bh, 1.0), np.nan)
+    ok = np.isfinite(err)
+    st['loi_vs_GT'] = {'n_tinh_duoc': int(ok.sum()), 'trung_vi': float(np.median(err[ok])),
+                       'TB': float(err[ok].mean()), f'ti_le_>{args.err_thr}': float((err[ok] > args.err_thr).mean()),
+                       'ti_le_>0.1': float((err[ok] > 0.1).mean())}
     os.makedirs(args.out_dir, exist_ok=True)
     with open(osp.join(args.out_dir, 'stats.json'), 'w') as f:
         json.dump(st, f, indent=1)
@@ -127,10 +162,14 @@ def main():
     order = pool[np.argsort(ms[pool])]
     rng = np.random.RandomState(args.seed)
     img_dir = osp.join(args.data_root, 'images')
-    make_grid(order[:args.num], kpts, ids, ann_info, img_dir, args.cols, osp.join(args.out_dir, 'lowconf.jpg'))
+    make_grid(order[:args.num], kpts, ids, ann_info, img_dir, args.cols, osp.join(args.out_dir, 'lowconf.jpg'), gts, err)
     make_grid(rng.choice(pool, args.num, replace=False), kpts, ids, ann_info, img_dir, args.cols,
-              osp.join(args.out_dir, 'random.jpg'))
-    make_grid(order[::-1][:args.num], kpts, ids, ann_info, img_dir, args.cols, osp.join(args.out_dir, 'highconf.jpg'))
+              osp.join(args.out_dir, 'random.jpg'), gts, err)
+    make_grid(order[::-1][:args.num], kpts, ids, ann_info, img_dir, args.cols, osp.join(args.out_dir, 'highconf.jpg'),
+              gts, err)
+    pe = pool[np.isfinite(err[pool])]
+    make_grid(pe[np.argsort(-err[pe])][:args.num], kpts, ids, ann_info, img_dir, args.cols,
+              osp.join(args.out_dir, 'worst.jpg'), gts, err)
 
 
 if __name__ == '__main__':
