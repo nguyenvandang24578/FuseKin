@@ -1,0 +1,82 @@
+# =====================================================================
+# train_v10_cliff_64k.yml (2026-11-20, nguoi dung duyet) -- Doi chung (CHI ANH + 2D) cho v10_cliff_lift_64k:
+#   - Nen CLIFF + AdamW (v10_cam_bbox, v10_proj_grad, AdamW wd 1e-4, bb lr x1.0).
+#   - 64k mau / epoch (ratio 0.25 moi bo), 20 epoch, batch 64 (1000 iter / ep).
+# Chay (1 GPU):
+#   python main/train.py --cfg ./config/train_v10_cliff_64k.yml --exp_name v10_cliff_64k --gpu 0
+#   python -u main/test_student_3dpw_sets.py --cfg ./config/train_v10_cliff_64k.yml --ckpt experiment/v10_cliff_64k/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --ocpc_mode all --gpu 0
+# =====================================================================
+
+update_bbox: True
+DATASET:
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']   # KHONG 3dpw-train (giao thuc JOTR / DPMesh)
+  test_list: ['3dpw']          # moi epoch danh gia 3dpw; 4 tap test o last.pth.tar
+  pw3d_ocpc_test_only: False
+  workers: 8
+  pw3d_2d_source: 'openpose'   # test: OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd); train: GT + PoseFix
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: False
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  posefix_scale: 1.0
+  posefix_fast: True
+  fusekin_unified: True
+
+MODEL:
+  name: 'student'              # dung Student_Trainer (khong KD); model that su = V10Net qua v10_e2e
+  v10_e2e: True
+  v10_dim: 256
+  v10_enc_layers: 3
+  v10_dec_layers: 4
+  v10_vol_depth: 8
+  v10_joint_drop: 0.1
+  v10_vposer_ckpt: 'data_final/base_data/human_model_files/smpl/VPOSER_CKPT'
+  v10_j17_all_w: 1.0
+  v10_cam_bbox: True           # CLIFF: cam_bbox -> token khop + root_pose_head + cam_head
+  v10_proj_grad: True          # loss chieu 2D co grad vao pose + bu view_rot(-dx, -dy)
+  v10_lifter: False            # doi chung khong dung ImgLifter / Refiner2D
+  v9_reproj_w: 1.0             # trong so giam sat vi tri lay mau 2D qua cac lop
+  resnet_type: 50
+  hpe_dim: 256
+  backbone_pretrained: 'spin'
+  student_use_kd: False
+  init_student_from_teacher: False
+  v7_anchor: False
+  v7_no_pose_param_loss: False # BAT loss tham so pose SMPL (day VPoser + root 6D nhu JOTR)
+  v7_no_privileged: True       # privileged_3d = ctx_3d -> tat de khong tinh 2 lan
+  v5_ctx_loss_w: 1.0           # loss khop 3D phu tu 17 token khop
+  v3_bb_finetune: True         # backbone train end-to-end
+  v3_bb_lr_scale: 1.0          # lr_backbone = lr = 1e-4
+  v3_bb_heatmap: True
+  v3_heatmap_sigma: 2.0
+  v3_refine_gamma: 0.85        # trong so giam sat cac lop decoder truoc (refine_history)
+  v3_pose2d_noise_prob: 0.0
+
+TRAIN:
+  print_freq: 20
+  batch_size: 64               # 1 GPU
+  shuffle: True
+  mix_mode: 'ratio'
+  dataset_ratio: [0.25, 0.25, 0.25, 0.25]   # Human36M, MuCo, MSCOCO, CrowdPose
+  samples_per_epoch: 64000     # 1000 iter / epoch
+  begin_epoch: 1
+  end_epoch: 20
+  scheduler: 'step'
+  lr: 0.0001
+  lr_step: [8, 12, 15, 18]
+  lr_factor: 0.5
+  warmup_epochs: 0
+  min_lr: 0.000001
+  optimizer: 'adamw'
+  weight_decay: 0.0001
+  wandb: True
+
+TEST:
+  batch_size: 64
+  shuffle: False
+  select_dataset: '3dpw'
+  save_best_per_set: False
+  final_test_list: []

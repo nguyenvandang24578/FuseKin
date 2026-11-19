@@ -255,13 +255,20 @@ class V10Head(nn.Module):
     smpl_from_aa = V8Head.smpl_from_aa
 
     def __init__(self, dim=256, n_enc=3, n_dec=4, vol_depth=8, img_ch=2048, f16_ch=1024, vposer_ckpt='',
-                 use_cam_bbox=False, proj_grad=False):
+                 use_cam_bbox=False, proj_grad=False,
+                 use_lifter=False, use_hyp_mem=False, n_hyp=5,
+                 drop3d_sample=0.2, drop3d_joint=0.1):
         super().__init__()
         self.dim = int(dim)
         self.n_dec = int(n_dec)
         self.vol_d = int(vol_depth)
         self.use_cam_bbox = bool(use_cam_bbox)
         self.proj_grad = bool(proj_grad)
+        self.use_lifter = bool(use_lifter)
+        self.use_hyp_mem = bool(use_hyp_mem) and self.use_lifter
+        self.n_hyp = int(n_hyp)
+        self.drop3d_sample = float(drop3d_sample)
+        self.drop3d_joint = float(drop3d_joint)
 
         # ---- [v10_cam_bbox] Thong tin bbox trong anh goc kieu CLIFF (dx, dy, s) -> 3 nhanh khoi tao 0 ----
         if self.use_cam_bbox:
@@ -272,6 +279,23 @@ class V10Head(nn.Module):
             for m in (self.cam_to_joint, self.cam_to_root, self.cam_to_cam):
                 nn.init.zeros_(m.weight)
                 nn.init.zeros_(m.bias)
+
+        # ---- [v10_lifter] Bang chung 3D tu ImgLifter + 2D Refiner (lop chieu cuoi khoi tao 0) ----
+        if self.use_lifter:
+            self.lift_emb = nn.Sequential(nn.Linear(9, dim), nn.LayerNorm(dim), nn.GELU(), nn.Linear(dim, dim))
+            self.lift_to_joint = nn.Linear(dim, dim)
+            nn.init.zeros_(self.lift_to_joint.weight)
+            nn.init.zeros_(self.lift_to_joint.bias)
+            self.miss3d_tok = nn.Parameter(torch.zeros(1, 1, dim))
+            self.lift_depth_scale = nn.Parameter(torch.tensor(0.0, dtype=torch.float32))
+            self.lift_root_mlp = nn.Sequential(nn.Linear(N_JOINT * 3, dim), nn.GELU(), nn.Linear(dim, dim))
+            nn.init.zeros_(self.lift_root_mlp[-1].weight)
+            nn.init.zeros_(self.lift_root_mlp[-1].bias)
+            if self.use_hyp_mem:
+                self.hyp_embed = nn.Sequential(nn.Linear(3, dim), nn.GELU(), nn.Linear(dim, dim))
+                self.hyp_joint_id = nn.Embedding(N_JOINT, dim)
+                self.hyp_id = nn.Embedding(self.n_hyp, dim)
+                self.hyp_norm = nn.LayerNorm(dim)
 
         # ---- 1) Encoder anh 2D (F8: 2048x8x8 -> 64 token) va F16 (1024x16x16) ----
         self.img_proj = nn.Conv2d(img_ch, dim, 1)
@@ -405,9 +429,11 @@ class V10Head(nn.Module):
         out['v10_vposer_z'] = vposer_z
         return out
 
-    def forward(self, fmap, f16, op_xy, op_mask, is_train=True, cam_bbox=None):
+    def forward(self, fmap, f16, op_xy, op_mask, is_train=True, cam_bbox=None,
+                lift=None, hyp=None, ref_xy=None, ref_logb=None):
         """fmap (B, 2048, 8, 8), f16 (B, 1024, 16, 16); op_xy (B, 17, 2) [-1, 1], op_mask (B, 17, 1) [0, 1];
-        cam_bbox (B, 3) (dx, dy, s): bat buoc khi v10_cam_bbox / v10_proj_grad."""
+        cam_bbox (B, 3) (dx, dy, s): bat buoc khi v10_cam_bbox / v10_proj_grad;
+        lift (B, 17, 3), hyp (B, K, 17, 3), ref_xy (B, 17, 2), ref_logb (B, 17): bat buoc khi v10_lifter."""
         B, _, h, w = fmap.shape
         D = self.dim
         dtype = fmap.dtype
@@ -418,6 +444,36 @@ class V10Head(nn.Module):
             cam_j = self.cam_to_joint(ce)[:, None]                                      # (B, 1, D) -> 17 token khop
             cam_r = self.cam_to_root(ce)                                                # (B, D) -> root_pose_head
             cam_c = self.cam_to_cam(ce)                                                 # (B, D) -> cam_head
+
+        lift_j = lift_r = 0.0
+        keep3d = None
+        hyp_tok = hyp_pos = None
+        if self.use_lifter:
+            assert lift is not None and hyp is not None and ref_xy is not None and ref_logb is not None, \
+                'v10_lifter can lift, hyp, ref_xy, ref_logb'
+            if bool(cfg.MODEL.get('v10_test_drop3d', False)):
+                keep3d = torch.zeros(B, N_JOINT, 1, device=fmap.device, dtype=dtype)
+            elif is_train:
+                keep_s = (torch.rand(B, 1, 1, device=fmap.device) >= self.drop3d_sample).to(dtype)
+                keep_j = (torch.rand(B, N_JOINT, 1, device=fmap.device) >= self.drop3d_joint).to(dtype)
+                keep3d = keep_s * keep_j
+            else:
+                keep3d = torch.ones(B, N_JOINT, 1, device=fmap.device, dtype=dtype)
+            std3 = hyp.float().std(dim=1, unbiased=False) * 10.0                        # (B, 17, 3)
+            feat_l = torch.cat([lift.float(), std3, ref_xy.float(), ref_logb.float()[..., None]], dim=-1).to(dtype)
+            e3d = self.lift_to_joint(self.lift_emb(feat_l))
+            lift_j = keep3d * e3d + (1.0 - keep3d) * self.miss3d_tok                    # (B, 17, D)
+            has_any = (keep3d.sum(dim=1) > 0).to(dtype)                                 # (B, 1): 0 neu drop het mau
+            lift_r = self.lift_root_mlp((lift.to(dtype) * keep3d).flatten(1)) * has_any # (B, D)
+            if self.use_hyp_mem:
+                assert hyp.shape[1] == self.n_hyp, \
+                    f'v10_hyp_mem can hyp (B, {self.n_hyp}, 17, 3), nhan {tuple(hyp.shape)}'
+                ht = self.hyp_norm(self.hyp_embed(hyp.to(dtype))
+                                   + self.hyp_joint_id.weight[None, None]
+                                   + self.hyp_id.weight[None, :, None])                # (B, K, 17, D)
+                ht = torch.where(keep3d[:, None] > 0.5, ht, self.miss3d_tok[:, None].expand_as(ht))
+                hyp_tok = ht.reshape(B, self.n_hyp * N_JOINT, D)                        # (B, K*17, D)
+                hyp_pos = torch.zeros_like(hyp_tok)
 
         # ---- [1] Bo nho anh 2D (64 token) va F16 (16x16) ----
         mem2d = self.img_proj(fmap).flatten(2).transpose(1, 2)                          # (B, 64, D)
@@ -443,17 +499,27 @@ class V10Head(nn.Module):
         img_j0 = F.grid_sample(f16_feat, xy_in[:, :, None, :], mode='bilinear',
                                align_corners=False).squeeze(-1).transpose(1, 2)         # (B, 17, D)
         e2d = self.emb2d(torch.cat([xy_in, op_mask.to(dtype)], dim=-1))
-        jt = self.init_norm(img_j0 * vis + e2d + (1.0 - vis) * self.miss2d_tok + self.joint_id.weight[None] + cam_j)
+        jt = self.init_norm(img_j0 * vis + e2d + (1.0 - vis) * self.miss2d_tok
+                            + self.joint_id.weight[None] + cam_j + lift_j)
         j_qpos = self.joint_qpos.weight[None].expand(B, -1, -1)
         jt = self.init_layer(jt, j_qpos, mem2d, mpos2d)
 
-        # Vi tri 2.5D ban dau uvd in (0, 1)^3: khop co detector neo quanh op_xy, khop bi che do mang tu noi suy
+        # Vi tri 2.5D ban dau uvd in (0, 1)^3: khop co detector neo quanh op_xy; khop bi che neu co lifter thi neo ref_xy + do sau lift
         raw_uvd0 = self.init_uvd_head(jt)
         det_uv = ((op_xy.float() + 1.0) * 0.5).clamp(1e-4, 1.0 - 1e-4)
         uv0_vis = torch.sigmoid(inverse_sigmoid(det_uv) + raw_uvd0[..., :2].float())
-        uv0_occ = torch.sigmoid(raw_uvd0[..., :2].float())
-        uv0 = vis.float() * uv0_vis + (1.0 - vis.float()) * uv0_occ
-        d0 = torch.sigmoid(raw_uvd0[..., 2:3].float())
+        if self.use_lifter:
+            keep3d_f = keep3d.float()
+            ref_uv = ((ref_xy.float() + 1.0) * 0.5).clamp(1e-4, 1.0 - 1e-4)
+            uv0_occ_ref = torch.sigmoid(inverse_sigmoid(ref_uv) + raw_uvd0[..., :2].float())
+            uv0_occ = keep3d_f * uv0_occ_ref + (1.0 - keep3d_f) * torch.sigmoid(raw_uvd0[..., :2].float())
+            uv0 = vis.float() * uv0_vis + (1.0 - vis.float()) * uv0_occ
+            d0 = torch.sigmoid(raw_uvd0[..., 2:3].float()
+                               + self.lift_depth_scale.float() * lift[..., 2:3].float() * keep3d_f)
+        else:
+            uv0_occ = torch.sigmoid(raw_uvd0[..., :2].float())
+            uv0 = vis.float() * uv0_vis + (1.0 - vis.float()) * uv0_occ
+            d0 = torch.sigmoid(raw_uvd0[..., 2:3].float())
         uvd = torch.cat([uv0, d0], dim=-1)                                              # (B, 17, 3) in (0, 1)^3
 
         sample_feat, sample_pos = self.sample_dual_3d_2d(dense_feat, f16_feat, uvd, exponent)
@@ -468,8 +534,12 @@ class V10Head(nn.Module):
         j17_layers = []
 
         for i, layer in enumerate(self.decoder):
-            mem = torch.cat([mem2d, sample_feat], dim=1)                                # (B, 64 + 17, D)
-            mpos = torch.cat([mpos2d, sample_pos], dim=1)
+            if hyp_tok is not None:
+                mem = torch.cat([mem2d, sample_feat, hyp_tok], dim=1)                   # (B, 64 + 17 + K*17, D)
+                mpos = torch.cat([mpos2d, sample_pos, hyp_pos], dim=1)
+            else:
+                mem = torch.cat([mem2d, sample_feat], dim=1)                            # (B, 64 + 17, D)
+                mpos = torch.cat([mpos2d, sample_pos], dim=1)
             tgt = self.dec_norm(layer(tgt, qpos, mem, mpos))
 
             smpl_tok = tgt[:, :N_SMPL_TOK]                                              # (B, 3, D): pose, shape, cam
@@ -497,7 +567,7 @@ class V10Head(nn.Module):
             body_sum = self.body_readout(body_tok.flatten(1))                           # (B, D)
             root_sum = self.root_readout(jt[:, [0, 1, 4, 7, 8]].flatten(1))             # (B, D)
             pose_tok = smpl_tok[:, 0]
-            root_6d = self.root_pose_head(i, pose_tok + root_sum + cam_r, root_6d)      # (B, 6)
+            root_6d = self.root_pose_head(i, pose_tok + root_sum + cam_r + lift_r, root_6d)      # (B, 6)
             vposer_z = self.vposer_head(i, pose_tok + body_sum, vposer_z)               # (B, 32)
             shape = self.shape_head(i, smpl_tok[:, 1], shape)                           # (B, 10)
             cam = self.cam_head(i, smpl_tok[:, 2] + cam_c, cam)                         # (B, 3)
@@ -508,7 +578,7 @@ class V10Head(nn.Module):
                                     for it in per_layer[:-1]] if is_train else []
         j3d_final = j17_layers[-1]
         result['ctx_3d'] = j3d_final
-        result['lifted_joints_3d'] = j3d_final.detach()                                 # cot LIFT = khop 3D query
+        result['lifted_joints_3d'] = lift.detach() if self.use_lifter else j3d_final.detach()    # cot LIFT = lifter neu co, khong thi khop 3D query
         result['privileged_3d'] = j3d_final
         result['feat_joint'] = jt
         result['feat_global'] = tgt[:, :N_SMPL_TOK].mean(1)
@@ -536,6 +606,18 @@ class V10Net(nn.Module):
         else:
             print('[CANH BAO] V10: backbone KHONG nap pretrain -> dac trung anh ngau nhien.')
 
+        self.use_lifter = bool(cfg.MODEL.get('v10_lifter', False))
+        self.use_hyp_mem = bool(cfg.MODEL.get('v10_hyp_mem', False)) and self.use_lifter
+        if self.use_lifter:
+            from utils.img_lifter_tools import load_img_lifter, load_frozen_refiner
+            assert cfg.MODEL.imglift_checkpoint, 'v10_lifter can MODEL.imglift_checkpoint'
+            cpu = torch.device('cpu')
+            self.img_lifter, ck = load_img_lifter(cfg.MODEL.imglift_checkpoint, cpu)
+            self.refiner2d = load_frozen_refiner(cfg.MODEL.get('imglift_refiner_checkpoint', '') or ck['refiner_ckpt'], cpu)
+            for p in self.img_lifter.parameters():
+                p.requires_grad = False
+            self.img_lifter.eval()
+
         self.smpl_model = V10Head(
             dim=int(cfg.MODEL.v10_dim),
             n_enc=int(cfg.MODEL.v10_enc_layers),
@@ -544,18 +626,50 @@ class V10Net(nn.Module):
             vposer_ckpt=str(cfg.MODEL.get('v10_vposer_ckpt', '')),
             use_cam_bbox=bool(cfg.MODEL.get('v10_cam_bbox', False)),
             proj_grad=bool(cfg.MODEL.get('v10_proj_grad', False)),
+            use_lifter=self.use_lifter,
+            use_hyp_mem=self.use_hyp_mem,
+            n_hyp=int(cfg.MODEL.imglift_K),
+            drop3d_sample=float(cfg.MODEL.get('v10_drop3d_sample', 0.2)),
+            drop3d_joint=float(cfg.MODEL.get('v10_drop3d_joint', 0.1)),
         )
         print(f'===> [V10] cam_bbox CLIFF: {cfg.MODEL.get("v10_cam_bbox", False)} | '
               f'loss chieu 2D khong detach + view_rot: {cfg.MODEL.get("v10_proj_grad", False)}')
         self.joint_drop = float(cfg.MODEL.v10_joint_drop)
-        print(f'===> FuseKin v10 (CHI ANH + 2D, KHONG Lifter/Refiner/IK): dim {cfg.MODEL.v10_dim} | '
-              f'enc 2D+3D {cfg.MODEL.v10_enc_layers} lop | khoi 3D 8x8x{cfg.MODEL.v10_vol_depth} | '
-              f'dec {cfg.MODEL.v10_dec_layers} lop (AdaptiveHyperGCN + VPoser) | che 2D {self.joint_drop}')
+        lift_msg = (f' | lifter {cfg.MODEL.imglift_checkpoint} (K={cfg.MODEL.imglift_K}, S={cfg.MODEL.imglift_S}, '
+                    f'hyp_mem={self.use_hyp_mem}, drop3d=({cfg.MODEL.get("v10_drop3d_sample", 0.2)}, '
+                    f'{cfg.MODEL.get("v10_drop3d_joint", 0.1)}))'
+                    if self.use_lifter else ' | KHONG Lifter/Refiner')
+        print(f'===> FuseKin v10 ({"ANH + 2D + 3D Lifter" if self.use_lifter else "CHI ANH + 2D"}, KHONG IK): '
+              f'dim {cfg.MODEL.v10_dim} | enc 2D+3D {cfg.MODEL.v10_enc_layers} lop | khoi 3D 8x8x{cfg.MODEL.v10_vol_depth} | '
+              f'dec {cfg.MODEL.v10_dec_layers} lop (AdaptiveHyperGCN + VPoser) | che 2D {self.joint_drop}{lift_msg}')
 
     def train(self, mode=True):
         super().train(mode)
         self.smpl_model.vposer.eval()
+        if self.use_lifter:
+            self.img_lifter.eval()
+            self.refiner2d.eval()
         return self
+
+    @torch.no_grad()
+    def lift(self, image, p2, jm, cam_bbox):
+        """Chay Refiner2D + ImgLifter dong bang. Tra lift (B, 17, 3), hyp (B, K, 17, 3) met root-relative,
+        ref_xy (B, 17, 2) [-1, 1], ref_logb (B, 17)."""
+        from models.img_lifter import ImgLifter, aggregate
+        from utils.img_lifter_tools import refiner_inputs, lifter_det
+        B = image.shape[0]
+        jm = jm.reshape(B, N_JOINT).float()
+        nc = int(getattr(self.img_lifter, 'num_ctx', 0))
+        xy, log_b, f8, fj = refiner_inputs(self.refiner2d, image, p2[..., :2].float(), jm, N_JOINT + nc)
+        cond7 = ImgLifter.make_cond7(xy, log_b, lifter_det(jm, nc), cam_bbox.float())
+        gen = None
+        if not self.training:                                   # test: nhieu co dinh -> lap lai duoc
+            gen = torch.Generator(device=image.device)
+            gen.manual_seed(0)
+        hyp = self.img_lifter.sample(cond7, fj, f8, K=int(cfg.MODEL.imglift_K), S=int(cfg.MODEL.imglift_S),
+                                     eta=1.0, generator=gen)
+        pose = aggregate(hyp, xy, log_b, 'mean')
+        return pose - pose[:, 0:1], hyp - hyp[:, :, 0:1], xy[:, :N_JOINT], log_b[:, :N_JOINT]
 
     def forward(self, image, joints, is_train=True, joints_mask=None, pose_2d=None, cam_bbox=None):
         """joints = 2D detector (B, 17, 2|3) [-1, 1]; joints_mask (B, 17, 1)."""
@@ -565,9 +679,14 @@ class V10Net(nn.Module):
             m = (p2[..., 2:3] > 0).float() if p2.shape[-1] >= 3 else torch.ones_like(p2[..., :1])
         else:
             m = joints_mask.reshape(B, N_JOINT, 1).float()
+        lift = hyp = ref_xy = ref_logb = None
+        if self.use_lifter:
+            assert cam_bbox is not None, "v10_lifter can inputs['cam_bbox'] (dieu kien ImgLifter)"
+            lift, hyp, ref_xy, ref_logb = self.lift(image, p2, m, cam_bbox)
         if self.training and self.joint_drop > 0:
             m = m * (torch.rand_like(m) >= self.joint_drop).float()
         heat = make_heatmaps(p2, m, size=image.shape[-1] // 4, sigma=float(cfg.MODEL.v3_heatmap_sigma))
         fmap, _, f16 = self.backbone(image, heatmap=heat, return_f16=True)              # (B,2048,8,8), (B,1024,16,16)
         return self.smpl_model(fmap, f16, p2[..., :2].float(), m, is_train=is_train,
-                               cam_bbox=None if cam_bbox is None else cam_bbox.float())
+                               cam_bbox=None if cam_bbox is None else cam_bbox.float(),
+                               lift=lift, hyp=hyp, ref_xy=ref_xy, ref_logb=ref_logb)

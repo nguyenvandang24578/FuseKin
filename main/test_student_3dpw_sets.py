@@ -37,7 +37,7 @@ parser.add_argument('--sets', type=str, default='3dpw,3dpw-oc,3dpw-pc')
 parser.add_argument('--ocpc_mode', type=str, default='both', choices=['test', 'all', 'both'])
 parser.add_argument('--batch_size', type=int, default=0, help='0 = cfg.TEST.batch_size')
 parser.add_argument('--drop3d', action='store_true',
-                    help='V9 chan doan: bo HET token 3D lifter (miss3d) luc test, chi con anh + 2D')
+                    help='V9/V10 chan doan: bo HET token 3D lifter (miss3d) luc test, chi con anh + 2D')
 parser.add_argument('--view_rot', type=str, default='none', choices=['none', 'fwd', 'inv'],
                     help='D1: xoay dau ra Student bang view_rot(cam_bbox) (fwd) / nghich dao (inv)')
 parser.add_argument('--blend', type=str, default='', help="D2: vd '0,0.5,1' (rong = tat)")
@@ -52,6 +52,7 @@ from core.config import cfg, update_config
 update_config(args.cfg)
 if args.drop3d:
     cfg.MODEL.v9_test_drop3d = True
+    cfg.MODEL.v10_test_drop3d = True
 
 import __init_path  # noqa: F401
 from models.ARTS import get_model

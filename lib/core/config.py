@@ -303,6 +303,18 @@ cfg.MODEL.v10_cam_bbox = False
 # [V10 proj_grad] loss chieu 2D KHONG detach pose; mesh (he camera that) xoay quanh root bang view_rot(-dx, -dy)
 #   ve he camera crop truoc khi chieu (chinh xac voi MSCOCO / CrowdPose da xoay view_rot, xap xi voi H36M / MuCo). Mac dinh TAT.
 cfg.MODEL.v10_proj_grad = False
+# [V10 + ImgLifter, 2026-11-20] Tich hop Refiner2D + ImgLifter (dong bang) vao V10:
+#   - v10_lifter: nap img_lifter (MODEL.imglift_checkpoint, K/S = imglift_K/S) + refiner2d dong bang;
+#     dua [lift_mean, std_3d*10, ref_xy, ref_logb] vao 17 token khop (khoi tao 0), neo uvd0 cho khop che
+#     quanh ref_xy + tin hieu do sau lift_mean[..., 2], cong readout 3D vao root_pose_head (khoi tao 0).
+#   - v10_hyp_mem: noi them K x 17 gia thuyet 3D vao memory cross-attn cua decoder (ablation da gia thuyet).
+#   - v10_drop3d_sample / v10_drop3d_joint: modality dropout luc train de V10 khong y lai vao lifter.
+#   - v10_test_drop3d: chan doan luc test bo het 3D (bat qua test_student_3dpw_sets.py --drop3d).
+cfg.MODEL.v10_lifter = False
+cfg.MODEL.v10_hyp_mem = False
+cfg.MODEL.v10_drop3d_sample = 0.2
+cfg.MODEL.v10_drop3d_joint = 0.1
+cfg.MODEL.v10_test_drop3d = False
 cfg.MODEL.imglift_K = 5                    # so gia thuyet, gop trung binh
 cfg.MODEL.imglift_S = 2                    # so buoc DDIM
 # True: 2D cho Student (heatmap [A], PE, [B], feedback [D]) = 17 khop 2D cua Refiner (mask = 1 moi khop) thay 2D detector
