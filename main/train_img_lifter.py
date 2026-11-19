@@ -164,7 +164,7 @@ def main():
         saved_arch = dict(ck['imglift_arch'])
         for key, default in (('num_ctx', 0), ('markov', False), ('markov_gate_b', False),
                              ('markov_iters', 0), ('markov_gate_positive', False), ('bone_paper', False),
-                             ('markov_msg_norm', False)):
+                             ('markov_msg_norm', False), ('glob_img', False), ('use_f16_feat', False)):
             saved_arch.setdefault(key, default)
         if saved_arch != imglift_arch():
             raise ValueError('YAML khac kien truc/quy uoc Markov cua checkpoint; hay tao run moi')
@@ -191,7 +191,7 @@ def main():
         ia = dict(ick['imglift_arch'])
         for key, default in (('num_ctx', 0), ('markov', False), ('markov_gate_b', False),
                              ('markov_iters', 0), ('markov_gate_positive', False), ('bone_paper', False),
-                             ('markov_msg_norm', False)):
+                             ('markov_msg_norm', False), ('glob_img', False), ('use_f16_feat', False)):
             ia.setdefault(key, default)
         if ia != imglift_arch():
             raise ValueError(f'init_ckpt khac kien truc YAML: {ia} vs {imglift_arch()}')

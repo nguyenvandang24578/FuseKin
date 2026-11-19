@@ -1,0 +1,74 @@
+# =====================================================================
+# train_img_lifter_v2_no3dpw.yaml (2026-11-19, nguoi dung duyet) -- ImgLifter v2 tren giao thuc no3dpw (chuan JOTR / DPMesh).
+#   = train_img_lifter_dense48_markov_no3dpw.yaml (74.80 / 75.49 / 85.49 / 83.22 MPJPE17), nang cap:
+#     1) vit_glob_img: True  -- cong vector anh toan cuc TB(f8) (2048 -> 512) vao dieu kien c_j o moi block (tu VitLifter).
+#     2) use_f16_feat: True  -- lay mau song tuyen F16 (1024 kenh, layer3 ResNet-50 cua Refiner) tai toa do xy da sua va
+#                               dien du cua Refiner, noi voi feat_j deconv (256 kenh) -> 1280 kenh / diem (65 diem).
+#     3) train_xy_noise: 0.0, input_drop_prob: 0.0 -- tat tang nhieu chong thu 2 & thu 3 (dau vao da co PoseFix 1.0),
+#                               de lifter hoc cach bam sat xy sach (~6.5 px) cua Refiner2D.
+# Chay:
+#   python main/train_img_lifter.py --cfg config/train_img_lifter_v2_no3dpw.yaml --exp_name img_lifter_v2_no3dpw --gpu 0
+#   python main/eval_img_lifter.py --cfg config/train_img_lifter_v2_no3dpw.yaml --ckpt experiment/img_lifter_v2_no3dpw/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --ocpc_mode all --gpu 0
+# =====================================================================
+
+update_bbox: True
+DATASET:
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']   # KHONG 3dpw-train (giao thuc JOTR / DPMesh)
+  workers: 8
+  pw3d_2d_source: 'openpose'     # danh gia: OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd)
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: False
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  posefix_scale: 1.0       # cung phan bo dau vao voi luc train Refiner
+  posefix_fast: True
+  fusekin_unified: True    # mau train thong nhat 4 bo: anh + 2D + GT 3D tu mesh
+  drop_raw_smpl_stats: True
+
+TRAIN:
+  print_freq: 20
+  batch_size: 64
+  shuffle: True
+  dataset_ratio: [0.25, 0.25, 0.25, 0.25]   # Human36M, MuCo, MSCOCO, CrowdPose
+  samples_per_epoch: 64000                   # 1000 iter / epoch voi batch 64
+  end_epoch: 25
+  lr: 0.0002
+  lr_step: [18, 23]
+  lr_factor: 0.1
+
+TEST:
+  batch_size: 64
+  shuffle: False
+
+REFINE2D:
+  deconv_ch: 256           # phai khop Refiner (256 + 1024 F16 = 1280 kenh feat_j)
+
+IMGLIFT:
+  refiner_ckpt: 'experiment/refiner2d_dense48_scratch/checkpoint/last.pth.tar'
+  vit_glob_img: True       # [MOI] vector anh toan cuc TB(f8) -> c_j (nhu VitLifter)
+  use_f16_feat: True       # [MOI] lay mau F16 (1024 kenh) tai xy Refiner noi vao feat_j (1280 kenh)
+  num_ctx: 48              # 48 diem day cua Refiner -> token ngu canh
+  markov_layer: True       # truyen tin theo xuong giua 17 khop, moi block
+  markov_gate_b: True      # cong theo do bat dinh b cua Refiner
+  w_bone: 0.5              # L1 do dai 16 xuong (met)
+  w_angle: 0.1             # (cos goc 2 xuong noi tiep: du doan - GT)^2
+  embed_dim: 512
+  depth: 8
+  num_heads: 8
+  mlp_ratio: 2.0
+  drop_path: 0.1
+  timesteps: 1000
+  scale: 3.0
+  train_xy_noise: 0.0      # [MOI] tat nhieu Gauss chong len xy sau Refiner
+  input_drop_prob: 0.0     # [MOI] tat xoa khop chong len PoseFix 1.0
+  weight_decay: 0.01
+  ema_decay: 0.999
+  eval_sets: ['3dpw', '3dpw-pc', '3dpw-crowd']
+  eval_max_samples: 3000
+  eval_K: 5
+  eval_S: 2
+  eta: 1.0
+  jpma_max_b: 3.0

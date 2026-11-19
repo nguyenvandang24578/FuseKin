@@ -788,3 +788,28 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 - **Tool visual (2026-11-18 22:33, người dùng duyệt):** `tools/vis_vit_lifter.py` (mới, không sửa file cũ): mỗi mẫu 1 hàng = ảnh crop + 2D ViTPose (màu theo conf) + GT 2D | pose 3D trục 3D matplotlib GT (xanh lá) + pred (đỏ), góc camera | cùng pose góc bên cạnh; khớp ViTPose thiếu = vòng rỗng. Mỗi tập (`3dpw-train-noaug`, OC/PC seq test, Crowd) 8 mẫu ngẫu nhiên + 8 mẫu MPJPE cao nhất trong 2000 mẫu, K10 S4. Chưa chạy.
 - **Bổ sung `tools/vis_vitpose_lowconf.py` (2026-11-18 23:00, người dùng muốn xem ViTPose CrowdPose có nhầm người):** vẽ thêm GT 2D CrowdPose (x trắng + xương trắng, từ `crowdpose_train.json`); lỗi mỗi người = TB khoảng cách 12 khớp tay chân (GT có, ViTPose > 0.3) / chiều cao bbox; nhóm mới `worst.jpg`; `stats.json` thêm `loi_vs_GT` (trung vị, TB, tỉ lệ > 0.1 và > `--err_thr` 0.2 — ước lượng thô tỉ lệ nhầm người). Backup `_to_delete/bak_vis_lowconf_20261118/`. Chưa chạy.
 - Cập nhật (23:02, người dùng yêu cầu): `vis_vitpose_lowconf.py` mặc định lưu mỗi người 1 ảnh riêng `<out_dir>/<nhom>/<hang>_id<ann_id>.jpg` (512×640), `--no_separate` = lưới như cũ. Backup bản trước `_to_delete/bak_vis_lowconf_20261118/vis_vitpose_lowconf_v2.py`.
+
+## 57. FuseKin v10 — mạng end-to-end chỉ nhận Ảnh + 2D, dùng Khối Thể tích 3D + AdaptiveHyperGCN + VPoser (2026-11-18 23:45, người dùng duyệt; đã code, chưa chạy)
+- Lý do: người dùng muốn đo trần kiến trúc thuần Ảnh + 2D (không dùng `ImgLifter` / `pose3D`, không dùng `Refiner2D`, không dùng IK) với thiết kế linh hoạt theo dữ liệu và dùng `VPoser` như JOTR / DPMesh.
+- Kiến trúc (`lib/models/fusekin_v10.py`, bật bằng `MODEL.v10_e2e: True`):
+  1. Backbone ResNet-50 (SPIN, tiêm heatmap 2D ở stride 4) → `F16` (`1024×16×16`) và `F8` (`2048×8×8` → 64 token ảnh qua 3 lớp `img_enc`).
+  2. Khối Đặc trưng Thể tích 3D (`dense_feat`, `256×8×8×8` = 512 voxel) + Neo độ sâu phi tuyến $Z = r^k$ (`exponent` học được, khởi tạo 3.0) + `Conv3d` + `BasicBlock3D` + 3 lớp `refine_3d` (như JOTR / DPMesh).
+  3. Khởi tạo 17 token khớp từ 2D detector + `F16`, qua 1 lớp `init_layer` để nội suy vị trí 2.5D ban đầu $(u_0, v_0, d_0) \in (0, 1)^3$ cho khớp bị che (`conf = 0`) và neo quanh detector cho khớp nhìn thấy (`conf > 0`).
+  4. 4 lớp Decoder lặp:
+     - `Self-Attention` (3 token SMPL + 17 token khớp) + `Cross-Attention` vào `[64 token ảnh 2D, 17 token lấy mẫu Thể tích 3D + F16]`.
+     - `AdaptiveHyperGCNLayer`: cổng độ tin cậy động theo dữ liệu $g_j^{(l)} = \sigma(\text{MLP}([\text{jt}_j^{(l)}, u_l, v_l, d_l, \text{conf}_{2d,j}]))$ lọc tin phát đi (source gating), điều biến attention trên 16 xương H36M, gộp có trọng số tin cậy trên 10 siêu cạnh `part` và 5 siêu cạnh `body`, tăng bù đắp cho khớp khuất (target boost).
+     - Cập nhật tọa độ $(u_l, v_l, d_l)$ theo `inverse_sigmoid` (như JOTR) → lấy mẫu lại `dense_feat (8×8×8)` và `F16 (16×16)` đưa vào `memory` lớp sau.
+  5. Đầu ra `VPoser` đóng băng (`data_final/base_data/human_model_files/smpl/VPOSER_CKPT`) cộng dồn theo tầng (`CascadeHead`): `root_pose_6d (6)` (kết hợp readout 5 khớp khung Hông-Thân), `vposer_z (32)` (kết hợp readout 5 siêu cạnh chuỗi chi `body_tok`), `shape (10)`, `cam (3)` → SMPL mesh ở cả 4 lớp (`refine_history`).
+- File tạo / sửa: mới `lib/models/fusekin_v10.py`, `config/train_v10_full.yml`; sửa `lib/core/config.py` (8 key `MODEL.v10_*`, mặc định tắt), `lib/models/ARTS.py` (`get_model`), `lib/core/base.py` (`load_model_weights` + loss `v10_j17_layers`).
+- **Log train `v10_full` Epoch 7 (người dùng gửi 2026-11-19 10:22; đang train, chưa giảm lr):**
+  - Train ep7: loss tổng 3.2732 | `ctx 3D`: 0.0297 | lỗi khớp 3D query (train, có PoseFix + che 10%): 94.1 mm.
+  - Eval 3DPW (35515 mẫu, 14 khớp, OpenPose): **MPJPE = `87.77` | PA-MPJPE = `53.28` | MPVPE = `104.19`**.
+  - So với `E4` (`v9_full_h1h2_vis`, có ImgLifter + Refiner + IK, §56) cùng ep7 (`89.32 / 58.82 / 112.51`) và ep9 (`90.68 / 59.11 / 113.25`): `v10_full` không cần Lifter đã tốt hơn `1.5–2.9 mm` MPJPE, **`5.54 mm` PA-MPJPE** (`53.28` vượt cả `ImgLifter` `53.84` và `v9_full_ik_rp` ep20 `55.23`), và **`8.32 mm` MPVPE**. Chờ kết quả `last` (ep20).
+
+## 58. ImgLifter v2 (`no3dpw`) — Refiner2D + GlobImgDenoiser + F16 (1024 kênh) + tắt nhiễu chồng (2026-11-19 11:00, người dùng duyệt; đã code, chưa chạy)
+- Lý do: người dùng muốn giữ giao thức chuẩn `GT + PoseFix` (train) → `OpenPose / HHRNet` (test) với backbone ResNet-50 (không dùng SD 1.29B tham số), và nâng cấp Lifter `no3dpw` bằng kiến trúc của `VitLifter` + bỏ 2 tầng nhiễu chồng làm hỏng `xy` sau `Refiner2D`.
+- Thay đổi:
+  1. `IMGLIFT.vit_glob_img: True`: cộng vector ảnh toàn cục `Linear(LN(mean(f8)))` vào `c_j` ở đầu vào và `adaLN-Zero` mọi block.
+  2. `IMGLIFT.use_f16_feat: True`: `Refiner2D` trả thêm `f16` (`1024×16×16`, `layer3` ResNet-50 có tiêm heatmap 2D); lấy mẫu song tuyến `f16` tại tọa độ `xy` đã sửa và điền đủ của `Refiner2D`, nối với `feat_j` deconv (`256` kênh) → `1280` kênh / điểm cho cả 65 điểm (`17 khớp + 48 điểm dày`).
+  3. `train_xy_noise: 0.0`, `input_drop_prob: 0.0`: tắt nhiễu chồng lên đầu ra `Refiner2D` (đầu vào đã có `PoseFix 1.0`).
+- File sửa / tạo: sửa `lib/core/config.py`, `lib/models/refiner2d.py`, `lib/models/img_lifter.py`, `lib/utils/img_lifter_tools.py`, `main/train_img_lifter.py`; tạo mới `config/train_img_lifter_v2_no3dpw.yaml`. Chưa có kết quả.

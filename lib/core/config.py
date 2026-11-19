@@ -638,6 +638,9 @@ cfg.IMGLIFT.sd_eval_ablate = False       # moi epoch: them danh gia nhanh f8 = 0
 cfg.IMGLIFT.vit_glob_img = False         # True: cong vector anh toan cuc (TB f8) vao moi token (kieu GraphormerNet)
 cfg.IMGLIFT.vit_enc_pretrained = 'spin'  # trong so ResNet-50 dong bang
 cfg.IMGLIFT.vit_logb_eps = 0.01          # log_b = -log(max(conf, eps)); khop thieu -> -log(eps)
+# ImgLifter v2 (2026-11-19, nguoi dung duyet): lay mau them f16 (1024 kenh, layer3 ResNet-50 cua Refiner) tai toa do
+# xy da sua cua Refiner, noi voi feat_j deconv (256 kenh) -> 1280 kenh. Mac dinh TAT.
+cfg.IMGLIFT.use_f16_feat = False
 # Tich luy gradient (chung, 2026-11-15): optimizer.step() sau moi grad_accum batch. 1 = nhu cu.
 cfg.IMGLIFT.grad_accum = 1
 

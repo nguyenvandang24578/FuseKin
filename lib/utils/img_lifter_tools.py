@@ -11,6 +11,7 @@ eval_img_lifter: tren loader 3DPW (dau vao OpenPose / HHRNet nhu benchmark):
 """
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from core.config import cfg
 from models.img_lifter import ImgLifter, aggregate
@@ -18,12 +19,15 @@ from models.img_lifter import ImgLifter, aggregate
 
 def imglift_arch():
     L = cfg.IMGLIFT
+    use_f16 = bool(L.get('use_f16_feat', False))
+    fch = int(cfg.REFINE2D.deconv_ch) + (1024 if use_f16 else 0)
     return {'dim': int(L.embed_dim), 'depth': int(L.depth), 'num_heads': int(L.num_heads),
             'mlp_ratio': float(L.mlp_ratio), 'drop_path': float(L.drop_path), 'timesteps': int(L.timesteps),
-            'scale': float(L.scale), 'feat_j_ch': int(cfg.REFINE2D.deconv_ch), 'num_ctx': int(L.num_ctx),
+            'scale': float(L.scale), 'feat_j_ch': fch, 'num_ctx': int(L.num_ctx),
             'markov': bool(L.markov_layer), 'markov_gate_b': bool(L.markov_gate_b),
             'markov_iters': int(L.markov_iters), 'markov_gate_positive': bool(L.markov_gate_positive),
-            'bone_paper': bool(L.bone_paper), 'markov_msg_norm': bool(L.markov_msg_norm)}
+            'bone_paper': bool(L.bone_paper), 'markov_msg_norm': bool(L.markov_msg_norm),
+            'glob_img': bool(L.get('vit_glob_img', False)), 'use_f16_feat': use_f16}
 
 
 def build_img_lifter(arch=None):
@@ -35,13 +39,18 @@ def build_img_lifter(arch=None):
                      markov_iters=int(a.get('markov_iters', 0)),
                      markov_gate_positive=bool(a.get('markov_gate_positive', False)),
                      bone_paper=bool(a.get('bone_paper', False)),
-                     markov_msg_norm=bool(a.get('markov_msg_norm', False)))
+                     markov_msg_norm=bool(a.get('markov_msg_norm', False)),
+                     glob_img=bool(a.get('glob_img', False)),
+                     use_f16_feat=bool(a.get('use_f16_feat', False)))
 
 
 def load_img_lifter(path, dev):
     """Nap checkpoint train_img_lifter: 'model_state' = trong so EMA (dung de danh gia), nap strict."""
     ck = torch.load(path, map_location='cpu', weights_only=False)
-    model = build_img_lifter(ck['imglift_arch'])
+    arch = ck['imglift_arch']
+    cfg.IMGLIFT.use_f16_feat = bool(arch.get('use_f16_feat', False))
+    cfg.IMGLIFT.vit_glob_img = bool(arch.get('glob_img', False))
+    model = build_img_lifter(arch)
     model.load_state_dict(ck['model_state'], strict=True)
     print(f'===> Nap ImgLifter {path} (epoch {ck.get("epoch")}, refiner {ck.get("refiner_ckpt")})')
     return model.to(dev).eval(), ck
@@ -94,14 +103,26 @@ def load_frozen_refiner(path, dev):
     return model.eval()
 
 
+def _maybe_cat_f16(out, xy, fj):
+    """ImgLifter v2 (IMGLIFT.use_f16_feat): lay mau song tuyen f16 (1024x16x16) tai xy da sua, noi sau fj (256 -> 1280)."""
+    if not bool(cfg.IMGLIFT.get('use_f16_feat', False)):
+        return fj
+    f16 = out['f16'].float()
+    grid = xy.detach().to(f16.dtype)[:, :, None, :]
+    fj16 = F.grid_sample(f16, grid, mode='bilinear', padding_mode='zeros',
+                         align_corners=False).squeeze(-1).transpose(1, 2)
+    return torch.cat([fj, fj16.float()], dim=-1)
+
+
 @torch.no_grad()
 def refiner_inputs(refiner, img, j2, jm, n_points=17):
     """j2 (B,17,2) [-1,1], jm (B,17) -> xy (B,P,2), log_b (B,P), f8 (B,2048,8,8), feat_j (B,P,C), P = n_points.
     n_points = 17: chi 17 khop. n_points = 17 + num_ctx: them diem day cua Refiner day (lam token ngu canh)."""
     out = refiner(img, j2 * (jm > 0).unsqueeze(-1).float(), jm.unsqueeze(-1), return_feats=True)
     assert out['xy'].shape[1] >= n_points, f'Refiner chi co {out["xy"].shape[1]} diem, ImgLifter can {n_points}'
-    return (out['xy'].float()[:, :n_points], out['log_b'].float()[:, :n_points], out['f8'].float(),
-            out['feat_j'].float()[:, :n_points])
+    xy = out['xy'].float()[:, :n_points]
+    fj = _maybe_cat_f16(out, xy, out['feat_j'].float()[:, :n_points])
+    return xy, out['log_b'].float()[:, :n_points], out['f8'].float(), fj
 
 
 def refiner_inputs_train(refiner, img, j2, jm, n_points=17):
@@ -110,8 +131,9 @@ def refiner_inputs_train(refiner, img, j2, jm, n_points=17):
     feat_j von detach trong Refiner. out = dict output day du cua Refiner (de tinh loss 2D)."""
     out = refiner(img, j2 * (jm > 0).unsqueeze(-1).float(), jm.unsqueeze(-1), return_feats=True)
     assert out['xy'].shape[1] >= n_points, f'Refiner chi co {out["xy"].shape[1]} diem, ImgLifter can {n_points}'
-    return (out['xy'].float()[:, :n_points].detach(), out['log_b'].float()[:, :n_points].detach(), out['f8'].float(),
-            out['feat_j'].float()[:, :n_points], out)
+    xy = out['xy'].float()[:, :n_points].detach()
+    fj = _maybe_cat_f16(out, xy, out['feat_j'].float()[:, :n_points])
+    return xy, out['log_b'].float()[:, :n_points].detach(), out['f8'].float(), fj, out
 
 
 def lifter_det(jm, num_ctx=0):

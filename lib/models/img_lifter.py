@@ -202,16 +202,20 @@ class ImgLifterBlock(nn.Module):
 class ImgLifterDenoiser(nn.Module):
     def __init__(self, num_joints=17, dim=512, depth=8, num_heads=8, mlp_ratio=2.0, drop_path=0.1,
                  img_ch=2048, feat_j_ch=256, img_tokens=64, num_ctx=0, markov=False, markov_gate_b=False,
-                 markov_iters=0, markov_gate_positive=False, markov_msg_norm=False):
+                 markov_iters=0, markov_gate_positive=False, markov_msg_norm=False, glob_img=False):
         """num_ctx > 0 (ImgLifter day, 2026-11-04): them num_ctx token NGU CANH 2D (diem day cua Refiner day, sau 17
         khop) vao chuoi self-attn: chi mang dieu kien [x, y, log_b, det=0, cam] + dac trung anh, KHONG co x_t va
-        KHONG co dau ra 3D. num_ctx = 0 -> y het ban 17 khop (cung shape tham so)."""
+        KHONG co dau ra 3D. num_ctx = 0 -> y het ban 17 khop (cung shape tham so).
+        glob_img (ImgLifter v2, 2026-11-19): cong vector anh toan cuc TB(f8) vao c_j (giong VitLifter)."""
         super().__init__()
         self.num_joints = num_joints
         self.num_ctx = int(num_ctx)
+        self.glob_img = bool(glob_img)
         self.x_embed = nn.Linear(3, dim)
         self.cond_embed = nn.Sequential(nn.Linear(COND_DIM, dim), nn.GELU(), nn.Linear(dim, dim))
         self.featj_embed = nn.Sequential(nn.LayerNorm(feat_j_ch), nn.Linear(feat_j_ch, dim))
+        if self.glob_img:
+            self.glob_embed = nn.Sequential(nn.LayerNorm(img_ch), nn.Linear(img_ch, dim))
         self.joint_pos = nn.Parameter(torch.zeros(1, num_joints + self.num_ctx, dim))   # vi tri khop (+ diem day)
         self.img_embed = nn.Sequential(nn.LayerNorm(img_ch), nn.Linear(img_ch, dim))
         self.img_pos = nn.Parameter(torch.zeros(1, img_tokens, dim))
@@ -236,6 +240,8 @@ class ImgLifterDenoiser(nn.Module):
         P = self.num_joints + self.num_ctx
         assert cond7.shape[1] == P and feat_j.shape[1] == P, f'can {P} diem dieu kien, nhan {cond7.shape[1]}'
         c_j = self.cond_embed(cond7) + self.featj_embed(feat_j)
+        if self.glob_img:
+            c_j = c_j + self.glob_embed(f8.mean(dim=(2, 3)))[:, None, :]
         img = f8.flatten(2).transpose(1, 2)                                 # (B, 64, 2048)
         img_tok = self.img_embed(img) + self.img_pos
         return c_j, img_tok
@@ -260,7 +266,8 @@ class ImgLifterDenoiser(nn.Module):
 class ImgLifter(nn.Module):
     def __init__(self, num_joints=17, dim=512, depth=8, num_heads=8, mlp_ratio=2.0, drop_path=0.1,
                  timesteps=1000, scale=3.0, feat_j_ch=256, num_ctx=0, markov=False, markov_gate_b=False,
-                 markov_iters=0, markov_gate_positive=False, bone_paper=False, markov_msg_norm=False):
+                 markov_iters=0, markov_gate_positive=False, bone_paper=False, markov_msg_norm=False,
+                 glob_img=False, use_f16_feat=False):
         super().__init__()
         if int(markov_iters) < 0 or (markov_iters and not markov):
             raise ValueError('markov_iters > 0 can markov_layer=True; khong dung so am')
@@ -270,11 +277,13 @@ class ImgLifter(nn.Module):
         self.num_ctx = int(num_ctx)
         self.scale = float(scale)
         self.bone_paper = bool(bone_paper)
+        self.glob_img = bool(glob_img)
+        self.use_f16_feat = bool(use_f16_feat)
         self.denoiser = ImgLifterDenoiser(num_joints, dim, depth, num_heads, mlp_ratio, drop_path,
                                           feat_j_ch=feat_j_ch, num_ctx=num_ctx, markov=markov,
                                           markov_gate_b=markov_gate_b, markov_iters=markov_iters,
                                           markov_gate_positive=markov_gate_positive,
-                                          markov_msg_norm=markov_msg_norm)
+                                          markov_msg_norm=markov_msg_norm, glob_img=glob_img)
         betas = cosine_beta_schedule(timesteps)
         ac = torch.cumprod(1. - betas, dim=0)
         self.num_timesteps = int(betas.shape[0])

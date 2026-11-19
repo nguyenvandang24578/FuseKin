@@ -85,7 +85,7 @@ class Refiner2D(nn.Module):
         p2 = pose_2d[..., :2].float()
         m = (joints_mask.reshape(B, J).float() > 0).float()
         heat = make_heatmaps(p2, m.unsqueeze(-1), size=img.shape[-1] // 4, sigma=self.heat_sigma)
-        f8 = self.backbone(img, heatmap=heat)[0]                                   # (B, 2048, 8, 8)
+        f8, _, f16 = self.backbone(img, heatmap=heat, return_f16=True)             # (B, 2048, 8, 8), (B, 1024, 16, 16)
         x = self.deconv(f8)                                                        # (B, C, 64, 64)
         logits = self.final(x)                                                     # (B, J, H, W)
         H, W = logits.shape[-2:]
@@ -113,6 +113,7 @@ class Refiner2D(nn.Module):
         if return_feats:
             # Cho ImgLifter (lib/models/img_lifter.py): dac trung anh toan cuc + dac trung ky vong tai tung khop
             out['f8'] = f8
+            out['f16'] = f16
             out['feat_j'] = feat_j
         return out
 
