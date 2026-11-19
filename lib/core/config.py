@@ -297,6 +297,12 @@ cfg.MODEL.v10_vol_depth = 8
 cfg.MODEL.v10_joint_drop = 0.1
 cfg.MODEL.v10_vposer_ckpt = 'data_final/base_data/human_model_files/smpl/VPOSER_CKPT'
 cfg.MODEL.v10_j17_all_w = 1.0
+# [V10 CLIFF, 2026-11-19] cam_bbox (dx, dy, s) kieu CLIFF -> MLP -> cong vao 17 token khop (khoi tao), root_pose_head, cam_head.
+#   Lop cuoi khoi tao 0 -> luc dau giong v10. Mac dinh TAT.
+cfg.MODEL.v10_cam_bbox = False
+# [V10 proj_grad] loss chieu 2D KHONG detach pose; mesh (he camera that) xoay quanh root bang view_rot(-dx, -dy)
+#   ve he camera crop truoc khi chieu (chinh xac voi MSCOCO / CrowdPose da xoay view_rot, xap xi voi H36M / MuCo). Mac dinh TAT.
+cfg.MODEL.v10_proj_grad = False
 cfg.MODEL.imglift_K = 5                    # so gia thuyet, gop trung binh
 cfg.MODEL.imglift_S = 2                    # so buoc DDIM
 # True: 2D cho Student (heatmap [A], PE, [B], feedback [D]) = 17 khop 2D cua Refiner (mask = 1 moi khop) thay 2D detector
@@ -434,6 +440,8 @@ cfg.TRAIN.lr_factor = 0.95
 cfg.TRAIN.warmup_epochs = 1
 cfg.TRAIN.min_lr = 1e-6
 cfg.TRAIN.optimizer = 'adam'
+# Weight decay cho optimizer 'adamw' (va 'sgd'). Mac dinh 0 = nhu cu. JOTR / DPMesh: AdamW, weight_decay 0.01.
+cfg.TRAIN.weight_decay = 0.0
 cfg.TRAIN.wandb = False
 
 """ DiffLifter (single-frame diffusion 2D->3D, main/finetune_difflifter.py) """

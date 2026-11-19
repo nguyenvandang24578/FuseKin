@@ -140,16 +140,22 @@ def _make_optimizer(model):
     (khoa 'lr_scale' trong param group, lr_warmup cung ton trong)."""
     if not cfg.MODEL.v3_bb_finetune:
         return get_optimizer(model=model)
-    assert cfg.TRAIN.optimizer == 'adam', 'v3_bb_finetune hien chi ho tro optimizer adam'
+    opt_name = str(cfg.TRAIN.optimizer).lower()
+    assert opt_name in ('adam', 'adamw'), 'v3_bb_finetune hien chi ho tro optimizer adam / adamw'
     bb, rest = [], []
     for name, p in model.named_parameters():
         if not p.requires_grad:
             continue
         (bb if name.startswith('backbone.') and not name.startswith('backbone.heat_fuse.') else rest).append(p)
     scale = float(cfg.MODEL.v3_bb_lr_scale)
+    groups = [{'params': rest}, {'params': bb, 'lr': cfg.TRAIN.lr * scale, 'lr_scale': scale}]
+    if opt_name == 'adamw':
+        # AdamW nhu JOTR / DPMesh (common/base.py): weight decay cho moi tham so model; nhom AWL them sau voi wd = 0
+        wd = float(cfg.TRAIN.get('weight_decay', 0.0))
+        print(f'===> Optimizer AdamW (wd={wd:g}): {len(rest)} tensor lr={cfg.TRAIN.lr:.1e} | backbone {len(bb)} tensor lr x{scale}')
+        return torch.optim.AdamW(groups, lr=cfg.TRAIN.lr, weight_decay=wd)
     print(f'===> Optimizer: {len(rest)} tensor lr={cfg.TRAIN.lr:.1e} | backbone {len(bb)} tensor lr x{scale}')
-    return torch.optim.Adam([{'params': rest},
-                             {'params': bb, 'lr': cfg.TRAIN.lr * scale, 'lr_scale': scale}], lr=cfg.TRAIN.lr)
+    return torch.optim.Adam(groups, lr=cfg.TRAIN.lr)
 
 
 def prepare_network(args, load_dir='', is_train=True):

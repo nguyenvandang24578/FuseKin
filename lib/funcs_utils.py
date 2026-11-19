@@ -96,6 +96,13 @@ def get_optimizer(model):
             filter(lambda p: p.requires_grad, model.parameters()),
             lr=cfg.TRAIN.lr
         )
+    elif cfg.TRAIN.optimizer == 'adamw':
+        # AdamW nhu JOTR / DPMesh (weight_decay = cfg.TRAIN.weight_decay)
+        optimizer = optim.AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=cfg.TRAIN.lr,
+            weight_decay=float(cfg.TRAIN.get('weight_decay', 0.0))
+        )
 
     return optimizer
 

@@ -57,6 +57,22 @@ def sincos_1d(n_pos, dim, device, dtype):
     return pe.unsqueeze(0).to(dtype)
 
 
+def view_rot_torch(dx, dy):
+    """Ban torch theo batch cua utils.cam_bbox.view_rot: dx, dy (B,) -> R (B, 3, 3) xoay truc z thanh tia d = (dx, dy, 1).
+    view_rot_torch(-dx, -dy) = view_rot_torch(dx, dy)^T (xoay nguoc: camera that -> camera crop "nhin thang").
+    Dung (1 - c) / s^2 = 1 / (1 + c) de on dinh so khi s -> 0."""
+    d = torch.stack([dx, dy, torch.ones_like(dx)], dim=-1).float()
+    d = d / d.norm(dim=-1, keepdim=True)
+    zero = torch.zeros_like(d[:, 0])
+    vx, vy, vz = -d[:, 1], d[:, 0], zero                                               # v = z x d
+    K = torch.stack([torch.stack([zero, -vz, vy], -1),
+                     torch.stack([vz, zero, -vx], -1),
+                     torch.stack([-vy, vx, zero], -1)], dim=1)                          # (B, 3, 3)
+    c = d[:, 2]
+    eye = torch.eye(3, device=d.device, dtype=d.dtype)[None]
+    return eye + K + torch.bmm(K, K) * (1.0 / (1.0 + c))[:, None, None]
+
+
 class VPoserDecoder(nn.Module):
     """Vo boc VPoser dong bang (nhu JOTR / DPMesh): ma an z (B, 32) -> goc xoay 23 khop than/tay (B, 23, 3) axis-angle."""
 
@@ -238,11 +254,24 @@ class V10Head(nn.Module):
     get_coord = V8Head.get_coord
     smpl_from_aa = V8Head.smpl_from_aa
 
-    def __init__(self, dim=256, n_enc=3, n_dec=4, vol_depth=8, img_ch=2048, f16_ch=1024, vposer_ckpt=''):
+    def __init__(self, dim=256, n_enc=3, n_dec=4, vol_depth=8, img_ch=2048, f16_ch=1024, vposer_ckpt='',
+                 use_cam_bbox=False, proj_grad=False):
         super().__init__()
         self.dim = int(dim)
         self.n_dec = int(n_dec)
         self.vol_d = int(vol_depth)
+        self.use_cam_bbox = bool(use_cam_bbox)
+        self.proj_grad = bool(proj_grad)
+
+        # ---- [v10_cam_bbox] Thong tin bbox trong anh goc kieu CLIFF (dx, dy, s) -> 3 nhanh khoi tao 0 ----
+        if self.use_cam_bbox:
+            self.cam_emb = nn.Sequential(nn.Linear(3, dim), nn.GELU(), nn.Linear(dim, dim), nn.GELU())
+            self.cam_to_joint = nn.Linear(dim, dim)                                     # cong vao 17 token khop
+            self.cam_to_root = nn.Linear(dim, dim)                                      # cong vao dau vao root_pose_head
+            self.cam_to_cam = nn.Linear(dim, dim)                                       # cong vao dau vao cam_head
+            for m in (self.cam_to_joint, self.cam_to_root, self.cam_to_cam):
+                nn.init.zeros_(m.weight)
+                nn.init.zeros_(m.bias)
 
         # ---- 1) Encoder anh 2D (F8: 2048x8x8 -> 64 token) va F16 (1024x16x16) ----
         self.img_proj = nn.Conv2d(img_ch, dim, 1)
@@ -346,21 +375,49 @@ class V10Head(nn.Module):
         pos = self.fc_pos_3d(inverse_sigmoid(uvd.float()).to(dense_feat.dtype))
         return feat, pos
 
-    def vposer_smpl_outputs(self, root_6d, vposer_z, shape, cam_raw, is_train):
+    def smpl_from_aa_v10(self, aa, shape, cam_raw, is_train, cam_bbox=None):
+        """Nhu V8Head.smpl_from_aa; them [v10_proj_grad]: luc train, 'smpl_mesh_cam_render_det' (dung cho loss chieu 2D)
+        KHONG detach pose, va mesh tuyet doi (he camera that) duoc xoay quanh root SMPL bang view_rot(-dx, -dy)
+        ve he camera crop truoc khi chieu. Loss mesh / khop 3D van dung mesh he camera that nhu cu."""
+        if not (self.proj_grad and is_train):
+            return V8Head.smpl_from_aa(self, aa, shape, cam_raw, is_train)
+        assert cam_bbox is not None, 'v10_proj_grad can cam_bbox (B, 3)'
+        B = aa.shape[0]
+        aa = torch.cat([aa[:, :22], torch.zeros_like(aa[:, 22:])], dim=1).reshape(B, 72)   # ban tay = 0 (nhu V8Head)
+        shape = shape.float()
+        cam_trans = self.get_camera_trans(cam_raw.float())
+        joint_proj, joint_cam, mesh_cam, mesh_render = self.get_coord(aa, shape, cam_trans)
+        root_abs = (mesh_render[:, :1] - mesh_cam[:, :1])                               # (B, 1, 3) root SMPL tuyet doi
+        cb = cam_bbox.float()
+        R_inv = view_rot_torch(-cb[:, 0], -cb[:, 1]).to(mesh_render.dtype)               # camera that -> camera crop
+        mesh_crop = torch.einsum('bij,bvj->bvi', R_inv, mesh_render - root_abs) + root_abs
+        return {'joint_proj': joint_proj, 'joint_cam': joint_cam, 'smpl_mesh_cam': mesh_cam,
+                'smpl_mesh_cam_render': mesh_render, 'smpl_mesh_cam_render_det': mesh_crop,
+                'smpl_pose': aa, 'smpl_shape': shape, 'cam_param': cam_trans}
+
+    def vposer_smpl_outputs(self, root_6d, vposer_z, shape, cam_raw, is_train, cam_bbox=None):
         """root_6d (B, 6) + vposer_z (B, 32) + shape (B, 10) + cam_raw (B, 3) -> VPoser -> SMPL."""
         B = root_6d.shape[0]
         root_aa = rotmat_to_aa_safe(rot6d_to_rotmat(root_6d.float())).reshape(B, 1, 3)
         body_aa = self.vposer(vposer_z)                                                 # (B, 23, 3)
         aa = torch.cat([root_aa, body_aa], dim=1)                                       # (B, 24, 3)
-        out = self.smpl_from_aa(aa, shape, cam_raw, is_train)
+        out = self.smpl_from_aa_v10(aa, shape, cam_raw, is_train, cam_bbox)
         out['v10_vposer_z'] = vposer_z
         return out
 
-    def forward(self, fmap, f16, op_xy, op_mask, is_train=True):
-        """fmap (B, 2048, 8, 8), f16 (B, 1024, 16, 16); op_xy (B, 17, 2) [-1, 1], op_mask (B, 17, 1) [0, 1]."""
+    def forward(self, fmap, f16, op_xy, op_mask, is_train=True, cam_bbox=None):
+        """fmap (B, 2048, 8, 8), f16 (B, 1024, 16, 16); op_xy (B, 17, 2) [-1, 1], op_mask (B, 17, 1) [0, 1];
+        cam_bbox (B, 3) (dx, dy, s): bat buoc khi v10_cam_bbox / v10_proj_grad."""
         B, _, h, w = fmap.shape
         D = self.dim
         dtype = fmap.dtype
+        cam_j = cam_r = cam_c = 0.0
+        if self.use_cam_bbox:
+            assert cam_bbox is not None, 'v10_cam_bbox can cam_bbox (B, 3)'
+            ce = self.cam_emb(cam_bbox.to(dtype))                                       # (B, D)
+            cam_j = self.cam_to_joint(ce)[:, None]                                      # (B, 1, D) -> 17 token khop
+            cam_r = self.cam_to_root(ce)                                                # (B, D) -> root_pose_head
+            cam_c = self.cam_to_cam(ce)                                                 # (B, D) -> cam_head
 
         # ---- [1] Bo nho anh 2D (64 token) va F16 (16x16) ----
         mem2d = self.img_proj(fmap).flatten(2).transpose(1, 2)                          # (B, 64, D)
@@ -386,7 +443,7 @@ class V10Head(nn.Module):
         img_j0 = F.grid_sample(f16_feat, xy_in[:, :, None, :], mode='bilinear',
                                align_corners=False).squeeze(-1).transpose(1, 2)         # (B, 17, D)
         e2d = self.emb2d(torch.cat([xy_in, op_mask.to(dtype)], dim=-1))
-        jt = self.init_norm(img_j0 * vis + e2d + (1.0 - vis) * self.miss2d_tok + self.joint_id.weight[None])
+        jt = self.init_norm(img_j0 * vis + e2d + (1.0 - vis) * self.miss2d_tok + self.joint_id.weight[None] + cam_j)
         j_qpos = self.joint_qpos.weight[None].expand(B, -1, -1)
         jt = self.init_layer(jt, j_qpos, mem2d, mpos2d)
 
@@ -440,14 +497,14 @@ class V10Head(nn.Module):
             body_sum = self.body_readout(body_tok.flatten(1))                           # (B, D)
             root_sum = self.root_readout(jt[:, [0, 1, 4, 7, 8]].flatten(1))             # (B, D)
             pose_tok = smpl_tok[:, 0]
-            root_6d = self.root_pose_head(i, pose_tok + root_sum, root_6d)              # (B, 6)
+            root_6d = self.root_pose_head(i, pose_tok + root_sum + cam_r, root_6d)      # (B, 6)
             vposer_z = self.vposer_head(i, pose_tok + body_sum, vposer_z)               # (B, 32)
             shape = self.shape_head(i, smpl_tok[:, 1], shape)                           # (B, 10)
-            cam = self.cam_head(i, smpl_tok[:, 2], cam)                                 # (B, 3)
+            cam = self.cam_head(i, smpl_tok[:, 2] + cam_c, cam)                         # (B, 3)
             per_layer.append((root_6d, vposer_z, shape, cam))
 
-        result = self.vposer_smpl_outputs(*per_layer[-1], is_train=is_train)
-        result['refine_history'] = [self.vposer_smpl_outputs(*it, is_train=is_train)
+        result = self.vposer_smpl_outputs(*per_layer[-1], is_train=is_train, cam_bbox=cam_bbox)
+        result['refine_history'] = [self.vposer_smpl_outputs(*it, is_train=is_train, cam_bbox=cam_bbox)
                                     for it in per_layer[:-1]] if is_train else []
         j3d_final = j17_layers[-1]
         result['ctx_3d'] = j3d_final
@@ -485,7 +542,11 @@ class V10Net(nn.Module):
             n_dec=int(cfg.MODEL.v10_dec_layers),
             vol_depth=int(cfg.MODEL.v10_vol_depth),
             vposer_ckpt=str(cfg.MODEL.get('v10_vposer_ckpt', '')),
+            use_cam_bbox=bool(cfg.MODEL.get('v10_cam_bbox', False)),
+            proj_grad=bool(cfg.MODEL.get('v10_proj_grad', False)),
         )
+        print(f'===> [V10] cam_bbox CLIFF: {cfg.MODEL.get("v10_cam_bbox", False)} | '
+              f'loss chieu 2D khong detach + view_rot: {cfg.MODEL.get("v10_proj_grad", False)}')
         self.joint_drop = float(cfg.MODEL.v10_joint_drop)
         print(f'===> FuseKin v10 (CHI ANH + 2D, KHONG Lifter/Refiner/IK): dim {cfg.MODEL.v10_dim} | '
               f'enc 2D+3D {cfg.MODEL.v10_enc_layers} lop | khoi 3D 8x8x{cfg.MODEL.v10_vol_depth} | '
@@ -508,4 +569,5 @@ class V10Net(nn.Module):
             m = m * (torch.rand_like(m) >= self.joint_drop).float()
         heat = make_heatmaps(p2, m, size=image.shape[-1] // 4, sigma=float(cfg.MODEL.v3_heatmap_sigma))
         fmap, _, f16 = self.backbone(image, heatmap=heat, return_f16=True)              # (B,2048,8,8), (B,1024,16,16)
-        return self.smpl_model(fmap, f16, p2[..., :2].float(), m, is_train=is_train)
+        return self.smpl_model(fmap, f16, p2[..., :2].float(), m, is_train=is_train,
+                               cam_bbox=None if cam_bbox is None else cam_bbox.float())
