@@ -315,6 +315,22 @@ cfg.MODEL.v10_hyp_mem = False
 cfg.MODEL.v10_drop3d_sample = 0.2
 cfg.MODEL.v10_drop3d_joint = 0.1
 cfg.MODEL.v10_test_drop3d = False
+# [RR-FuseKin tren V10, 2026-11-22] Dinh tuyen theo do tin cay (JRE + Asymmetric Routing + Noi ctx -> SMPL):
+#   - v10_no_lift_r      : bo duong tat lift_r (Lifter tho) vao root_pose_head (R1 & R2).
+#   - v10_rr             : Module 1 (JRE doan (r3D, r2D) + lam hong chuoi chi tren hyp voi xac suat v10_rr_corrupt_prob)
+#                          + Module 2A (cong w3D = r3D * (1 - 0.7 * r2D) bao ve khop nhin ro) (R1 & R2).
+#     (sua 2026-11-22: lam hong = xoay CUNG 1-2 chuoi chi quanh vai / hong 15-45 do, giu do dai xuong; tang std
+#      chi o 50% mau; JRE nhan them phan du chieu 2D weak-perspective cua lift so voi ref_xy.)
+#   - v10_rr_hgcn        : Module 2B: dua R_i = (r3D, r2D) vao conf_gate san co cua AdaptiveHyperGCNLayer (R2).
+#   - v10_ctx_to_smpl    : Module 3: noi j3d_rel (17x3) va 16 vector huong xuong cua ctx vao root_pose_head & vposer_head (R2).
+cfg.MODEL.v10_no_lift_r = False
+cfg.MODEL.v10_rr = False
+cfg.MODEL.v10_rr_loss_w = 0.2
+cfg.MODEL.v10_rr_corrupt_prob = 0.3
+cfg.MODEL.v10_rr_tau3d = 0.08
+cfg.MODEL.v10_rr_tau2d = 0.08
+cfg.MODEL.v10_rr_hgcn = False
+cfg.MODEL.v10_ctx_to_smpl = False
 cfg.MODEL.imglift_K = 5                    # so gia thuyet, gop trung binh
 cfg.MODEL.imglift_S = 2                    # so buoc DDIM
 # True: 2D cho Student (heatmap [A], PE, [B], feedback [D]) = 17 khop 2D cua Refiner (mask = 1 moi khop) thay 2D detector

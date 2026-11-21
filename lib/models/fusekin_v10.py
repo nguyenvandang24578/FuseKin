@@ -73,6 +73,84 @@ def view_rot_torch(dx, dy):
     return eye + K + torch.bmm(K, K) * (1.0 / (1.0 + c))[:, None, None]
 
 
+def _axis_angle_rot(axis, ang):
+    """Rodrigues theo batch: axis (..., 3) vector don vi, ang (...) radian -> R (..., 3, 3)."""
+    x, y, z = axis[..., 0], axis[..., 1], axis[..., 2]
+    zero = torch.zeros_like(x)
+    K = torch.stack([torch.stack([zero, -z, y], -1),
+                     torch.stack([z, zero, -x], -1),
+                     torch.stack([-y, x, zero], -1)], dim=-2)                           # (..., 3, 3)
+    eye = torch.eye(3, device=axis.device, dtype=axis.dtype).expand(K.shape)
+    sa, ca = torch.sin(ang)[..., None, None], torch.cos(ang)[..., None, None]
+    return eye + sa * K + (1.0 - ca) * (K @ K)
+
+
+# 4 chuoi chi H36M-17: (khop goc, (2 khop con)) -- vai P, vai T, hong P, hong T
+_RR_LIMBS = ((14, (15, 16)), (11, (12, 13)), (1, (2, 3)), (4, (5, 6)))
+
+
+def _corrupt_hyp_limbs(hyp, p_corrupt, ang_range=(15.0, 45.0), std_bump_prob=0.5, jitter_deg=8.0):
+    """[RR-FuseKin Module 1, sua 2026-11-22] Lam hong chuoi chi tren toan bo hyp (B, K, 17, 3) luc train:
+      - Moi mau bi chon voi xac suat p_corrupt; mau bi chon lam hong DUNG 1 hoac 2 chuoi chi (ngau nhien, khong lap).
+      - Xoay CUNG chuoi chi (khuyu+co tay / goi+co chan) quanh khop goc (vai / hong) mot goc ngau nhien ang_range (do)
+        quanh truc ngau nhien -> GIU do dai xuong (khong de lo dau hieu "xuong sai do dai" cho mang).
+      - Voi xac suat std_bump_prob (theo mau): them xoay nho rieng tung gia thuyet (~N(0, jitter_deg)) -> std tang;
+        mau con lai giu std nhu cu -> std KHONG la dau hieu chac chan cua chi bi hong.
+    Tra (lift = mean(hyp) root-relative, hyp da lam hong root-relative)."""
+    pose = hyp.mean(dim=1)
+    if p_corrupt <= 0.0:
+        return pose - pose[:, 0:1], hyp
+    B, K, _, _ = hyp.shape
+    dev, dt = hyp.device, hyp.dtype
+    sel_sample = torch.rand(B, device=dev) < float(p_corrupt)                           # (B,)
+    if not bool(sel_sample.any()):
+        return pose - pose[:, 0:1], hyp
+    # Chon dung 1 hoac 2 chuoi chi khac nhau cho moi mau bi chon
+    order = torch.rand(B, len(_RR_LIMBS), device=dev).argsort(dim=1)                    # hoan vi ngau nhien
+    n_pick = 1 + (torch.rand(B, device=dev) < 0.5).long()                               # (B,) 1 | 2
+    rank = order.argsort(dim=1)                                                          # thu hang cua tung chi
+    sel_limb = (rank < n_pick[:, None]) & sel_sample[:, None]                           # (B, 4)
+    bump = (torch.rand(B, device=dev) < float(std_bump_prob)).to(dt)                    # (B,)
+    hyp_out = hyp.clone()
+    for li, (r, ch) in enumerate(_RR_LIMBS):
+        m = sel_limb[:, li]
+        if not bool(m.any()):
+            continue
+        axis = F.normalize(torch.randn(B, 3, device=dev, dtype=dt), dim=-1)
+        ang = torch.empty(B, device=dev, dtype=dt).uniform_(*ang_range) * (math.pi / 180.0)
+        R = _axis_angle_rot(axis, ang)[:, None].expand(B, K, 3, 3)                      # (B, K, 3, 3) chung K
+        ax_j = F.normalize(torch.randn(B, K, 3, device=dev, dtype=dt), dim=-1)
+        ang_j = torch.randn(B, K, device=dev, dtype=dt) * (jitter_deg * math.pi / 180.0) * bump[:, None]
+        R = _axis_angle_rot(ax_j, ang_j) @ R                                             # (B, K, 3, 3)
+        ch = list(ch)
+        root = hyp_out[:, :, r:r + 1, :]                                                 # (B, K, 1, 3)
+        rel = hyp_out[:, :, ch, :] - root                                                # (B, K, 2, 3)
+        new = torch.einsum('bkij,bknj->bkni', R, rel) + root
+        hyp_out[:, :, ch, :] = torch.where(m[:, None, None, None], new, hyp_out[:, :, ch, :])
+    hyp_out = hyp_out - hyp_out[:, :, 0:1, :]
+    pose = hyp_out.mean(dim=1)
+    return pose - pose[:, 0:1], hyp_out
+
+
+def _wp_reproj_residual(lift, ref_xy, ref_logb, keep):
+    """[RR-FuseKin Module 1, sua 2026-11-22] Phan du chieu 2D tung khop cua pose 3D lifter so voi 2D Refiner:
+    fit weak-perspective (s, t) dong kin tu lift[..., :2] sang ref_xy, trong so w = 1 / b^2 (b = exp(logb), nhu
+    img_lifter.aggregate 'jpma') x keep (bo khop bi drop3d), roi tra ||s * lift_xy + t - ref_xy|| (B, 17, 1) he [-1, 1].
+    Chi bi lam hong (hoac lifter sai that) -> phan du lon -> JRE phai doi chieu 3D voi bang chung 2D."""
+    P = lift[..., :2].float()
+    x = ref_xy.float()
+    b = torch.exp(ref_logb.float())
+    w = (1.0 / b.clamp_min(0.25) ** 2) * keep.float().reshape(b.shape)                  # (B, 17)
+    ws = w.sum(1, keepdim=True).clamp_min(1e-6)[..., None]                               # (B, 1, 1)
+    Pm = (w[..., None] * P).sum(1, keepdim=True) / ws
+    xm = (w[..., None] * x).sum(1, keepdim=True) / ws
+    Pc, xc = P - Pm, x - xm
+    sc = (w * (Pc * xc).sum(-1)).sum(1) / (w * (Pc ** 2).sum(-1)).sum(1).clamp_min(1e-8)
+    sc = sc.clamp_min(1e-3)[:, None, None]                                               # (B, 1, 1) ti le duong
+    t = xm - sc * Pm
+    return torch.norm(sc * P + t - x, dim=-1, keepdim=True)                             # (B, 17, 1)
+
+
 class VPoserDecoder(nn.Module):
     """Vo boc VPoser dong bang (nhu JOTR / DPMesh): ma an z (B, 32) -> goc xoay 23 khop than/tay (B, 23, 3) axis-angle."""
 
@@ -150,11 +228,12 @@ class AdaptiveHyperGCNLayer(nn.Module):
       - Tra (jt_moi (B, 17, D), body_tok (B, 5, D), part_tok (B, 10, D)).
     """
 
-    def __init__(self, dim, num_heads=4):
+    def __init__(self, dim, num_heads=4, use_rr_hgcn=False):
         super().__init__()
         self.dim = dim
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
+        self.use_rr_hgcn = bool(use_rr_hgcn)
 
         # Ma tran ke xuong H36M-17 (co them duong cheo) va ma tran thuoc 10 part / 5 body
         adj = h36m_adjacency(N_JOINT).float() + torch.eye(N_JOINT)
@@ -172,7 +251,7 @@ class AdaptiveHyperGCNLayer(nn.Module):
         self.register_buffer('Hp_mask', hp, persistent=False)                           # (17, 10)
         self.register_buffer('Hb_mask', hb, persistent=False)                           # (17, 5)
 
-        # Cong do tin cay dong theo du lieu: doc [jt (D), uvd (3), conf2d (1)]
+        # Cong do tin cay dong theo du lieu: doc [jt (D), uvd (3), conf2d (1)] (+ R_i = (r3D, r2D) khi v10_rr_hgcn)
         self.conf_gate = nn.Sequential(
             nn.Linear(dim + 4, dim // 2),
             nn.SiLU(inplace=True),
@@ -180,6 +259,10 @@ class AdaptiveHyperGCNLayer(nn.Module):
         )
         nn.init.zeros_(self.conf_gate[-1].weight)
         nn.init.constant_(self.conf_gate[-1].bias, 1.0)                                 # luc dau sigmoid(1) ~ 0.73
+        if self.use_rr_hgcn:
+            self.r_to_gate = nn.Linear(2, dim)
+            nn.init.zeros_(self.r_to_gate.weight)
+            nn.init.zeros_(self.r_to_gate.bias)
 
         # Nhanh 1: Do thi xuong ket hop attention phu thuoc du lieu
         self.norm_in = nn.LayerNorm(dim)
@@ -203,12 +286,15 @@ class AdaptiveHyperGCNLayer(nn.Module):
         self.ffn = nn.Sequential(nn.Linear(dim, dim * 2), nn.GELU(), nn.Linear(dim * 2, dim))
         self.gamma2 = nn.Parameter(1e-3 * torch.ones(dim))
 
-    def forward(self, jt, uvd, conf2d):
-        """jt (B, 17, D), uvd (B, 17, 3) in [0, 1], conf2d (B, 17, 1) in [0, 1]."""
+    def forward(self, jt, uvd, conf2d, r_rel=None):
+        """jt (B, 17, D), uvd (B, 17, 3) in [0, 1], conf2d (B, 17, 1) in [0, 1], r_rel (B, 17, 2) = (r3D, r2D)."""
         B, J, D = jt.shape
         h = self.norm_in(jt)
         # Cong tin cay dong tung khop tren tung mau
-        g = torch.sigmoid(self.conf_gate(torch.cat([h, uvd.to(h.dtype), conf2d.to(h.dtype)], dim=-1)))  # (B, 17, D)
+        gate_logit = self.conf_gate(torch.cat([h, uvd.to(h.dtype), conf2d.to(h.dtype)], dim=-1))
+        if self.use_rr_hgcn and r_rel is not None:
+            gate_logit = gate_logit + self.r_to_gate(r_rel.to(h.dtype))
+        g = torch.sigmoid(gate_logit)                                                   # (B, 17, D)
         g_scalar = g.mean(dim=-1, keepdim=True)                                         # (B, 17, 1) trong so gop sieu canh
         hg = h * g                                                                      # loc nhieu truoc khi phat tin
 
@@ -257,7 +343,9 @@ class V10Head(nn.Module):
     def __init__(self, dim=256, n_enc=3, n_dec=4, vol_depth=8, img_ch=2048, f16_ch=1024, vposer_ckpt='',
                  use_cam_bbox=False, proj_grad=False,
                  use_lifter=False, use_hyp_mem=False, n_hyp=5,
-                 drop3d_sample=0.2, drop3d_joint=0.1):
+                 drop3d_sample=0.2, drop3d_joint=0.1,
+                 no_lift_r=False, use_rr=False, rr_corrupt_prob=0.3,
+                 use_rr_hgcn=False, use_ctx_to_smpl=False):
         super().__init__()
         self.dim = int(dim)
         self.n_dec = int(n_dec)
@@ -269,6 +357,11 @@ class V10Head(nn.Module):
         self.n_hyp = int(n_hyp)
         self.drop3d_sample = float(drop3d_sample)
         self.drop3d_joint = float(drop3d_joint)
+        self.no_lift_r = bool(no_lift_r)
+        self.use_rr = bool(use_rr) and self.use_lifter
+        self.rr_corrupt_prob = float(rr_corrupt_prob)
+        self.use_rr_hgcn = bool(use_rr_hgcn) and self.use_rr
+        self.use_ctx_to_smpl = bool(use_ctx_to_smpl)
 
         # ---- [v10_cam_bbox] Thong tin bbox trong anh goc kieu CLIFF (dx, dy, s) -> 3 nhanh khoi tao 0 ----
         if self.use_cam_bbox:
@@ -288,14 +381,37 @@ class V10Head(nn.Module):
             nn.init.zeros_(self.lift_to_joint.bias)
             self.miss3d_tok = nn.Parameter(torch.zeros(1, 1, dim))
             self.lift_depth_scale = nn.Parameter(torch.tensor(0.0, dtype=torch.float32))
-            self.lift_root_mlp = nn.Sequential(nn.Linear(N_JOINT * 3, dim), nn.GELU(), nn.Linear(dim, dim))
-            nn.init.zeros_(self.lift_root_mlp[-1].weight)
-            nn.init.zeros_(self.lift_root_mlp[-1].bias)
+            if not self.no_lift_r:
+                self.lift_root_mlp = nn.Sequential(nn.Linear(N_JOINT * 3, dim), nn.GELU(), nn.Linear(dim, dim))
+                nn.init.zeros_(self.lift_root_mlp[-1].weight)
+                nn.init.zeros_(self.lift_root_mlp[-1].bias)
             if self.use_hyp_mem:
                 self.hyp_embed = nn.Sequential(nn.Linear(3, dim), nn.GELU(), nn.Linear(dim, dim))
                 self.hyp_joint_id = nn.Embedding(N_JOINT, dim)
                 self.hyp_id = nn.Embedding(self.n_hyp, dim)
                 self.hyp_norm = nn.LayerNorm(dim)
+            if self.use_rr:
+                # Module 1 (JRE): doc [LN(img_j0) (D), xy_in (2), op_mask (1), feat_l (9), xy_in - ref_xy (2),
+                #                     phan du chieu 2D cua lift so voi ref_xy x 10 (1)] -> (r3D, r2D)
+                self.jre_img_norm = nn.LayerNorm(dim)
+                self.jre_head = nn.Sequential(
+                    nn.Linear(dim + 15, dim // 2),
+                    nn.LayerNorm(dim // 2),
+                    nn.GELU(),
+                    nn.Linear(dim // 2, 2),
+                )
+
+        # ---- [v10_ctx_to_smpl] Module 3: noi khop 3D ctx (j3d_rel + 16 vector huong xuong) sang root_pose_head & vposer_head ----
+        if self.use_ctx_to_smpl:
+            bone_p = torch.tensor([p for p, _ in H36M_BONES], dtype=torch.long)
+            bone_c = torch.tensor([c for _, c in H36M_BONES], dtype=torch.long)
+            self.register_buffer('bone_p_idx', bone_p, persistent=False)
+            self.register_buffer('bone_c_idx', bone_c, persistent=False)
+            self.ctx_to_root = nn.Sequential(nn.Linear(N_JOINT * 3, dim), nn.LayerNorm(dim), nn.GELU(), nn.Linear(dim, dim))
+            self.ctx_to_vposer = nn.Sequential(nn.Linear(len(H36M_BONES) * 3, dim), nn.LayerNorm(dim), nn.GELU(), nn.Linear(dim, dim))
+            for m in (self.ctx_to_root[-1], self.ctx_to_vposer[-1]):
+                nn.init.zeros_(m.weight)
+                nn.init.zeros_(m.bias)
 
         # ---- 1) Encoder anh 2D (F8: 2048x8x8 -> 64 token) va F16 (1024x16x16) ----
         self.img_proj = nn.Conv2d(img_ch, dim, 1)
@@ -328,7 +444,8 @@ class V10Head(nn.Module):
         self.joint_qpos = nn.Embedding(N_JOINT, dim)
         self.decoder = nn.ModuleList([DecLayer(dim) for _ in range(self.n_dec)])
         self.dec_norm = nn.LayerNorm(dim)
-        self.ad_hgcn = nn.ModuleList([AdaptiveHyperGCNLayer(dim) for _ in range(self.n_dec)])
+        self.ad_hgcn = nn.ModuleList([AdaptiveHyperGCNLayer(dim, use_rr_hgcn=self.use_rr_hgcn)
+                                      for _ in range(self.n_dec)])
 
         # Cap nhat toa do 2.5D (u, v, d) in (0, 1)^3 theo inverse_sigmoid (nhu JOTR)
         self.uvd_regress = nn.ModuleList([nn.Linear(dim + 3, 3) for _ in range(self.n_dec)])
@@ -448,9 +565,13 @@ class V10Head(nn.Module):
         lift_j = lift_r = 0.0
         keep3d = None
         hyp_tok = hyp_pos = None
+        lift_clean = lift
+        jre_pred = w3d = r_rel = None
         if self.use_lifter:
             assert lift is not None and hyp is not None and ref_xy is not None and ref_logb is not None, \
                 'v10_lifter can lift, hyp, ref_xy, ref_logb'
+            if self.use_rr and is_train and self.rr_corrupt_prob > 0.0:
+                lift, hyp = _corrupt_hyp_limbs(hyp, self.rr_corrupt_prob)
             if bool(cfg.MODEL.get('v10_test_drop3d', False)):
                 keep3d = torch.zeros(B, N_JOINT, 1, device=fmap.device, dtype=dtype)
             elif is_train:
@@ -462,9 +583,9 @@ class V10Head(nn.Module):
             std3 = hyp.float().std(dim=1, unbiased=False) * 10.0                        # (B, 17, 3)
             feat_l = torch.cat([lift.float(), std3, ref_xy.float(), ref_logb.float()[..., None]], dim=-1).to(dtype)
             e3d = self.lift_to_joint(self.lift_emb(feat_l))
-            lift_j = keep3d * e3d + (1.0 - keep3d) * self.miss3d_tok                    # (B, 17, D)
-            has_any = (keep3d.sum(dim=1) > 0).to(dtype)                                 # (B, 1): 0 neu drop het mau
-            lift_r = self.lift_root_mlp((lift.to(dtype) * keep3d).flatten(1)) * has_any # (B, D)
+            if not self.no_lift_r:
+                has_any = (keep3d.sum(dim=1) > 0).to(dtype)                             # (B, 1): 0 neu drop het mau
+                lift_r = self.lift_root_mlp((lift.to(dtype) * keep3d).flatten(1)) * has_any
             if self.use_hyp_mem:
                 assert hyp.shape[1] == self.n_hyp, \
                     f'v10_hyp_mem can hyp (B, {self.n_hyp}, 17, 3), nhan {tuple(hyp.shape)}'
@@ -493,11 +614,31 @@ class V10Head(nn.Module):
             v3d_tok = layer(v3d_tok, pos3d)
         dense_feat = v3d_tok.transpose(1, 2).reshape(B, D, self.vol_d, h, w).contiguous()
 
-        # ---- [3] Khoi tao 17 token khop tu 2D detector + Noi suy vi tri (u0, v0, d0) ----
+        # ---- [3] Khoi tao 17 token khop tu 2D detector + JRE (neu bat) + Noi suy vi tri (u0, v0, d0) ----
         vis = (op_mask > 0).to(dtype)                                                   # (B, 17, 1)
         xy_in = (op_xy * vis).to(dtype)                                                 # (B, 17, 2) in [-1, 1]
         img_j0 = F.grid_sample(f16_feat, xy_in[:, :, None, :], mode='bilinear',
                                align_corners=False).squeeze(-1).transpose(1, 2)         # (B, 17, D)
+        if self.use_lifter:
+            if self.use_rr:
+                diff_2d = ((xy_in - ref_xy.to(dtype)) * vis) * keep3d
+                reproj = _wp_reproj_residual(lift, ref_xy, ref_logb, keep3d).to(dtype) * 10.0 * keep3d   # (B, 17, 1)
+                jre_in = torch.cat([
+                    self.jre_img_norm(img_j0.detach()),
+                    xy_in,
+                    op_mask.to(dtype),
+                    feat_l * keep3d,
+                    diff_2d,
+                    reproj,
+                ], dim=-1)
+                jre_pred = torch.sigmoid(self.jre_head(jre_in))                         # (B, 17, 2) = (r3D, r2D)
+                r3d_det = jre_pred[..., 0:1].detach()
+                r2d_det = jre_pred[..., 1:2].detach()
+                w3d = r3d_det * (1.0 - 0.7 * r2d_det)                                   # (B, 17, 1) bao ve khop 2D ro
+                r_rel = torch.cat([r3d_det * keep3d, r2d_det], dim=-1)                  # (B, 17, 2) cho HyperGCN
+                lift_j = keep3d * (w3d.to(dtype) * e3d) + (1.0 - keep3d) * self.miss3d_tok
+            else:
+                lift_j = keep3d * e3d + (1.0 - keep3d) * self.miss3d_tok
         e2d = self.emb2d(torch.cat([xy_in, op_mask.to(dtype)], dim=-1))
         jt = self.init_norm(img_j0 * vis + e2d + (1.0 - vis) * self.miss2d_tok
                             + self.joint_id.weight[None] + cam_j + lift_j)
@@ -509,7 +650,7 @@ class V10Head(nn.Module):
         det_uv = ((op_xy.float() + 1.0) * 0.5).clamp(1e-4, 1.0 - 1e-4)
         uv0_vis = torch.sigmoid(inverse_sigmoid(det_uv) + raw_uvd0[..., :2].float())
         if self.use_lifter:
-            keep3d_f = keep3d.float()
+            keep3d_f = (keep3d * jre_pred[..., 0:1].detach().to(dtype)).float() if self.use_rr else keep3d.float()
             ref_uv = ((ref_xy.float() + 1.0) * 0.5).clamp(1e-4, 1.0 - 1e-4)
             uv0_occ_ref = torch.sigmoid(inverse_sigmoid(ref_uv) + raw_uvd0[..., :2].float())
             uv0_occ = keep3d_f * uv0_occ_ref + (1.0 - keep3d_f) * torch.sigmoid(raw_uvd0[..., :2].float())
@@ -546,7 +687,7 @@ class V10Head(nn.Module):
             jt = tgt[:, N_SMPL_TOK:]                                                    # (B, 17, D)
 
             # AdaptiveHyperGCN: loc tin theo do tin cay du lieu & truyen tin tren 16 xuong + 10 part + 5 body
-            jt, body_tok, _ = self.ad_hgcn[i](jt, uvd.detach(), op_mask)
+            jt, body_tok, _ = self.ad_hgcn[i](jt, uvd.detach(), op_mask, r_rel=r_rel)
 
             # Cap nhat toa do 2.5D (u, v, d) theo inverse_sigmoid (JOTR) va lay mau lai 3D-Volume + F16
             inv_uvd = inverse_sigmoid(uvd.float())
@@ -563,12 +704,20 @@ class V10Head(nn.Module):
             j3d_rel = j3d - j3d[:, 0:1]
             j17_layers.append(j3d_rel)
 
+            ctx_r = ctx_v = 0.0
+            if self.use_ctx_to_smpl:
+                j_det = j3d_rel.detach().to(dtype)
+                b_vec = F.normalize(j3d_rel.detach().float()[:, self.bone_c_idx]
+                                    - j3d_rel.detach().float()[:, self.bone_p_idx], dim=-1, eps=1e-6).to(dtype)
+                ctx_r = self.ctx_to_root(j_det.flatten(1))                              # (B, D)
+                ctx_v = self.ctx_to_vposer(b_vec.flatten(1))                            # (B, D)
+
             # Readout 5 chuoi chi & khung Hong-Than cong vao token pose -> Cascade VPoser + Root 6D
             body_sum = self.body_readout(body_tok.flatten(1))                           # (B, D)
             root_sum = self.root_readout(jt[:, [0, 1, 4, 7, 8]].flatten(1))             # (B, D)
             pose_tok = smpl_tok[:, 0]
-            root_6d = self.root_pose_head(i, pose_tok + root_sum + cam_r + lift_r, root_6d)      # (B, 6)
-            vposer_z = self.vposer_head(i, pose_tok + body_sum, vposer_z)               # (B, 32)
+            root_6d = self.root_pose_head(i, pose_tok + root_sum + cam_r + lift_r + ctx_r, root_6d)      # (B, 6)
+            vposer_z = self.vposer_head(i, pose_tok + body_sum + ctx_v, vposer_z)       # (B, 32)
             shape = self.shape_head(i, smpl_tok[:, 1], shape)                           # (B, 10)
             cam = self.cam_head(i, smpl_tok[:, 2] + cam_c, cam)                         # (B, 3)
             per_layer.append((root_6d, vposer_z, shape, cam))
@@ -578,7 +727,7 @@ class V10Head(nn.Module):
                                     for it in per_layer[:-1]] if is_train else []
         j3d_final = j17_layers[-1]
         result['ctx_3d'] = j3d_final
-        result['lifted_joints_3d'] = lift.detach() if self.use_lifter else j3d_final.detach()    # cot LIFT = lifter neu co, khong thi khop 3D query
+        result['lifted_joints_3d'] = lift_clean.detach() if self.use_lifter else j3d_final.detach()  # cot LIFT = lifter sach neu co
         result['privileged_3d'] = j3d_final
         result['feat_joint'] = jt
         result['feat_global'] = tgt[:, :N_SMPL_TOK].mean(1)
@@ -587,6 +736,13 @@ class V10Head(nn.Module):
             result['v9_rp_xy'] = torch.stack(rp_xys[1:], dim=1)                         # (B, L, 17, 2)
             result['v9_rp_ref'] = rp_xys[0].detach()
             result['v10_j17_layers'] = j17_layers
+            if self.use_rr and jre_pred is not None:
+                result['v10_jre_pred'] = jre_pred                                       # (B, 17, 2) = (r3D, r2D)
+                result['v10_lift_used'] = lift.detach()                                 # (B, 17, 3) sau khi lam hong chi
+                result['v10_keep3d'] = keep3d.detach()                                  # (B, 17, 1)
+                result['v10_op_xy'] = xy_in.detach()                                    # (B, 17, 2)
+                result['v10_op_vis'] = vis.detach()                                     # (B, 17, 1)
+                result['v10_w3d'] = (w3d.detach() * keep3d.detach())                    # (B, 17, 1)
         return result
 
 
@@ -631,9 +787,18 @@ class V10Net(nn.Module):
             n_hyp=int(cfg.MODEL.imglift_K),
             drop3d_sample=float(cfg.MODEL.get('v10_drop3d_sample', 0.2)),
             drop3d_joint=float(cfg.MODEL.get('v10_drop3d_joint', 0.1)),
+            no_lift_r=bool(cfg.MODEL.get('v10_no_lift_r', False)),
+            use_rr=bool(cfg.MODEL.get('v10_rr', False)),
+            rr_corrupt_prob=float(cfg.MODEL.get('v10_rr_corrupt_prob', 0.3)),
+            use_rr_hgcn=bool(cfg.MODEL.get('v10_rr_hgcn', False)),
+            use_ctx_to_smpl=bool(cfg.MODEL.get('v10_ctx_to_smpl', False)),
         )
         print(f'===> [V10] cam_bbox CLIFF: {cfg.MODEL.get("v10_cam_bbox", False)} | '
-              f'loss chieu 2D khong detach + view_rot: {cfg.MODEL.get("v10_proj_grad", False)}')
+              f'loss chieu 2D khong detach + view_rot: {cfg.MODEL.get("v10_proj_grad", False)} | '
+              f'no_lift_r: {cfg.MODEL.get("v10_no_lift_r", False)} | '
+              f'RR (JRE + w3D): {cfg.MODEL.get("v10_rr", False)} (p={cfg.MODEL.get("v10_rr_corrupt_prob", 0.3)}, '
+              f'hgcn={cfg.MODEL.get("v10_rr_hgcn", False)}) | '
+              f'ctx_to_smpl: {cfg.MODEL.get("v10_ctx_to_smpl", False)}')
         self.joint_drop = float(cfg.MODEL.v10_joint_drop)
         lift_msg = (f' | lifter {cfg.MODEL.imglift_checkpoint} (K={cfg.MODEL.imglift_K}, S={cfg.MODEL.imglift_S}, '
                     f'hyp_mem={self.use_hyp_mem}, drop3d=({cfg.MODEL.get("v10_drop3d_sample", 0.2)}, '

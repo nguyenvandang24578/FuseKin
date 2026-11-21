@@ -813,3 +813,46 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
   2. `IMGLIFT.use_f16_feat: True`: `Refiner2D` trả thêm `f16` (`1024×16×16`, `layer3` ResNet-50 có tiêm heatmap 2D); lấy mẫu song tuyến `f16` tại tọa độ `xy` đã sửa và điền đủ của `Refiner2D`, nối với `feat_j` deconv (`256` kênh) → `1280` kênh / điểm cho cả 65 điểm (`17 khớp + 48 điểm dày`).
   3. `train_xy_noise: 0.0`, `input_drop_prob: 0.0`: tắt nhiễu chồng lên đầu ra `Refiner2D` (đầu vào đã có `PoseFix 1.0`).
 - File sửa / tạo: sửa `lib/core/config.py`, `lib/models/refiner2d.py`, `lib/models/img_lifter.py`, `lib/utils/img_lifter_tools.py`, `main/train_img_lifter.py`; tạo mới `config/train_img_lifter_v2_no3dpw.yaml`. Chưa có kết quả.
+
+## 59. FuseKin v10 CLIFF + tích hợp ImgLifter v2 (`64k/ep` đối chứng, 2026-11-20, người dùng duyệt; đã code, chưa chạy)
+- Mục tiêu: đo đóng góp riêng của 3D Lifter (`experiment/img_lifter_v2_no3dpw/checkpoint/last.pth.tar`, `no3dpw`) khi gắn vào `FuseKin v10` trên cùng nền `CLIFF + AdamW` (`v10_cam_bbox`, `v10_proj_grad`, `AdamW wd=1e-4`, `lr_backbone=1e-4`), chạy ở quy mô `64k mẫu/epoch` (`ratio 0.25`, batch 64, 20 epoch).
+- Kiến trúc `v10_lifter` (`lib/models/fusekin_v10.py`):
+  - Chạy `Refiner2D + ImgLifter v2` đóng băng (eval, `K=5, S=2`) lấy `lift_mean`, `std_3d*10`, `ref_xy`, `ref_logb` và `hyp`.
+  - Nhúng 9 chiều `[lift_mean, std_3d*10, ref_xy, ref_logb]` qua lớp chiếu cuối **khởi tạo 0** cộng vào 17 token khớp (với modality dropout `drop3d_sample=0.2`, `drop3d_joint=0.1` thay bằng `miss3d_tok`); hỗ trợ `--drop3d` qua `v10_test_drop3d`.
+  - Khớp bị che (`vis=0`) khi còn 3D neo `uvd0` quanh `ref_xy` và nhận tín hiệu độ sâu `lift_depth_scale * lift_mean[..., 2]`; cộng `lift_root_mlp(lift_mean)` (khởi tạo 0) vào `root_pose_head`.
+  - Tùy chọn `v10_hyp_mem` (nối `K×17` giả thuyết vào memory cross-attn của decoder) đã code sẵn, tạm đặt `False` để giữ memory gọn (`81` token) và tách đúng 1 yếu tố.
+- File sửa / tạo: sửa `lib/core/config.py` (5 key `MODEL.v10_lifter / v10_hyp_mem / v10_drop3d_sample / v10_drop3d_joint / v10_test_drop3d`, mặc định tắt), `lib/models/fusekin_v10.py`, `main/test_student_3dpw_sets.py` (`--drop3d` bật cả `v10_test_drop3d`); tạo cặp YAML đối chứng `config/train_v10_cliff_64k.yml` (chỉ Ảnh + 2D) và `config/train_v10_cliff_lift_64k.yml` (thêm `ImgLifter v2`).
+- **Kết quả người dùng báo (2026-11-21, 14 khớp, mm, `ocpc_mode all`; lưu ý lệch epoch: `v10_cliff_64k` ep16 vs `v10_cliff_lift_64k` ep11):**
+  - Best 3DPW trong lúc train: `v10_cliff_64k` **`80.74 / 52.59 / 98.76`** (`MPJPE − PA = 28.15 mm`, giảm `−7.0 mm` so với `v10_full` ep7 `87.77`) vs `v10_cliff_lift_64k` `81.15 / 52.93 / 99.43`.
+  - Eval 4 tập (`last.pth.tar`, `ctx → mesh | PA | MPVPE`):
+    - `v10_cliff_64k` (ep16, không 3D): 3DPW `80.94 → 81.51 | 52.56 | 99.05` · OC `80.35 → 82.17 | 56.86 | 98.95` · PC `91.13 → 91.35 | 67.56 | 115.77` · Crowd `87.49 → 86.60 | 56.85 | 109.80`.
+    - `ImgLifter v2` đứng 1 mình (`LIFT | LIFT-PA`): 3DPW `81.75 | 53.68` · OC `82.75 | 57.25` · PC `93.79 | 69.39` · Crowd `89.17 | 59.58`.
+    - `v10_cliff_lift_64k` (ep11, **BẬT 3D**): 3DPW **`78.78 → 80.86 | 53.48 | 98.17`** · OC `83.49 → 83.45 | 57.70 | 100.74` · PC `91.92 → 94.23 | 68.48 | 120.09` · Crowd **`87.31`** `→ 89.27 | 58.43 | 112.55`.
+    - `v10_cliff_lift_64k` (ep11, **TẮT 3D `--drop3d`**): 3DPW `82.36 → 82.00 | 53.11 | 99.00` · OC `86.63 → 84.67 | 57.07 | 101.21` · PC `96.36 → 96.52 | 68.82 | 123.05` · Crowd `88.50 → 88.96 | 57.88 | 111.67`.
+  - Nhận xét từ số liệu: (1) khi tắt 3D, nhánh ảnh của bản có Lifter yếu hơn bản train thuần ảnh `+2.4 đến +5.2 mm` trên `OC / PC / Crowd` (Shortcut Learning); (2) trên cùng checkpoint ep11, tắt 3D làm `PA-MPJPE` tốt lên ở 3/4 tập (`3DPW, OC, Crowd`) và xóa hoàn toàn mức rơi `+2.0–2.3 mm` từ `ctx → mesh_cuoi` (do `lift_r` kéo ngược về Lifter).
+
+## 60. RR-FuseKin trên nền V10 CLIFF (`R1` & `R2`, `64k/ep`, 2026-11-22, người dùng duyệt; đã code, chưa chạy)
+- Thiết kế theo `README_FuseKin_Reliability_Routing.md` sau khi chỉnh 5 điểm góp ý:
+  - **R1 (`config/train_v10_rr_r1_64k.yml`)**: bật `v10_no_lift_r: True` (bỏ `lift_r` khỏi `root_pose_head`) + `v10_rr: True` (Module 1: làm hỏng 1–2 chuỗi chi trên toàn bộ `hyp` với xác suất `0.3` rồi tính lại `lift` và `std3`; `jre_head` đoán $R_i = (r_i^{3D}, r_i^{2D}) \in (0, 1)^2$ giám sát bằng $\exp(-e/\tau)$ với $\tau=0.08$; Module 2A: cổng $w_i^{3D} = r_i^{3D}(1 - 0.7\,r_i^{2D})$ bảo vệ khớp nhìn rõ).
+  - **R2 (`config/train_v10_rr_r2_64k.yml`)**: R1 + `v10_rr_hgcn: True` (Module 2B: đưa $R_i$ qua `r_to_gate` khởi tạo 0 vào `conf_gate` sẵn có của `AdaptiveHyperGCNLayer`) + `v10_ctx_to_smpl: True` (Module 3: nối `j3d_rel` `17×3` và 16 vector hướng xương chuẩn hóa `16×3` của `ctx` vào `root_pose_head` và `vposer_head`).
+- File sửa / tạo: sửa `lib/core/config.py` (7 key mới, mặc định tắt), `lib/models/fusekin_v10.py`, `lib/core/base.py` (`_v10_jre_loss`); tạo `config/train_v10_rr_r1_64k.yml` và `config/train_v10_rr_r2_64k.yml`. Chưa có kết quả.
+
+
+## 60. Kết quả giữa chừng cặp đối chứng §59 `v10_cliff_64k` (ep16) vs `v10_cliff_lift_64k` (ep11) (người dùng gửi 2026-11-21 23:55; CHƯA phải `last`)
+- 14 khớp, `ocpc_mode all`, MPJPE ctx → mesh | PA | MPVPE. Hai run lệch epoch: no-lift ep16 (lr đã giảm 3 lần, 1.25e-5), lift ep11 (lr đã giảm 1 lần, 5e-5) → chỉ là chẩn đoán, không kết luận.
+
+| Tập | A. no-lift ep16 | LIFT (ImgLifter v2) / LIFT-PA | B. lift ep11 (bật 3D) | C. lift ep11 `--drop3d` |
+|---|---|---|---|---|
+| 3DPW | 80.94 → 81.51 / 52.56 / 99.05 | 81.75 / 53.68 | 78.78 → 80.86 / 53.48 / 98.17 | 82.36 → 82.00 / 53.11 / 99.00 |
+| OC | 80.35 → 82.17 / 56.86 / 98.95 | 82.75 / 57.25 | 83.49 → 83.45 / 57.70 / 100.74 | 86.63 → 84.67 / 57.07 / 101.21 |
+| PC | 91.13 → 91.35 / 67.56 / 115.77 | 93.79 / 69.39 | 91.92 → 94.23 / 68.48 / 120.09 | 96.36 → 96.52 / 68.82 / 123.05 |
+| Crowd | 87.49 → 86.60 / 56.85 / 109.80 | 89.17 / 59.58 | 87.31 → 89.27 / 58.43 / 112.55 | 88.50 → 88.96 / 57.88 / 111.67 |
+
+- Người dùng báo thêm: best 3DPW của no-lift 80.74 / 52.59 / 98.76 (chọn theo test → chỉ tham khảo); MPJPE − PA no-lift 28.15 mm (v10_full 34.5–36.1).
+- Kiểm chứng phân tích kèm theo (Claude, 2026-11-21):
+  - Sự thật từ bảng: LIFT kém mesh no-lift ep16 ở cả 4 tập (MPJPE và PA).
+  - C vs A lệch epoch (ep11 vs ep16) → không dùng làm bằng chứng shortcut được.
+  - B vs C (cùng ckpt ep11): tắt 3D làm PA tốt hơn ở 3DPW/OC/Crowd nhưng MPJPE/MPVPE mesh XẤU hơn ở 3DPW/OC/PC; chỉ Crowd tốt hơn cả 3 chỉ số.
+  - Cú tụt ctx → mesh khi bật 3D (+2.1 3DPW, +2.3 PC, +2.0 Crowd; OC không tụt) chưa quy được riêng cho `lift_r`: `--drop3d` tắt cả 3 đường (lift_j, neo uvd0/d0, lift_r).
+  - `is_3D` trong `fusekin_sample.py` KHÔNG được loss nào dùng → không phải nguyên nhân.
+  - Đúng: v10 không giám sát chiều sâu d của uvd (chỉ `_v9_reproj_loss` cho xy); JOTR giám sát `joint_img` 3D (`body_joint_img` theo `is_3D`, `smpl_joint_img` từ pseudo-GT cho mọi mẫu có fit).

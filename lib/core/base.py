@@ -340,6 +340,51 @@ def _v9_rel_loss(model_output, gt_pose_input, valid_joint, targets, meta):
     return loss, stats
 
 
+def _v10_jre_loss(model_output, gt_pose_input, valid_joint, targets, meta):
+    """[RR-FuseKin Module 1] Giam sat JRE pred (B, 17, 2) = (r3D, r2D) in (0, 1)^2:
+      - Nhan r3D* = exp(-||lift_used - GT_3D||_2 / tau3d) tren khop co GT 3D hop le & khong bi drop3d.
+      - Nhan r2D* = exp(-||xy_2D - GT_2D||_2 / tau2d) * op_vis tren khop co GT 2D trong khung crop.
+    Tra (loss, stats)."""
+    pred = model_output['v10_jre_pred'].float()
+    tau3 = float(cfg.MODEL.get('v10_rr_tau3d', 0.08))
+    tau2 = float(cfg.MODEL.get('v10_rr_tau2d', 0.08))
+    with torch.no_grad():
+        e3 = torch.norm(model_output['v10_lift_used'].float() - gt_pose_input.float(), dim=-1)          # (B, 17) met
+        keep3 = model_output['v10_keep3d'].float().reshape(e3.shape)
+        v3 = valid_joint.float().reshape(e3.shape) * keep3
+        t3 = torch.exp(-e3 / tau3)
+
+        g2 = targets['orig_joint_img'].cuda().float()[..., :2]
+        g2 = torch.stack([g2[..., 0] / cfg.output_hm_shape[2] * 2 - 1,
+                          g2[..., 1] / cfg.output_hm_shape[1] * 2 - 1], dim=-1)
+        op_xy = model_output['v10_op_xy'].float()
+        op_vis = (model_output['v10_op_vis'].float().reshape(e3.shape) > 0).float()
+        e2 = torch.norm(op_xy - g2, dim=-1)
+        v2 = meta['orig_joint_trunc'].cuda().float().reshape(e2.shape)
+        if 'orig_joint_valid' in meta:
+            v2 = v2 * meta['orig_joint_valid'].cuda().float().reshape(e2.shape)
+        t2 = torch.exp(-e2 / tau2) * op_vis
+    l3 = F.smooth_l1_loss(pred[..., 0], t3, reduction='none', beta=0.05)
+    l2 = F.smooth_l1_loss(pred[..., 1], t2, reduction='none', beta=0.05)
+    loss = (l3 * v3).sum() / v3.sum().clamp_min(1.0) + (l2 * v2).sum() / v2.sum().clamp_min(1.0)
+    with torch.no_grad():
+        m3 = v3 > 0
+        if int(m3.sum()) > 1:
+            a, b = pred[..., 0][m3], t3[m3]
+            corr = ((a - a.mean()) * (b - b.mean())).mean() / (a.std(unbiased=False) * b.std(unbiased=False) + 1e-8)
+        else:
+            corr = pred.new_zeros(())
+        w3d = model_output['v10_w3d'].float()
+    stats = {
+        'v10_jre': float(loss),
+        'v10_r3d_corr': float(corr),
+        'v10_r3d': float(pred[..., 0].mean()),
+        'v10_r2d': float(pred[..., 1].mean()),
+        'v10_w3d': float(w3d.mean()),
+    }
+    return loss, stats
+
+
 def _v9_gate_loss(model_output, gt_pose_input, valid_joint):
     """[H2 v9_gate] (2026-11-17, PLAN_H1H2.md muc 6): BCE giua cong g (B, 17) va nhan mem g* (detach).
     g* = e_s~^2 / (e_s~^2 + e_l~^2): e_s = loi j3d_s (ctx_3d), e_l = loi lifter, MOI KHOP j chuan hoa bang trung binh
@@ -1052,6 +1097,11 @@ class Student_Trainer:
                     l17 = ((e17 * valid_joint).sum(-1) / n_valid).mean()
                     j17_tot, j17_ws = j17_tot + wl * l17, j17_ws + wl
                 loss = loss + float(cfg.MODEL.get('v10_j17_all_w', 1.0)) * (j17_tot / j17_ws)
+            # [V10 RR-FuseKin] giam sat JRE (r3D, r2D)
+            jre_stats = {}
+            if 'v10_jre_pred' in model_output:
+                jre_loss, jre_stats = _v10_jre_loss(model_output, gt_pose_input, valid_joint, targets, meta)
+                loss = loss + float(cfg.MODEL.get('v10_rr_loss_w', 0.2)) * jre_loss
 
             # Do gradient tai tham so fusion (KD relation): feature gather cua DataParallel la cac nhanh rieng,
             # khong dung grad theo feature joint gather de tranh log nham bang 0.
@@ -1096,6 +1146,7 @@ class Student_Trainer:
                 **h1_stats,
                 **gate_stats,
                 **vis_stats,
+                **jre_stats,
             }
             if self.kd_joint_relation:
                 step_stats['kd_joint_relation'] = step_stats['kd_joint']
@@ -1144,7 +1195,9 @@ class Student_Trainer:
                     + (f'gate {gate_stats["v9_gate_mean"]:.2f} (g* {gate_stats["v9_gstar_mean"]:.2f}) mix '
                        f'{gate_stats["v9_mix_mm"]:.0f} s {gate_stats["v9_js_mm"]:.0f} l {gate_stats["v9_lift_mm"]:.0f}mm '
                        if gate_stats else '')
-                    + (f'vis: {vis_stats["v9_vis"]:.3f} ' if vis_stats else '') +
+                    + (f'vis: {vis_stats["v9_vis"]:.3f} ' if vis_stats else '')
+                    + (f'jre: {jre_stats["v10_jre"]:.3f} r3c {jre_stats["v10_r3d_corr"]:.2f} '
+                       f'w3d {jre_stats["v10_w3d"]:.2f} ' if jre_stats else '') +
                     f'priv: {step_stats["privileged_3d"]:.3f} '
                     f'tl: {loss.detach().item():.3f}'
                 )
@@ -1158,7 +1211,10 @@ class Student_Trainer:
               f' | loi joint dau vao (lifter): {avg["lift_err_mm"]:.1f} mm'
               + (f' | do sau [C]: loss {avg["depth_loss"]:.4f}, loi {avg["depth_err_mm"]:.1f} mm' if 'depth_loss' in avg else '')
               + (f' | J29 (v6/v7): loss {avg["v6_j29"]:.4f}, loi {avg["v6_j29_mm"]:.1f} mm' if 'v6_j29' in avg else '')
-              + (f' | v7: TB dbeta^2 {avg["v7_dbeta"]:.4f}, |beta0| {avg["v7_beta0"]:.2f}' if 'v7_dbeta' in avg else ''))
+              + (f' | v7: TB dbeta^2 {avg["v7_dbeta"]:.4f}, |beta0| {avg["v7_beta0"]:.2f}' if 'v7_dbeta' in avg else '')
+              + (f' | RR JRE: loss {avg["v10_jre"]:.4f}, corr3d {avg["v10_r3d_corr"]:.3f}, '
+                 f'r3d/r2d/w3d {avg["v10_r3d"]:.2f}/{avg["v10_r2d"]:.2f}/{avg["v10_w3d"]:.2f}'
+                 if 'v10_jre' in avg else ''))
         if 'v9_j29_all' in avg or 'v9_gate_bce' in avg or 'v9_vis' in avg:      # H1a / H2 / H2b (2026-11-17)
             print('  H1/H2:'
                   + (f' J29 29 diem: loss {avg["v9_j29_all"]:.4f}, loi lop cuoi {avg["v9_j29_all_mm"]:.1f} mm, '
