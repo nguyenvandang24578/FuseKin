@@ -100,6 +100,9 @@ cfg.DATASET.lift_only = False
 cfg.DATASET.pw3d_2d_source = 'openpose'
 # Chi danh gia 3dpw-oc / 3dpw-pc tren cac sequence thuoc TEST (bo sequence trung train/val de tranh ro ri). Mac dinh TAT.
 cfg.DATASET.pw3d_ocpc_test_only = False
+# Khi train voi 3dpw-train: loai bo TOAN BO sequence (va frame) xuat hien trong 3dpw-test, 3dpw-oc, 3dpw-pc, 3dpw-crowd
+# de dam bao 0% giao nhau giua tap train va ca 4 tap danh gia. Mac dinh TAT (hanh vi cu).
+cfg.DATASET.pw3d_train_exclude_eval_seqs = False
 # Nguong score de coi 1 khop Halpe-26 la hop le (mask = 1)
 cfg.DATASET.halpe26_conf_thr = 0.3
 # joints_mask MEM: khop hop le (score > nguong, nam trong crop) mang gia tri = score Halpe (cat ve [0, 1]) thay vi 1.

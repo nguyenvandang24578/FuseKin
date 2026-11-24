@@ -164,10 +164,33 @@ class PW3D(torch.utils.data.Dataset):
             with open(osp.join(self.data_path, '3DPW_latest_test.json')) as f:
                 test_seqs = {im['sequence'] for im in json.load(f)['images']}
             print(f'[ocpc_test_only] chi giu sequence thuoc test: {sorted(test_seqs)}')
+
+        # 3dpw-train-clean: loai bo moi sequence/frame xuat hien trong 3dpw (test), 3dpw-oc, 3dpw-pc, 3dpw-crowd
+        exclude_seqs = None
+        exclude_frames = None
+        if self.data_name == '3dpw-train' and bool(cfg.DATASET.get('pw3d_train_exclude_eval_seqs', False)):
+            exclude_seqs = {'courtyard_hug_00', 'courtyard_dancing_00'}
+            exclude_frames = set()
+            for fname in ('3DPW_latest_test.json', '3DPW_oc.json', '3DPW_pc.json'):
+                fpath = osp.join(self.data_path, fname)
+                with open(fpath) as f:
+                    imgs = json.load(f)['images']
+                for im in imgs:
+                    exclude_seqs.add(im['sequence'])
+                    exclude_frames.add((im['sequence'], im['file_name']))
+            with open(osp.join(self.data_path, '3DPW_latest_validation.json')) as f:
+                for im in json.load(f)['images']:
+                    if 'courtyard_hug_00' in im['sequence'] or 'courtyard_dancing_00' in im['sequence']:
+                        exclude_seqs.add(im['sequence'])
+                        exclude_frames.add((im['sequence'], im['file_name']))
+
         hhrnet_count = 0
         datalist = []
+        all_train_seqs = set()
+        kept_train_seqs = set()
+        excluded_train_seqs = set()
+        n_excluded_samples = 0
 
-        
         for aid in db.anns.keys():
             aid = int(aid)
 
@@ -177,12 +200,18 @@ class PW3D(torch.utils.data.Dataset):
             img_width, img_height = img['width'], img['height']
             sequence_name = img['sequence']
             img_name = img['file_name']
+            all_train_seqs.add(sequence_name)
             if test_seqs is not None and sequence_name not in test_seqs:
+                continue
+            if exclude_seqs is not None and (sequence_name in exclude_seqs or (sequence_name, img_name) in exclude_frames):
+                excluded_train_seqs.add(sequence_name)
+                n_excluded_samples += 1
                 continue
 
             if self.is_crowd and self.data_split=='validation':
                 if 'courtyard_hug_00' not in sequence_name and 'courtyard_dancing_00' not in sequence_name:
                     continue
+            kept_train_seqs.add(sequence_name)
 
             img_path = osp.join(self.data_path, 'imageFiles', sequence_name, img_name)
             cam_param = {k: np.array(v, dtype=np.float32) for k,v in img['cam_param'].items()}
@@ -236,6 +265,10 @@ class PW3D(torch.utils.data.Dataset):
             })
 
         print("check hhrnet input: ", hhrnet_count)
+        if exclude_seqs is not None:
+            print(f"[pw3d_train_exclude_eval_seqs] Giu {len(kept_train_seqs)}/{len(all_train_seqs)} sequences "
+                  f"({len(datalist)} mau, loai {n_excluded_samples} mau cua {len(excluded_train_seqs)} sequences trung test/oc/pc/crowd): "
+                  f"giu={sorted(kept_train_seqs)} | loai={sorted(excluded_train_seqs)}")
         return datalist
 
     def get_smpl_coord(self, smpl_param):
