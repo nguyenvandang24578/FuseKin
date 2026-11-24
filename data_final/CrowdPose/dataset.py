@@ -20,6 +20,7 @@ from utils.transforms import world2cam, cam2pixel, pixel2cam, transform_joint_to
 from utils.lift_pseudo3d import lift_pseudo3d_sample, load_halpe_into_datalist, halpe_to_crop, gt_mask_halpe, keep_neuralannot
 from utils.h36m_adapter import HUMAN36M_JOINTS
 from utils.fusekin_sample import fusekin_train_sample
+from utils.fit_err_filter import filter_by_fit_err
 from utils.cam_bbox import est_cam
 
 
@@ -77,6 +78,8 @@ class CrowdPose(torch.utils.data.Dataset):
             else:
                 # Lifter / FuseKin thong nhat: chi giu nguoi co NeuralAnnot + Halpe-26 (tools/extract_halpe26_coco.py --dataset crowdpose)
                 self.datalist = load_halpe_into_datalist(self, 'CrowdPose', self.datalist, 'neural_annot_result', cfg.DATASET.jotr_data_root)
+            # [fit_err_thr] bo nguoi co fit lech nhan 2D tay qua nguong (mac dinh tat)
+            self.datalist = filter_by_fit_err('CrowdPose', self.datalist)
         print("crowdpose data len: ", len(self.datalist))
 
     def _jotr_posefix_input(self, data, do_flip, img_shape, img2bb_trans, return_clean=False):
@@ -187,7 +190,9 @@ class CrowdPose(torch.utils.data.Dataset):
                         if str(aid) in smpl_params:
                             smpl_param = smpl_params[str(aid)]
                             # jotr_strict: loc GIONG JOTR (dataloader/CrowdPose.py: fit_err < fitting_thr -> bo)
-                            if cfg.DATASET.get('jotr_strict', False) and smpl_param['fit_err'] < self.fitting_thr:
+                            # [fit_err_thr > 0] bo qua quy tac nay (chay nguoc: bo fit TOT nhat, experiment.md 61b)
+                            if (cfg.DATASET.get('jotr_strict', False) and float(cfg.DATASET.get('fit_err_thr', 0.0)) <= 0
+                                    and smpl_param['fit_err'] < self.fitting_thr):
                                 smpl_param = None
                         else:
                             smpl_param = None

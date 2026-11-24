@@ -204,6 +204,9 @@ class ARTS(nn.Module):
 
 
 def get_model(num_joint, embed_dim, depth=None):
+    if cfg.MODEL.get('v11_e2e', False):                # FuseKin v11: 3D-Kinematic + JRE + F16/F8, khong Voxel 3D (2026-11-25)
+        from models.fusekin_v11 import V11Net
+        return V11Net()
     if cfg.MODEL.get('v10_e2e', False):                # FuseKin v10: end-to-end chi anh + 2D, VPoser + 3D Volume (2026-11-18)
         from models.fusekin_v10 import V10Net
         return V10Net()

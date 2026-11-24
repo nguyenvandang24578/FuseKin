@@ -1,0 +1,78 @@
+# =====================================================================
+# train_img_lifter_v2_3dpw_clean5_fit5.yaml (2026-11-25, nguoi dung duyet) -- ImgLifter v2 train TU DAU:
+#   = train_img_lifter_v2_3dpw_clean5.yaml (5 bo, 5 sequences sach 3dpw-train), chi THEM:
+#     DATASET.fit_err_thr: 5.0 -- bo nguoi MSCOCO / CrowdPose co fit NeuralAnnot lech nhan 2D tay > 5 px (luoi 64),
+#       doc tu experiment/_fit_err_stats/fit_err_<bo>.npz (tools/fit_err_stats.py). Ky vong bo ~15.3% COCO, ~5.1% CrowdPose;
+#       CrowdPose bo qua quy tac jotr_strict chay nguoc (experiment.md 61b). 3dpw-train / H36M / MuCo khong doi.
+#   Log can thay: "[MSCOCO fit_err_thr = 5 px] giu ..." va "[CrowdPose fit_err_thr = 5 px] giu ..." (khong co trong file = 0).
+# Chay train & eval:
+#   python main/train_img_lifter.py --cfg config/train_img_lifter_v2_3dpw_clean5_fit5.yaml --exp_name img_lifter_v2_3dpw_clean5_fit5 --gpu 0
+#   python main/eval_img_lifter.py --cfg config/train_img_lifter_v2_3dpw_clean5_fit5.yaml --ckpt experiment/img_lifter_v2_3dpw_clean5_fit5/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --ocpc_mode all --K 5 --S 2 --gpu 0
+# =====================================================================
+
+update_bbox: True
+DATASET:
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose', '3dpw-train']
+  pw3d_train_exclude_eval_seqs: True   # loai sach moi sequence trung voi 3dpw / 3dpw-oc / 3dpw-pc / 3dpw-crowd (0% leak)
+  pw3d_train_include_val_clean: False  # chi lay trong 3dpw-train
+  pw3d_train_max_seqs: 5               # chi giu dung 5 sequences sach cua 3dpw-train
+  workers: 8
+  pw3d_2d_source: 'openpose'           # 3dpw-train va test (3DPW / OC / PC): OpenPose; Crowd: Higher-HRNet
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: False
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  posefix_scale: 1.0                   # cung phan bo dau vao voi luc train Refiner
+  posefix_fast: True
+  fusekin_unified: True                # mau train thong nhat: anh + 2D + GT 3D tu mesh
+  drop_raw_smpl_stats: True            # de collate chung 3dpw-train voi 4 bo fusekin_unified
+  fit_err_thr: 5.0                     # [MOI] bo fit MSCOCO / CrowdPose lech nhan 2D tay > 5 px (luoi 64)
+  fit_err_dir: 'experiment/_fit_err_stats'
+
+TRAIN:
+  print_freq: 20
+  batch_size: 64
+  shuffle: True
+  dataset_ratio: [0.22, 0.22, 0.22, 0.22, 0.12]   # 4 bo chinh (88%) + 5 seqs 3dpw-train sach (12% ~ 7680 mau/ep)
+  samples_per_epoch: 64000                        # 1000 iter / epoch voi batch 64
+  end_epoch: 25
+  lr: 0.0002
+  lr_step: [18, 23]
+  lr_factor: 0.1
+
+TEST:
+  batch_size: 64
+  shuffle: False
+
+REFINE2D:
+  deconv_ch: 256                       # phai khop Refiner (256 + 1024 F16 = 1280 kenh feat_j)
+
+IMGLIFT:
+  refiner_ckpt: 'experiment/refiner2d_dense48_scratch/checkpoint/last.pth.tar'
+  vit_glob_img: True                   # vector anh toan cuc TB(f8) -> c_j
+  use_f16_feat: True                   # lay mau F16 (1024 kenh) tai xy Refiner noi vao feat_j (1280 kenh)
+  num_ctx: 48                          # 48 diem day cua Refiner -> token ngu canh
+  markov_layer: True                   # truyen tin theo xuong giua 17 khop, moi block
+  markov_gate_b: True                  # cong theo do bat dinh b cua Refiner
+  w_bone: 0.5                          # L1 do dai 16 xuong (met)
+  w_angle: 0.1                         # (cos goc 2 xuong noi tiep: du doan - GT)^2
+  embed_dim: 512
+  depth: 8
+  num_heads: 8
+  mlp_ratio: 2.0
+  drop_path: 0.1
+  timesteps: 1000
+  scale: 3.0
+  train_xy_noise: 0.0                  # tat nhieu Gauss chong len xy sau Refiner
+  input_drop_prob: 0.0                 # tat xoa khop chong len PoseFix 1.0
+  weight_decay: 0.01
+  ema_decay: 0.999
+  eval_sets: ['3dpw', '3dpw-pc', '3dpw-crowd']
+  eval_max_samples: 3000
+  eval_K: 5
+  eval_S: 2
+  eta: 1.0
+  jpma_max_b: 3.0

@@ -37,7 +37,9 @@ parser.add_argument('--sets', type=str, default='3dpw,3dpw-oc,3dpw-pc')
 parser.add_argument('--ocpc_mode', type=str, default='both', choices=['test', 'all', 'both'])
 parser.add_argument('--batch_size', type=int, default=0, help='0 = cfg.TEST.batch_size')
 parser.add_argument('--drop3d', action='store_true',
-                    help='V9/V10 chan doan: bo HET token 3D lifter (miss3d) luc test, chi con anh + 2D')
+                    help='V9/V10/V11 chan doan: bo HET token 3D lifter (miss3d) luc test, chi con anh + 2D')
+parser.add_argument('--lifter_ckpt', type=str, default='',
+                    help='Ghi de checkpoint ImgLifter luc test (giu nguyen trong so Student, khong bi state_dict Student de lai)')
 parser.add_argument('--view_rot', type=str, default='none', choices=['none', 'fwd', 'inv'],
                     help='D1: xoay dau ra Student bang view_rot(cam_bbox) (fwd) / nghich dao (inv)')
 parser.add_argument('--blend', type=str, default='', help="D2: vd '0,0.5,1' (rong = tat)")
@@ -50,9 +52,12 @@ import torch
 from torch.utils.data import DataLoader
 from core.config import cfg, update_config
 update_config(args.cfg)
+if args.lifter_ckpt:
+    cfg.MODEL.imglift_checkpoint = args.lifter_ckpt
 if args.drop3d:
     cfg.MODEL.v9_test_drop3d = True
     cfg.MODEL.v10_test_drop3d = True
+    cfg.MODEL.v11_test_drop3d = True
 
 import __init_path  # noqa: F401
 from models.ARTS import get_model
@@ -115,7 +120,13 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = get_model(num_joint=17, embed_dim=cfg.MODEL.hpe_dim).to(device)   # v8_e2e -> V8Net, khong thi ARTS nhu cu
     ck = torch.load(args.ckpt, map_location='cpu', weights_only=False)
-    missing, unexpected = model.load_state_dict(check_data_pararell(ck['model_state_dict']), strict=False)
+    st = check_data_pararell(ck['model_state_dict'])
+    if args.lifter_ckpt:
+        st = {k: v for k, v in st.items() if not k.startswith(('img_lifter.', 'refiner2d.'))}
+        print(f'===> [--lifter_ckpt] giu ImgLifter + Refiner2D tu: {args.lifter_ckpt} (bo qua lifter trong ckpt Student)')
+    missing, unexpected = model.load_state_dict(st, strict=False)
+    if args.lifter_ckpt:
+        missing = [k for k in missing if not k.startswith(('img_lifter.', 'refiner2d.'))]
     print(f'===> nap {args.ckpt} (epoch {ck.get("epoch")}) | thieu {len(missing)} | thua {len(unexpected)} key')
     if missing:
         print(f'     thieu (vai key dau): {missing[:5]}')
@@ -162,7 +173,8 @@ def main():
 
     print('\n' + '=' * 78)
     print(f'{args.ckpt} | epoch {ck.get("epoch")} | {cfg.MODEL.name}'
-          + (' | TAT 3D (v9_test_drop3d: token 3D = miss3d, chi anh + 2D)' if args.drop3d else '')
+          + (f' | lifter_ckpt={args.lifter_ckpt}' if args.lifter_ckpt else '')
+          + (' | TAT 3D (drop3d: token 3D = miss3d, chi anh + 2D)' if args.drop3d else '')
           + (f' | D1 view_rot {args.view_rot}' if args.view_rot != 'none' else '')
           + (f' | D2 blend {args.blend} ({args.blend_mode}): j3d = w*lift + (1-w)*ctx truoc IK' if args.blend else '')
           + (' | D2 oracle_lc (chi do tran)' if args.oracle_lc else ''))

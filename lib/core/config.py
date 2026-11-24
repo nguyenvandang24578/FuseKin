@@ -106,6 +106,8 @@ cfg.DATASET.pw3d_train_exclude_eval_seqs = False
 # Khi train voi 3dpw-train: gop them cac sequence tu 3DPW_latest_validation.json (ket hop voi pw3d_train_exclude_eval_seqs
 # de loai bo crowd + oc + pc + test). Mac dinh TAT (hanh vi cu).
 cfg.DATASET.pw3d_train_include_val_clean = False
+# Gioi han so sequence sach toi da cua 3dpw-train (0 = khong gioi han, giu tat ca; > 0 vd 5 = chi giu 5 sequence dau theo thu tu ten).
+cfg.DATASET.pw3d_train_max_seqs = 0
 # Nguong score de coi 1 khop Halpe-26 la hop le (mask = 1)
 cfg.DATASET.halpe26_conf_thr = 0.3
 # joints_mask MEM: khop hop le (score > nguong, nam trong crop) mang gia tri = score Halpe (cat ve [0, 1]) thay vi 1.
@@ -181,6 +183,12 @@ cfg.DATASET.crowdpose_2d_source = 'halpe26'
 #     giong JOTR MuCo -> SMPL-30 -> H36M-17 (Neck / Torso / Nose mask 0). Nhan 3D van dung alias.
 #   - CrowdPose: loc NeuralAnnot nhu JOTR (fit_err < fitting_thr -> bo).
 cfg.DATASET.jotr_strict = False
+# [2026-11-25] Loc fit NeuralAnnot MSCOCO / CrowdPose theo sai so so voi nhan 2D tay (kieu ARTS, utils/fit_err_filter.py):
+#   > 0: bo nguoi co sai so (px luoi output_hm_shape 64) > nguong, doc tu <fit_err_dir>/fit_err_<bo>.npz
+#   (tools/fit_err_stats.py). Khi bat: CrowdPose BO QUA quy tac jotr_strict 'fit_err < 5 -> bo' (chay nguoc, experiment.md 61b).
+#   Mac dinh 0.0 = TAT (hanh vi cu).
+cfg.DATASET.fit_err_thr = 0.0
+cfg.DATASET.fit_err_dir = 'experiment/_fit_err_stats'
 # Nhan xac suat 4 loai loi PoseFix (jitter, miss, inversion, swap) cua utils/posefix.synthesize_pose (mac dinh 1.0 = JOTR).
 # Vd 0.5: loi nhe hon cho lifter (lifter khong co anh de sua loi). Ap dung cho moi bo dung gt_posefix.
 cfg.DATASET.posefix_scale = 1.0
@@ -337,6 +345,23 @@ cfg.MODEL.v10_rr_tau3d = 0.08
 cfg.MODEL.v10_rr_tau2d = 0.08
 cfg.MODEL.v10_rr_hgcn = False
 cfg.MODEL.v10_ctx_to_smpl = False
+# --- FuseKin v11 (2026-11-25, nguoi dung duyet, lib/models/fusekin_v11.py): Reliability-Routed 3D-Kinematic Mesh ---
+#   Luong thang gon sach (BO khoi The tich 3D 8x8x8 & chieu sau uvd khong giam sat):
+#     1) JRE doan R_i = (r3D, r2D) voi chi lam hong luc train; tach rieng w3D = keep3d * r3D (khong tu dim 1 - 0.7*r2D)
+#        va hop nhat diem lay mau 2D dau giua detector & Refiner theo vis * r2D.
+#     2) 4 lop 3D-Anchored HyperGCN Decoder: lay mau F16 + Cross-Attn F8 + AdaptiveHyperGCN, cap nhat khung xuong 3D
+#        J^(l) khong co xuong (lop 0: w3D * lift + (1 - w3D) * j3d_vis0 + delta0; lop > 0: cong phan du).
+#     3) Kinematics-Grounded VPoser Cascade: dua thang J^(l), 16 huong xuong don vi (co grad) va 16 do dai xuong vao
+#        root_pose_head, vposer_head, shape_head (+ CLIFF cam_bbox + view_rot). Mac dinh TAT.
+cfg.MODEL.v11_e2e = False
+cfg.MODEL.v11_dim = 256
+cfg.MODEL.v11_enc_layers = 3
+cfg.MODEL.v11_dec_layers = 4
+cfg.MODEL.v11_joint_drop = 0.1
+cfg.MODEL.v11_drop3d_sample = 0.2
+cfg.MODEL.v11_drop3d_joint = 0.1
+cfg.MODEL.v11_test_drop3d = False
+cfg.MODEL.v11_rr_corrupt_prob = 0.3
 cfg.MODEL.imglift_K = 5                    # so gia thuyet, gop trung binh
 cfg.MODEL.imglift_S = 2                    # so buoc DDIM
 # True: 2D cho Student (heatmap [A], PE, [B], feedback [D]) = 17 khop 2D cua Refiner (mask = 1 moi khop) thay 2D detector

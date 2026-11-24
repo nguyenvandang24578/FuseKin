@@ -195,6 +195,17 @@ class PW3D(torch.utils.data.Dataset):
                     halpe26_val = json.load(f)
             dbs.append(('validation', db_val, halpe26_val))
 
+        allowed_seqs = None
+        max_seqs = int(cfg.DATASET.get('pw3d_train_max_seqs', 0))
+        if self.data_name == '3dpw-train' and max_seqs > 0:
+            cand_seqs = set()
+            for _, cur_db, _ in dbs:
+                for im in cur_db.dataset['images']:
+                    s = im['sequence']
+                    if exclude_seqs is None or s not in exclude_seqs:
+                        cand_seqs.add(s)
+            allowed_seqs = set(sorted(cand_seqs)[:max_seqs])
+
         hhrnet_count = 0
         datalist = []
         all_train_seqs = set()
@@ -217,6 +228,10 @@ class PW3D(torch.utils.data.Dataset):
                 if test_seqs is not None and sequence_name not in test_seqs:
                     continue
                 if exclude_seqs is not None and (sequence_name in exclude_seqs or (sequence_name, img_name) in exclude_frames):
+                    excluded_train_seqs.add(sequence_name)
+                    n_excluded_samples += 1
+                    continue
+                if allowed_seqs is not None and sequence_name not in allowed_seqs:
                     excluded_train_seqs.add(sequence_name)
                     n_excluded_samples += 1
                     continue

@@ -856,3 +856,48 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
   - Cú tụt ctx → mesh khi bật 3D (+2.1 3DPW, +2.3 PC, +2.0 Crowd; OC không tụt) chưa quy được riêng cho `lift_r`: `--drop3d` tắt cả 3 đường (lift_j, neo uvd0/d0, lift_r).
   - `is_3D` trong `fusekin_sample.py` KHÔNG được loss nào dùng → không phải nguyên nhân.
   - Đúng: v10 không giám sát chiều sâu d của uvd (chỉ `_v9_reproj_loss` cho xy); JOTR giám sát `joint_img` 3D (`body_joint_img` theo `is_3D`, `smpl_joint_img` từ pseudo-GT cho mọi mẫu có fit).
+
+## 61. Thống kê sai số fit NeuralAnnot so với nhãn 2D tay — MSCOCO chạy thử 2000 người đầu (`tools/fit_err_stats.py`, người dùng gửi 2026-11-24 13:27; chưa chạy đủ, chưa có CrowdPose)
+- Mục đích: chọn ngưỡng lọc fit kiểu ARTS / I2L-MeshNet (mẫu có sai số > ngưỡng → `is_valid_fit = 0`) cho lifter. Sai số = TB khoảng cách (px lưới 64, bbox giống `__getitem__`, không augmentation) giữa 17 khớp COCO hồi quy từ mesh fit (`J_regressor_coco.npy`) chiếu bằng camera NeuralAnnot và nhãn tay, chỉ khớp có nhãn.
+- `J_regressor_coco` vs `J_regressor_coco_hip_smpl`: lệch 0.00 px ở mọi khớp → 2 file trong data root giống hệt nhau (cần kiểm bằng md5).
+
+| Nhóm | n | p10 / p50 / p90 / p99 (px) | bị lọc >2 / >3 / >4 / >5 / >8 px |
+|---|---|---|---|
+| Tất cả | 2000 | 1.26 / 2.25 / 6.83 / 26.32 | 57.9 / 32.4 / 20.5 / 14.1 / 8.1 % |
+| num_overlap = 0 | 1356 | 1.22 / 2.17 / 6.86 / 26.25 | 55.8 / 30.7 / 20.5 / 14.3 / 8.1 % |
+| num_overlap > 0 | 644 | 1.36 / 2.40 / 6.51 / 26.09 | 62.4 / 35.9 / 20.7 / 13.7 / 7.9 % |
+
+- Sai số TB từng khớp (px): mặt 1.5–2.2, vai 2.5, khuỷu 2.8, cổ tay 2.9–3.2, hông 3.5–3.6 (lớn nhất), gối 2.9–3.0, cổ chân 3.3.
+- Nhận xét (Claude): ngưỡng 3 px của ARTS loại ~1/3 mẫu COCO (quá gắt); ở ≥ 4 px tỉ lệ loại hai nhóm chồng lấn / không chồng lấn như nhau → lọc KHÔNG thiên lệch bỏ người chen chúc (trên COCO). Đuôi nặng (p99 26 px, ~8% > 8 px) = fit hỏng rõ. 2000 người đầu không phải mẫu ngẫu nhiên → chờ chạy đủ + CrowdPose.
+
+### 61b. Kết quả ĐẦY ĐỦ (người dùng gửi 2026-11-25 00:06) — thay số chạy thử ở trên
+- MSCOCO 149 813 người (đều có fit; 5h31 CPU), CrowdPose 35 659 / 40 504 người có fit (12% không có fit bị bỏ bởi `keep_neuralannot`; 1h29). CrowdPose so 12 khớp chi (COCO 17 khớp gồm cả mặt, sai số mặt thấp → hai bộ không so trực tiếp tuyệt đối).
+- Hai regressor vẫn lệch 0.00 px → file giống hệt nhau.
+
+| Bộ / nhóm | n | p10 / p50 / p90 / p99 (px) | bị lọc >2 / >3 / >4 / >5 / >8 px |
+|---|---|---|---|
+| COCO tất cả | 149 813 | 1.29 / 2.32 / 6.78 / 25.08 | 60.8 / 34.2 / 21.6 / 15.3 / 8.0 % |
+| COCO overlap = 0 | 100 116 | 1.25 / 2.24 / 6.79 / 25.83 | 57.8 / 32.4 / 20.7 / 14.9 / 8.2 % |
+| COCO overlap > 0 | 49 697 | 1.39 / 2.51 / 6.77 / 23.70 | 66.8 / 37.8 / 23.5 / 16.1 / 7.7 % |
+| CrowdPose tất cả | 35 659 | 1.03 / 1.80 / 3.80 / 10.98 | 41.7 / 17.6 / 8.9 / 5.1 / 1.8 % |
+| CrowdPose overlap = 0 | 10 506 | 0.97 / 1.73 / 4.07 / 13.97 | 40.4 / 18.7 / 10.5 / 6.4 / 2.6 % |
+| CrowdPose overlap > 0 | 25 153 | 1.06 / 1.82 / 3.70 / 9.34 | 42.2 / 17.2 / 8.2 / 4.6 / 1.5 % |
+
+- Sai số TB từng khớp: COCO mặt 1.5–2.1, vai 2.6, khuỷu 2.9, cổ tay 3.3, hông 3.6 (lớn nhất), gối 3.2, cổ chân 3.4; CrowdPose vai 1.85, khuỷu 2.05, cổ tay 2.1, hông 2.4 (lớn nhất), gối 2.1, cổ chân 2.2.
+- **Quy tắc `jotr_strict` CrowdPose (`fit_err < 5 → bỏ`) CHẠY NGƯỢC (đã xác nhận)**: loại 280 người (0.8%) có sai số TB 0.95 px (tốt nhất) trong khi nhóm giữ 2.33 px; tương quan `fit_err` (file) vs sai số tự tính 0.727 → `fit_err` thấp = fit tốt. Ảnh hưởng nhỏ (0.8%) nhưng sai chiều (lỗi có sẵn trong code JOTR).
+- Nhận xét (Claude): CrowdPose fit tốt hơn COCO rõ rệt; nhóm chồng lấn KHÔNG bị lọc nhiều hơn ở ngưỡng ≥ 5 px (COCO 16.1 vs 14.9%, CrowdPose 4.6 vs 6.4%). Ngưỡng 3 px (ARTS) loại 34% COCO → quá gắt. Ứng viên: 5 px (loại 15.3% COCO / 5.1% CrowdPose) hoặc 8 px (8.0% / 1.8%).
+
+## 62. FuseKin v11 — Reliability-Routed 3D-Kinematic Mesh Regressor, bỏ Voxel 3D `8×8×8` (2026-11-25, người dùng duyệt; đã code, chờ chạy)
+- Lý do: luồng mạng Student trong V10 (`fusekin_v10.py`) chồng chéo 3 cơ chế nối chồng (khối Voxel `8×8×8` có chiều sâu `d` không giám sát + lệch pha 2D `op_xy` vs `ref_xy` + công thức `w3D = r3D(1 - 0.7 r2D)` bóp nghẹt Lifter ở khớp nhìn rõ + đứt gãy gradient `ctx → mesh`).
+- Kiến trúc `FuseKin v11` (`lib/models/fusekin_v11.py`, bật bằng `MODEL.v11_e2e: True`):
+  1. **Bỏ hoàn toàn khối Thể tích 3D `8×8×8`** (`conv2d_to_3d`, `BasicBlock3D`, 3 lớp `refine_3d` $512 \times 512$, `uvd` 2.5D) → chỉ dùng `F16` (`256×16×16`) + `F8` (`64` token qua 3 lớp `EncLayer`) song hành cùng `Refiner2D + ImgLifter v2` đóng băng.
+  2. **JRE & Hợp nhất tọa độ không tự dìm 3D**: giữ làm hỏng chi lúc train (`p=0.3`) và JRE đoán $R_i = (r_i^{3D}, r_i^{2D}) \in (0, 1)^2$; tách riêng cổng 3D $w_i^{3D} = k_i^{3D} \cdot r_i^{3D}$ (bỏ hệ số `1 - 0.7 r2D`) và tọa độ lấy mẫu 2D đầu $p_i^{(0)} = (\text{vis}_i r_i^{2D})\,\text{xy}_{\text{det},i} + (1 - \text{vis}_i r_i^{2D})\,\text{ref\_xy}_i$.
+  3. **4 lớp 3D-Anchored HyperGCN Decoder**: tổ hợp lồi không co xương ở lớp 0 $J^{(0)} = w^{3D} \odot \text{lift} + (1 - w^{3D}) \odot j3d\_vis_0(\text{jt}) + \Delta J^{(0)}$ (`j3d_vis0` đưa vào `v10_j17_layers` để giám sát GT 3D trên 100% mẫu, chống shortcut learning), cộng phần dư $\Delta J^{(l)}$ ở các lớp sau, cập nhật điểm lấy mẫu 2D trên `F16` và phản hồi `[mẫu F16, J^(l)]` vào `jt`.
+  4. **Kinematics-Grounded VPoser Cascade**: đưa thẳng $J^{(l)}$, 16 vector hướng xương đơn vị $\hat{B}^{(l)}$ (giữ gradient) và 16 độ dài xương $\|B^{(l)}\|_2$ (`detach`) vào `root_pose_head`, `vposer_head`, `shape_head` (+ CLIFF `cam_bbox` + `view_rot`).
+- File tạo / sửa (backup `_to_delete/bak_v11_20261125/`): mới `lib/models/fusekin_v11.py`, `config/train_v11_3dpw_clean_64k.yml` (ghép `img_lifter_v2_3dpw_clean`), `config/train_v11_no3dpw_64k.yml` (đối chứng `img_lifter_v2_no3dpw`); sửa `lib/core/config.py` (9 key `MODEL.v11_*`, mặc định tắt), `lib/models/ARTS.py`, `lib/core/base.py`, `main/test_student_3dpw_sets.py` (hỗ trợ `--drop3d` cho V11 + thêm `--lifter_ckpt`). Chưa có kết quả.
+
+## 62. ImgLifter v2 `3dpw_clean5_fit5` — 5 seq sạch 3dpw-train + lọc fit NeuralAnnot 5 px (2026-11-25 00:44, người dùng duyệt; đã code, chưa chạy)
+- YAML `config/train_img_lifter_v2_3dpw_clean5_fit5.yaml` = `train_img_lifter_v2_3dpw_clean5.yaml` + `DATASET.fit_err_thr: 5.0`. Người dùng chọn đổi cả 2 cùng lúc (thay đổi dữ liệu, không phải contribution) → không tách đóng góp riêng.
+- Code (key mặc định tắt): `cfg.DATASET.fit_err_thr = 0.0`, `fit_err_dir = 'experiment/_fit_err_stats'`; mới `lib/utils/fit_err_filter.py::filter_by_fit_err` (đọc `fit_err_<bộ>.npz` theo `ann_id`, bỏ người err > ngưỡng; thiếu trong file → giữ); gọi sau `keep_neuralannot` trong `MSCOCO` / `CrowdPose` dataset; CrowdPose bỏ qua quy tắc `jotr_strict` chạy ngược khi `fit_err_thr > 0`. Backup: `_to_delete/bak_fiterr_20261125/`.
+- Kỳ vọng log: MSCOCO giữ ~126.9k / 149 813; CrowdPose giữ ~33.8k / 35 659 (trước đây 35 379 do quy tắc ngược); "không có trong file" = 0.
+- Lưu ý giao thức: dùng 3dpw-train → không so công bằng với bảng chính JOTR / DPMesh (không train 3DPW).

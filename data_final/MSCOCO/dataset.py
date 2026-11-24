@@ -20,6 +20,7 @@ from utils.transforms import world2cam, cam2pixel, pixel2cam, transform_joint_to
 from utils.lift_pseudo3d import lift_pseudo3d_sample, load_halpe_into_datalist, halpe_to_crop, gt_mask_halpe, keep_neuralannot
 from utils.h36m_adapter import HUMAN36M_JOINTS
 from utils.fusekin_sample import fusekin_train_sample
+from utils.fit_err_filter import filter_by_fit_err
 from utils.cam_bbox import est_cam
 
 
@@ -72,6 +73,8 @@ class MSCOCO(torch.utils.data.Dataset):
             else:
                 # Lifter / FuseKin thong nhat: chi giu nguoi co NeuralAnnot + Halpe-26 (tools/extract_halpe26_coco.py --dataset mscoco)
                 self.datalist = load_halpe_into_datalist(self, 'MSCOCO', self.datalist, 'smpl_param', cfg.DATASET.jotr_data_root)
+            # [fit_err_thr] bo nguoi co fit lech nhan 2D tay qua nguong (mac dinh tat)
+            self.datalist = filter_by_fit_err('MSCOCO', self.datalist)
         print("coco data len: ", len(self.datalist))
 
     def add_pelvis(self, joint_coord):
