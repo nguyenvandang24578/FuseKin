@@ -16,6 +16,7 @@ update_bbox: True
 DATASET:
   train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose', '3dpw-train']
   pw3d_train_exclude_eval_seqs: True   # loai sach moi sequence trung voi 3dpw / 3dpw-oc / 3dpw-pc / 3dpw-crowd
+  pw3d_train_include_val_clean: True   # gop them cac sequence sach tu 3DPW_latest_validation.json (khong trung 4 tap test)
   workers: 8
   pw3d_2d_source: 'openpose'           # 3dpw-train va test (3DPW / OC / PC): OpenPose; Crowd: Higher-HRNet
   halpe26_conf_thr: 0.3

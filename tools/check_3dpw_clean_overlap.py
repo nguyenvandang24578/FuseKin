@@ -1,20 +1,20 @@
 """
-tools/check_3dpw_clean_overlap.py -- Kiem tra muc do tach biet (separation) giua 3dpw-train
-  (khi bat DATASET.pw3d_train_exclude_eval_seqs: True) va 4 tap danh gia:
+tools/check_3dpw_clean_overlap.py -- Kiem tra muc do tach biet (separation) giua 3dpw-train (+ 3dpw-val clean)
+  (khi bat DATASET.pw3d_train_exclude_eval_seqs: True va pw3d_train_include_val_clean: True) va 4 tap danh gia:
     - 3dpw (test, 35515 mau)
     - 3dpw-oc (toan bo, 20243 mau)
     - 3dpw-pc (toan bo, 2218 mau)
     - 3dpw-crowd (validation crowd, 1923 mau)
 
-Kiem tra o 4 cap do:
-  1) Cap sequence (ten video sequence): giao nhau phai = 0
-  2) Cap khung hinh (sequence/file_name va img_path): giao nhau phai = 0
-  3) Cap tiền tố cảnh / chuỗi quay (scene prefix truoc '_00', '_01'): thong ke xem co cung dia diem quay khong
-  4) Kiem tra truc tiep tren class PW3D (datalist that ma DataLoader doc khi train / test)
+In ro:
+  1) So sequence va so mau (samples) cua 3dpw-train goc, 3dpw-val goc, va sau khi loc sach
+  2) Danh sach tung sequence duoc giu lai + so mau cua tung sequence
+  3) Bang doi chieu truc tiep tren PW3D('3dpw-train') voi ca 4 tap danh gia (dam bao 0% trung lap)
 
 Chay:
   python tools/check_3dpw_clean_overlap.py
 """
+from collections import Counter
 import json
 import os
 import os.path as osp
@@ -34,7 +34,7 @@ def _load_json_stats(json_path, crowd_only=False):
     img_by_id = {int(im['id']): im for im in data['images']}
     seqs = set()
     frames = set()
-    n_anns = 0
+    seq_counts = Counter()
     for ann in data['annotations']:
         im = img_by_id[int(ann['image_id'])]
         seq = im['sequence']
@@ -42,24 +42,18 @@ def _load_json_stats(json_path, crowd_only=False):
             continue
         seqs.add(seq)
         frames.add((seq, im['file_name']))
-        n_anns += 1
-    return seqs, frames, n_anns
-
-
-def _scene_prefix(seq_name):
-    parts = seq_name.split('_')
-    if parts[-1].isdigit():
-        return '_'.join(parts[:-1])
-    return seq_name
+        seq_counts[seq] += 1
+    return seqs, frames, sum(seq_counts.values()), seq_counts
 
 
 def main():
     pw3d_dir = osp.join(cfg.DATASET.jotr_data_root, 'PW3D')
-    print('=' * 88)
-    print(f'1. KIEM TRA TRUC TIEP TU FILE ANNOTATION JSON TRONG: {pw3d_dir}')
-    print('=' * 88)
+    print('=' * 92)
+    print(f'1. THONG KE TU FILE ANNOTATION JSON TRONG: {pw3d_dir}')
+    print('=' * 92)
 
-    tr_seqs, tr_frames, tr_anns = _load_json_stats(osp.join(pw3d_dir, '3DPW_latest_train.json'))
+    tr_seqs, tr_frames, tr_anns, tr_cnt = _load_json_stats(osp.join(pw3d_dir, '3DPW_latest_train.json'))
+    va_seqs, va_frames, va_anns, va_cnt = _load_json_stats(osp.join(pw3d_dir, '3DPW_latest_validation.json'))
     eval_sets = {
         '3dpw (test)': _load_json_stats(osp.join(pw3d_dir, '3DPW_latest_test.json')),
         '3dpw-oc (full)': _load_json_stats(osp.join(pw3d_dir, '3DPW_oc.json')),
@@ -67,49 +61,41 @@ def main():
         '3dpw-crowd': _load_json_stats(osp.join(pw3d_dir, '3DPW_latest_validation.json'), crowd_only=True),
     }
 
-    print(f'3dpw-train GOC (chua loc): {len(tr_seqs)} sequences | {len(tr_frames)} frames | {tr_anns} mau nguoi')
-    print('-' * 88)
-    print('Giao nhau cua 3dpw-train GOC (CHUA LOC) voi 4 tap test:')
     all_eval_seqs = set()
-    all_eval_frames = set()
-    for name, (eseqs, eframes, eanns) in eval_sets.items():
+    for _, (eseqs, _, _, _) in eval_sets.items():
         all_eval_seqs |= eseqs
-        all_eval_frames |= eframes
-        ov_s = sorted(tr_seqs & eseqs)
-        ov_f = len(tr_frames & eframes)
-        print(f'  - vs {name:<16} ({len(eseqs):2d} seqs, {eanns:5d} mau): '
-              f'trung {len(ov_s):2d} seqs, {ov_f:5d} frames | seqs trung: {ov_s}')
 
-    # Tap clean sau khi loai bo moi sequence/frame cua 4 tap danh gia
-    clean_seqs = tr_seqs - all_eval_seqs
-    removed_seqs = sorted(tr_seqs & all_eval_seqs)
-    print('-' * 88)
-    print(f'Sequences bi loai khoi 3dpw-train ({len(removed_seqs)} seqs): {removed_seqs}')
-    print(f'Sequences GIU LAI trong 3dpw-train-clean ({len(clean_seqs)} seqs): {sorted(clean_seqs)}')
+    clean_tr_seqs = sorted(tr_seqs - all_eval_seqs)
+    clean_va_seqs = sorted(va_seqs - all_eval_seqs)
+    n_clean_tr = sum(tr_cnt[s] for s in clean_tr_seqs)
+    n_clean_va = sum(va_cnt[s] for s in clean_va_seqs)
 
-    # Kiem tra tien to canh quay (scene prefix)
-    clean_prefixes = {_scene_prefix(s) for s in clean_seqs}
-    eval_prefixes = {_scene_prefix(s) for s in all_eval_seqs}
-    shared_prefixes = sorted(clean_prefixes & eval_prefixes)
-    print('-' * 88)
-    print(f'Kiem tra tien to canh (scene prefix truoc _00/_01):')
-    print(f'  - Tien to trung voi 4 tap test ({len(shared_prefixes)}): {shared_prefixes}')
+    print(f'- 3dpw-train GOC : {len(tr_seqs):2d} seqs ({tr_anns:5d} mau) -> GIU LAI: {len(clean_tr_seqs):2d} seqs ({n_clean_tr:5d} mau)')
+    print(f'- 3dpw-val   GOC : {len(va_seqs):2d} seqs ({va_anns:5d} mau) -> GIU LAI: {len(clean_va_seqs):2d} seqs ({n_clean_va:5d} mau)')
+    print(f'=> TONG 3DPW CLEAN (train + val): {len(clean_tr_seqs) + len(clean_va_seqs)} sequences | {n_clean_tr + n_clean_va} mau')
+    print('-' * 92)
+    print('Chi tiet tung sequence SACH duoc giu lai:')
+    for s in clean_tr_seqs:
+        print(f'  [train] {s:<38} : {tr_cnt[s]:5d} mau')
+    for s in clean_va_seqs:
+        print(f'  [val]   {s:<38} : {va_cnt[s]:5d} mau')
 
-    print('\n' + '=' * 88)
-    print('2. KIEM TRA TRUC TIEP TREN DATASET PW3D (pw3d_train_exclude_eval_seqs = True)')
-    print('=' * 88)
+    print('\n' + '=' * 92)
+    print('2. KIEM TRA TRUC TIEP TREN PW3D("3dpw-train") VOI exclude_eval_seqs=True & include_val_clean=True')
+    print('=' * 92)
     cfg.DATASET.pw3d_ocpc_test_only = False
     cfg.DATASET.pw3d_train_exclude_eval_seqs = True
+    cfg.DATASET.pw3d_train_include_val_clean = True
     tf = transforms.ToTensor()
 
     ds_train_clean = PW3D(tf, '3dpw-train')
     train_paths = {d['img_path'] for d in ds_train_clean.datalist}
     train_seqs_ds = {osp.basename(osp.dirname(d['img_path'])) for d in ds_train_clean.datalist}
 
-    print(f'\n=> PW3D("3dpw-train", clean): {len(ds_train_clean.datalist)} mau | {len(train_seqs_ds)} sequences')
-    print('-' * 88)
+    print(f'\n=> TONG SO MAU SE TRAIN TRONG PW3D("3dpw-train"): {len(ds_train_clean.datalist)} mau | {len(train_seqs_ds)} sequences')
+    print('-' * 92)
     print(f'{"Tap danh gia":<18} | {"So mau":>8} | {"So seq":>6} | {"Trung seq":>10} | {"Trung img_path":>14} | Ket luan')
-    print('-' * 88)
+    print('-' * 92)
 
     all_ok = True
     for ename in ('3dpw', '3dpw-oc', '3dpw-pc', '3dpw-crowd'):
@@ -123,9 +109,9 @@ def main():
             all_ok = False
         print(f'{ename:<18} | {len(ds_e.datalist):8d} | {len(eseqs):6d} | {n_ov_seq:10d} | {n_ov_path:14d} | {status}')
 
-    print('=' * 88)
+    print('=' * 92)
     assert all_ok, 'PHAT HIEN TRUNG LAP GIUA 3DPW-TRAIN-CLEAN VA TAP TEST!'
-    print('KET LUAN: 3dpw-train-clean TACH BIET HOAN TOAN (0 sequence, 0 frame trung) voi ca 4 tap 3dpw, 3dpw-oc, 3dpw-pc, 3dpw-crowd.')
+    print(f'KET LUAN: {len(train_seqs_ds)} sequences ({len(ds_train_clean.datalist)} mau) TACH BIET 100% voi ca 4 tap test.')
 
 
 if __name__ == '__main__':

@@ -184,90 +184,106 @@ class PW3D(torch.utils.data.Dataset):
                         exclude_seqs.add(im['sequence'])
                         exclude_frames.add((im['sequence'], im['file_name']))
 
+        dbs = [('train', db, halpe26)]
+        if self.data_name == '3dpw-train' and bool(cfg.DATASET.get('pw3d_train_include_val_clean', False)):
+            db_val = COCO(osp.join(self.data_path, '3DPW_latest_validation.json'))
+            halpe26_val = None
+            if self.use_halpe26:
+                sfx_val = cfg.DATASET.get('pw3d_halpe_suffix', '')
+                halpe_val_path = osp.join(self.data_path, f'3DPW_validation_halpe26{sfx_val}.json')
+                with open(halpe_val_path) as f:
+                    halpe26_val = json.load(f)
+            dbs.append(('validation', db_val, halpe26_val))
+
         hhrnet_count = 0
         datalist = []
         all_train_seqs = set()
         kept_train_seqs = set()
         excluded_train_seqs = set()
         n_excluded_samples = 0
+        kept_by_split = {'train': 0, 'validation': 0}
 
-        for aid in db.anns.keys():
-            aid = int(aid)
+        for split_tag, cur_db, cur_halpe26 in dbs:
+            for aid in cur_db.anns.keys():
+                aid = int(aid)
 
-            ann = db.anns[aid]
-            image_id = ann['image_id']
-            img = db.loadImgs(image_id)[0]
-            img_width, img_height = img['width'], img['height']
-            sequence_name = img['sequence']
-            img_name = img['file_name']
-            all_train_seqs.add(sequence_name)
-            if test_seqs is not None and sequence_name not in test_seqs:
-                continue
-            if exclude_seqs is not None and (sequence_name in exclude_seqs or (sequence_name, img_name) in exclude_frames):
-                excluded_train_seqs.add(sequence_name)
-                n_excluded_samples += 1
-                continue
-
-            if self.is_crowd and self.data_split=='validation':
-                if 'courtyard_hug_00' not in sequence_name and 'courtyard_dancing_00' not in sequence_name:
+                ann = cur_db.anns[aid]
+                image_id = ann['image_id']
+                img = cur_db.loadImgs(image_id)[0]
+                img_width, img_height = img['width'], img['height']
+                sequence_name = img['sequence']
+                img_name = img['file_name']
+                all_train_seqs.add(sequence_name)
+                if test_seqs is not None and sequence_name not in test_seqs:
                     continue
-            kept_train_seqs.add(sequence_name)
+                if exclude_seqs is not None and (sequence_name in exclude_seqs or (sequence_name, img_name) in exclude_frames):
+                    excluded_train_seqs.add(sequence_name)
+                    n_excluded_samples += 1
+                    continue
 
-            img_path = osp.join(self.data_path, 'imageFiles', sequence_name, img_name)
-            cam_param = {k: np.array(v, dtype=np.float32) for k,v in img['cam_param'].items()}
-            smpl_param = ann['smpl_param']
-            if self.data_split == 'test' and not cfg.use_gt_info: # 永远False
-                bbox = bbox_root_result[str(aid)]['bbox']  # bbox should be aspect ratio preserved-extended. It is done in RootNet.
-                root_joint_depth = bbox_root_result[str(aid)]['root'][2]
-            else:
-                ann['bbox'] = np.array(ann['bbox'], dtype=np.float32)
+                if self.is_crowd and self.data_split=='validation':
+                    if 'courtyard_hug_00' not in sequence_name and 'courtyard_dancing_00' not in sequence_name:
+                        continue
+                kept_train_seqs.add(sequence_name)
+                if split_tag in kept_by_split:
+                    kept_by_split[split_tag] += 1
 
-                bbox = process_bbox(ann['bbox'], img['width'], img['height'])
-                if bbox is None: continue
-                root_joint_depth = None
+                img_path = osp.join(self.data_path, 'imageFiles', sequence_name, img_name)
+                cam_param = {k: np.array(v, dtype=np.float32) for k,v in img['cam_param'].items()}
+                smpl_param = ann['smpl_param']
+                if self.data_split == 'test' and not cfg.use_gt_info: # 永远False
+                    bbox = bbox_root_result[str(aid)]['bbox']  # bbox should be aspect ratio preserved-extended. It is done in RootNet.
+                    root_joint_depth = bbox_root_result[str(aid)]['root'][2]
+                else:
+                    ann['bbox'] = np.array(ann['bbox'], dtype=np.float32)
 
-            openpose = np.array(ann['openpose_result'], dtype=np.float32).reshape(-1, 3)
-            openpose = self.add_pelvis(openpose, self.openpose_joints_name)
-            pose_score_thr = self.conf_thr
+                    bbox = process_bbox(ann['bbox'], img['width'], img['height'])
+                    if bbox is None: continue
+                    root_joint_depth = None
 
-            hhrnetpose = None
-            if self.is_crowd and self.data_split=='validation' and not self.use_halpe26:
-                try:
-                    hhrnetpose = np.array(hhrnet_result[str(aid)]['coco_joints'])
-                    hhrnetpose = self.add_pelvis(hhrnetpose, self.coco_joints_name)
-                    hhrnetpose = self.add_neck(hhrnetpose, self.coco_joints_name)
-                    hhrnet_count += 1
+                openpose = np.array(ann['openpose_result'], dtype=np.float32).reshape(-1, 3)
+                openpose = self.add_pelvis(openpose, self.openpose_joints_name)
+                pose_score_thr = self.conf_thr
 
-                except Exception as e:
-                    print(f"HHRNet result missing/invalid for ann {aid}, falling back to OpenPose: {e}")
-                    hhrnetpose = openpose
-                    hhrnetpose = transform_joint_to_other_db(hhrnetpose, self.openpose_joints_name, self.coco_joints_name)
-            
-            halpe_h36m = None
-            if halpe26 is not None:
-                if str(aid) not in halpe26:
-                    raise KeyError(f"ann_id {aid} khong co trong file Halpe-26 cua split {self.data_split}")
-                halpe_h36m = halpe26_to_human36m(halpe26[str(aid)])   # (17, 3) pixel anh goc + score
+                hhrnetpose = None
+                if self.is_crowd and self.data_split=='validation' and not self.use_halpe26:
+                    try:
+                        hhrnetpose = np.array(hhrnet_result[str(aid)]['coco_joints'])
+                        hhrnetpose = self.add_pelvis(hhrnetpose, self.coco_joints_name)
+                        hhrnetpose = self.add_neck(hhrnetpose, self.coco_joints_name)
+                        hhrnet_count += 1
 
-            datalist.append({
-                'halpe_h36m': halpe_h36m,
-                'ann_id': aid,
-                'img_path': img_path,
-                'img_shape': (img_height, img_width),
-                'bbox': bbox,
-                'tight_bbox': ann['bbox'],
-                'smpl_param': smpl_param,
-                'cam_param': cam_param,
-                'root_joint_depth': root_joint_depth,
-                'pose_score_thr': pose_score_thr,
-                'openpose': openpose,
-                'hhrnetpose': hhrnetpose
-            })
+                    except Exception as e:
+                        print(f"HHRNet result missing/invalid for ann {aid}, falling back to OpenPose: {e}")
+                        hhrnetpose = openpose
+                        hhrnetpose = transform_joint_to_other_db(hhrnetpose, self.openpose_joints_name, self.coco_joints_name)
+                
+                halpe_h36m = None
+                if cur_halpe26 is not None:
+                    if str(aid) not in cur_halpe26:
+                        raise KeyError(f"ann_id {aid} khong co trong file Halpe-26 cua split {split_tag}")
+                    halpe_h36m = halpe26_to_human36m(cur_halpe26[str(aid)])   # (17, 3) pixel anh goc + score
+
+                datalist.append({
+                    'halpe_h36m': halpe_h36m,
+                    'ann_id': aid,
+                    'img_path': img_path,
+                    'img_shape': (img_height, img_width),
+                    'bbox': bbox,
+                    'tight_bbox': ann['bbox'],
+                    'smpl_param': smpl_param,
+                    'cam_param': cam_param,
+                    'root_joint_depth': root_joint_depth,
+                    'pose_score_thr': pose_score_thr,
+                    'openpose': openpose,
+                    'hhrnetpose': hhrnetpose
+                })
 
         print("check hhrnet input: ", hhrnet_count)
         if exclude_seqs is not None:
             print(f"[pw3d_train_exclude_eval_seqs] Giu {len(kept_train_seqs)}/{len(all_train_seqs)} sequences "
-                  f"({len(datalist)} mau, loai {n_excluded_samples} mau cua {len(excluded_train_seqs)} sequences trung test/oc/pc/crowd): "
+                  f"({len(datalist)} mau: train={kept_by_split['train']}, val={kept_by_split['validation']}; "
+                  f"loai {n_excluded_samples} mau cua {len(excluded_train_seqs)} sequences trung test/oc/pc/crowd): "
                   f"giu={sorted(kept_train_seqs)} | loai={sorted(excluded_train_seqs)}")
         return datalist
 
