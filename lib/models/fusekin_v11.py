@@ -330,7 +330,7 @@ class KinematicVPoserHead(nn.Module):
         bone_dir = bone_vec / bone_len                                              # (B, 16, 3)
 
         ctx_r = self.ctx_to_root(j3d.to(dtype).flatten(1))                          # (B, D)
-        ctx_v = self.ctx_to_vposer(torch.cat([j3d, bone_dir], dim=-1).to(dtype).flatten(1))
+        ctx_v = self.ctx_to_vposer(torch.cat([j3d, bone_dir], dim=1).to(dtype).flatten(1))   # (B, 33, 3) -> 99 (sua 2026-11-25: dim=-1 loi 17 vs 16)
         ctx_s = self.len_to_shape(bone_len.squeeze(-1).detach().to(dtype))          # (B, D)
 
         body_sum = self.body_readout(body_tok.flatten(1))                           # (B, D)
