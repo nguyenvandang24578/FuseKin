@@ -1,0 +1,92 @@
+# =====================================================================
+# train_v11_clean5_64k.yml (2026-11-25, nguoi dung duyet) -- FuseKin v11 + img_lifter_v2_3dpw_clean5_128k:
+#   = train_v11_no3dpw_64k.yml (FuseKin v11, Bi-CrossAttn 2 chieu, 4 bo Student 64k/ep, 20 ep, AdamW), CHI DOI:
+#     imglift_checkpoint: 'experiment/img_lifter_v2_3dpw_clean5_128k/checkpoint/last.pth.tar'
+#   (Lifter train tu dau tren 4 bo + 5 seq sach 3dpw-train, 128k/ep, 0% overlap voi ca 4 tap test; MPJPE17: 3DPW 71.19, OC 67.92, PC 79.19, Crowd 70.64).
+# Chay (1 GPU):
+#   python main/train.py --cfg ./config/train_v11_clean5_64k.yml --exp_name v11_clean5_64k --gpu 0
+#   python -u main/test_student_3dpw_sets.py --cfg ./config/train_v11_clean5_64k.yml --ckpt experiment/v11_clean5_64k/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --ocpc_mode all --gpu 0
+#   python -u main/test_student_3dpw_sets.py --cfg ./config/train_v11_clean5_64k.yml --ckpt experiment/v11_clean5_64k/checkpoint/last.pth.tar --sets 3dpw,3dpw-oc,3dpw-pc,3dpw-crowd --ocpc_mode all --drop3d --gpu 0
+# =====================================================================
+
+update_bbox: True
+DATASET:
+  train_list: ['Human36M', 'MuCo', 'MSCOCO', 'CrowdPose']   # Student giu 4 bo (0% overlap voi 4 tap test)
+  test_list: ['3dpw']          # moi epoch danh gia 3dpw; 4 tap test o last.pth.tar
+  pw3d_ocpc_test_only: False
+  workers: 8
+  pw3d_2d_source: 'openpose'   # test: OpenPose (3DPW / OC / PC), Higher-HRNet (Crowd); train: GT + PoseFix
+  halpe26_conf_thr: 0.3
+  lift_soft_conf: False
+  h36m_2d_source: 'gt_posefix'
+  muco_2d_source: 'gt_posefix'
+  coco_2d_source: 'gt_posefix'
+  crowdpose_2d_source: 'gt_posefix'
+  jotr_strict: True
+  posefix_scale: 1.0
+  posefix_fast: True
+  fusekin_unified: True
+
+MODEL:
+  name: 'student'              # dung Student_Trainer (khong KD); model that su = V11Net qua v11_e2e
+  v11_e2e: True
+  v11_dim: 256
+  v11_enc_layers: 3
+  v11_dec_layers: 4
+  v11_joint_drop: 0.1
+  v11_drop3d_sample: 0.2
+  v11_drop3d_joint: 0.1
+  v11_rr_corrupt_prob: 0.3
+  v11_bi_attn: True            # Cross-Attention 2 chieu Anh <-> Khop trong BiCrossFusionBlock
+  v10_vposer_ckpt: 'data_final/base_data/human_model_files/smpl/VPOSER_CKPT'
+  v10_j17_all_w: 1.0           # giam sat j3d_vis0 + J^(0..2) (lop cuoi J^(3) do v5_ctx_loss_w giam sat)
+  v10_cam_bbox: True           # CLIFF: cam_bbox -> token khop + root_pose_head + cam_head
+  v10_proj_grad: True          # loss chieu 2D co grad vao pose + bu view_rot(-dx, -dy)
+  v10_rr_loss_w: 0.2
+  v10_rr_tau3d: 0.08
+  v10_rr_tau2d: 0.08
+  imglift_checkpoint: 'experiment/img_lifter_v2_3dpw_clean5_128k/checkpoint/last.pth.tar'
+  imglift_K: 5
+  imglift_S: 2
+  v9_reproj_w: 1.0             # trong so giam sat vi tri lay mau 2D qua cac lop
+  resnet_type: 50
+  hpe_dim: 256
+  backbone_pretrained: 'spin'
+  student_use_kd: False
+  init_student_from_teacher: False
+  v7_anchor: False
+  v7_no_pose_param_loss: False # BAT loss tham so pose SMPL (day VPoser + root 6D nhu JOTR)
+  v7_no_privileged: True       # privileged_3d = ctx_3d -> tat de khong tinh 2 lan
+  v5_ctx_loss_w: 1.0           # loss khop 3D cuoi J^(3)
+  v3_bb_finetune: True         # backbone train end-to-end
+  v3_bb_lr_scale: 1.0          # lr_backbone = lr = 1e-4
+  v3_bb_heatmap: True
+  v3_heatmap_sigma: 2.0
+  v3_refine_gamma: 0.85        # trong so giam sat cac lop decoder truoc (refine_history + j17_layers)
+  v3_pose2d_noise_prob: 0.0
+
+TRAIN:
+  print_freq: 20
+  batch_size: 64               # 1 GPU
+  shuffle: True
+  mix_mode: 'ratio'
+  dataset_ratio: [0.25, 0.25, 0.25, 0.25]   # Human36M, MuCo, MSCOCO, CrowdPose
+  samples_per_epoch: 64000     # 1000 iter / epoch
+  begin_epoch: 1
+  end_epoch: 20
+  scheduler: 'step'
+  lr: 0.0001
+  lr_step: [8, 12, 15, 18]
+  lr_factor: 0.5
+  warmup_epochs: 0
+  min_lr: 0.000001
+  optimizer: 'adamw'
+  weight_decay: 0.0001
+  wandb: True
+
+TEST:
+  batch_size: 64
+  shuffle: False
+  select_dataset: '3dpw'
+  save_best_per_set: False
+  final_test_list: []

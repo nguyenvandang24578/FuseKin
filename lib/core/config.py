@@ -362,6 +362,7 @@ cfg.MODEL.v11_drop3d_sample = 0.2
 cfg.MODEL.v11_drop3d_joint = 0.1
 cfg.MODEL.v11_test_drop3d = False
 cfg.MODEL.v11_rr_corrupt_prob = 0.3
+cfg.MODEL.v11_bi_attn = False              # True: Cross-Attention 2 chieu Anh <-> Khop trong BiCrossFusionBlock
 cfg.MODEL.imglift_K = 5                    # so gia thuyet, gop trung binh
 cfg.MODEL.imglift_S = 2                    # so buoc DDIM
 # True: 2D cho Student (heatmap [A], PE, [B], feedback [D]) = 17 khop 2D cua Refiner (mask = 1 moi khop) thay 2D detector

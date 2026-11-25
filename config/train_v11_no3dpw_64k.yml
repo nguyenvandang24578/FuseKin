@@ -37,6 +37,7 @@ MODEL:
   v11_drop3d_sample: 0.2
   v11_drop3d_joint: 0.1
   v11_rr_corrupt_prob: 0.3
+  v11_bi_attn: True            # Cross-Attention 2 chieu Anh <-> Khop trong BiCrossFusionBlock
   v10_vposer_ckpt: 'data_final/base_data/human_model_files/smpl/VPOSER_CKPT'
   v10_j17_all_w: 1.0           # giam sat j3d_vis0 + J^(0..2) (lop cuoi J^(3) do v5_ctx_loss_w giam sat)
   v10_cam_bbox: True           # CLIFF: cam_bbox -> token khop + root_pose_head + cam_head
