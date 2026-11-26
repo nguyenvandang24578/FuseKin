@@ -45,7 +45,15 @@ parser.add_argument('--view_rot', type=str, default='none', choices=['none', 'fw
 parser.add_argument('--blend', type=str, default='', help="D2: vd '0,0.5,1' (rong = tat)")
 parser.add_argument('--blend_mode', type=str, default='global', choices=['global', 'opmask'])
 parser.add_argument('--oracle_lc', action='store_true', help='D2: tang oracle chon lift / ctx tung khop theo GT')
+parser.add_argument('--align_rot', type=str, default='none',
+                    help="Can xoay cung SO(3) (Kabsch, 0%% GT) mesh theo khop du doan: 'none' | 'ctx' | 'torso_ctx' | 'lift' "
+                         "(co the truyen nhieu gia tri cach dau phay, vd 'none,ctx,torso_ctx,lift')")
 args = parser.parse_args()
+VALID_ALIGN_ROT = ('none', 'ctx', 'torso_ctx', 'lift')
+ALIGN_MODES = [x.strip() for x in args.align_rot.split(',') if x.strip()] or ['none']
+for _m in ALIGN_MODES:
+    if _m not in VALID_ALIGN_ROT:
+        raise ValueError(f"--align_rot khong hop le: '{_m}' (chon trong {VALID_ALIGN_ROT})")
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
 import torch
@@ -83,9 +91,28 @@ def view_rot_torch(dx, dy):
     return R.float()
 
 
-def make_post_fn(view_rot_mode, oracle_lc):
-    """post_fn cho evaluate_3dpw_subset (chan doan D1 / D2). None neu khong bat gi -> danh gia nhu cu."""
-    if view_rot_mode == 'none' and not oracle_lc:
+TORSO_ALIGN_IDX = (0, 1, 4, 7, 8, 11, 14)   # Pelvis, R_Hip, L_Hip, Torso, Neck, L_Shoulder, R_Shoulder
+
+
+def kabsch_rot_so3(src, dst):
+    """Tim ma tran xoay thuan tuy R in SO(3) (det = +1, khong co gian, xoay quanh goc Pelvis da tru san)
+    cuc tieu hoa ||src @ R^T - dst||_F^2. src, dst: (B, K, 3) -> R: (B, 3, 3) float32."""
+    X = src.double()
+    Y = dst.double()
+    H = X.transpose(1, 2) @ Y                                                         # (B, 3, 3)
+    U, _, Vh = torch.linalg.svd(H)
+    V = Vh.transpose(1, 2)
+    d = torch.sign(torch.det(V @ U.transpose(1, 2)))
+    d = torch.where(d == 0, torch.ones_like(d), d)
+    Z = torch.eye(3, dtype=torch.float64, device=src.device).unsqueeze(0).repeat(X.shape[0], 1, 1)
+    Z[:, 2, 2] = d
+    R = V @ Z @ U.transpose(1, 2)                                                     # (B, 3, 3) in SO(3)
+    return R.float()
+
+
+def make_post_fn(view_rot_mode, oracle_lc, align_rot_mode='none'):
+    """post_fn cho evaluate_3dpw_subset (chan doan D1 / D2 / Kabsch SO(3)). None neu khong bat gi -> danh gia nhu cu."""
+    if view_rot_mode == 'none' and not oracle_lc and align_rot_mode == 'none':
         return None
 
     def post(outputs, inputs, target_mesh, dataset):
@@ -102,6 +129,20 @@ def make_post_fn(view_rot_mode, oracle_lc):
                     outputs[k] = rot(outputs[k])
             for h in outputs.get('refine_history') or []:
                 h['smpl_mesh_cam'] = rot(h['smpl_mesh_cam'])
+        if align_rot_mode != 'none' and outputs.get('smpl_mesh_cam') is not None:
+            mesh = outputs['smpl_mesh_cam']
+            reg = torch.as_tensor(dataset.h36m_joint_regressor, device=mesh.device, dtype=torch.float32)
+            mesh_j17 = torch.einsum('jk,bkc->bjc', reg, mesh.float())
+            X = mesh_j17 - mesh_j17[:, 0:1]
+            ref_key = 'lifted_joints_3d' if align_rot_mode == 'lift' else 'ctx_3d'
+            assert outputs.get(ref_key) is not None, f'--align_rot {align_rot_mode} can outputs[{ref_key!r}]'
+            T = outputs[ref_key].float()
+            Y = T - T[:, 0:1]
+            if align_rot_mode == 'torso_ctx':
+                R_so3 = kabsch_rot_so3(X[:, TORSO_ALIGN_IDX], Y[:, TORSO_ALIGN_IDX])
+            else:
+                R_so3 = kabsch_rot_so3(X, Y)
+            outputs['smpl_mesh_cam'] = torch.einsum('bij,bvj->bvi', R_so3.to(mesh.dtype), mesh)
         if oracle_lc and outputs.get('ctx_3d') is not None and 'lifted_joints_3d' in outputs:
             reg = torch.as_tensor(dataset.h36m_joint_regressor, device=target_mesh.device, dtype=torch.float32)
             gt = torch.einsum('jk,bkc->bjc', reg, target_mesh.float())
@@ -148,13 +189,17 @@ def main():
         cfg.MODEL.v9_test_blend_mode = args.blend_mode
         if not bool(cfg.MODEL.get('v9_ik', False)):
             print('[canh bao] --blend chi doi mesh khi MODEL.v9_ik True (khop 3D di vao IK)')
-    post_fn = make_post_fn(args.view_rot, args.oracle_lc)
-    runs = [(lb if a is None else f'{lb} | w={a:g}', nm, to, a) for a in blends for lb, nm, to in runs]
+    multi_align = len(ALIGN_MODES) > 1 or ALIGN_MODES[0] != 'none'
+    runs = [
+        (lb + (f' | w={a:g}' if a is not None else '') + (f' | rot={rm}' if multi_align else ''), nm, to, a, rm)
+        for rm in ALIGN_MODES for a in blends for lb, nm, to in runs
+    ]
 
     results = []
-    for label, name, test_only, blend_a in runs:
+    for label, name, test_only, blend_a, align_rm in runs:
         cfg.DATASET.pw3d_ocpc_test_only = test_only      # PW3D doc co nay luc tao dataset
         cfg.MODEL.v9_test_blend = -1.0 if blend_a is None else blend_a
+        post_fn = make_post_fn(args.view_rot, args.oracle_lc, align_rot_mode=align_rm)
         try:
             ds = get_test_dataset(name, None)
             loader = DataLoader(ds, batch_size=bs, shuffle=False, num_workers=cfg.DATASET.workers)
@@ -176,6 +221,7 @@ def main():
           + (f' | lifter_ckpt={args.lifter_ckpt}' if args.lifter_ckpt else '')
           + (' | TAT 3D (drop3d: token 3D = miss3d, chi anh + 2D)' if args.drop3d else '')
           + (f' | D1 view_rot {args.view_rot}' if args.view_rot != 'none' else '')
+          + (f' | align_rot={args.align_rot}' if multi_align else '')
           + (f' | D2 blend {args.blend} ({args.blend_mode}): j3d = w*lift + (1-w)*ctx truoc IK' if args.blend else '')
           + (' | D2 oracle_lc (chi do tran)' if args.oracle_lc else ''))
     print(f'{"tap":<28} | {"n":>6} | {"MPJPE":>7} | {"PA-MPJPE":>8} | {"MPVPE":>7} | {"LIFT":>7} | {"LIFT-PA":>7}'
