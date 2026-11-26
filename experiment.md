@@ -915,3 +915,47 @@ So v3 KD Halpe: 3DPW +4.0, OC +10.6, PC −1.7, Crowd −12.4. Chưa vượt DPM
 
 - So với lifter v1 `no3dpw` (dòng 387, K10 S4, khác kiến trúc → chênh là gộp nhiều thay đổi): 3DPW −3.6 / −3.4, OC −7.6 / −4.6, PC −6.3 / −2.7, Crowd −12.6 / −5.6. Chưa có MPJPE17 của `img_lifter_v2_no3dpw` (các số 81.75 / 82.75 / 93.79 / 89.17 là 14 khớp) → chưa tách được đóng góp của 3dpw-train.
 - Nhận xét (Claude, giả thuyết): Crowd cải thiện mạnh nhất dù không trùng sequence → có thể một phần do cùng miền (courtyard, diễn viên) với 3dpw-train; chưa kiểm. Oracle − mean ~3 mm → giả thuyết K khá đồng nhất. Khớp sót vẫn kém khớp có 20–45 mm (PC tệ nhất).
+
+- **[§62 v11] Sửa lỗi 2026-11-25 23:55** (người dùng báo crash ở iter đầu `v11_clean5_64k`): `fusekin_v11.py::KinematicVPoserHead.step` ghép `torch.cat([j3d (B,17,3), bone_dir (B,16,3)], dim=-1)` → lỗi 17 vs 16; sửa thành `dim=1` → (B,33,3) → 99 = đúng `Linear((17+16)*3)`. Lỗi nằm trong forward chung → mọi YAML v11 trước đó đều không chạy được. Backup `_to_delete/bak_v11fix_20261125/`. Đã rà toàn bộ `fusekin_v11.py` (shape các Linear / HyperGCN / JRE / CascadeHead, key output cho `base.py`, `--drop3d`): không thấy lỗi shape khác (đọc code, chưa chạy).
+
+## 64. Kết quả FuseKin v11 `v11_clean5_64k` `last` ep20 (người dùng chạy và gửi 2026-11-27 00:04; 14 khớp, mm, `ocpc_mode all`)
+- Cấu hình: `config/train_v11_clean5_64k.yml` — `FuseKin v11` (`v11_bi_attn: True`, bỏ khối Voxel `8×8×8`, Student train 4 bộ `H36M, MuCo, MSCOCO, CrowdPose` `64k/ep`, `20 ep`, `AdamW`) ghép `img_lifter_v2_3dpw_clean5_128k` (§63, có 5 seq `3dpw-train` sạch → 0% trùng sequence/frame với 4 tập test, nhưng không so như zero-3DPW thuần với bảng chính JOTR/DPMesh).
+
+| Tập | n | Mesh MPJPE / PA / MPVPE | LIFT / LIFT-PA | Chuỗi tầng MPJPE: `lift → ctx → mesh_cuoi` | `Mesh − LIFT` (MPJPE / PA) | `Mesh − ctx` (MPJPE) |
+|---|---:|---|---|---|---|---|
+| **3DPW** | 35,515 | **`79.70 / 52.31 / 97.42`** | `78.26 / 50.35` | `78.26 → 78.37 → 79.70` | `+1.44 / +1.96` | `+1.33` |
+| **3DPW-OC** | 20,243 | **`77.53 / 55.53 / 94.72`** | `75.18 / 52.64` | `75.18 →` **`74.29`** `→ 77.53` | `+2.35 / +2.89` | `+3.24` |
+| **3DPW-PC** | 2,218 | **`90.56 / 68.34 / 115.12`** | `88.04 / 66.72` | `88.04 →` **`87.62`** `→ 90.56` | `+2.52 / +1.62` | `+2.94` |
+| **3DPW-Crowd** | 1,923 | **`82.47 / 56.11 / 105.26`** | `77.46 / 54.34` | `77.46 →` **`76.82`** `→ 82.47` | `+5.01 / +1.77` | `+5.65` |
+
+- So với `v10_cliff_64k` (ep16, không 3D): 3DPW `−1.81 / −0.25 / −1.63`, OC **`−4.64 / −1.33 / −4.23`**, PC `−0.79 / +0.78 / −0.65`, Crowd **`−4.13 / −0.74 / −4.54`**. So với `v10_rr_r1_64k` (`last`, `no3dpw`): 3DPW `−1.23 / −0.60 / −1.58`.
+- Nhận xét từ số liệu & đính chính giả thuyết:
+  1. **Phần fuse khung xương (`lift → ctx`)**: trên 3 tập khó OC / PC / Crowd, `ctx` đều cải thiện hơn `lift` (`−0.89 / −0.42 / −0.64 mm`).
+  2. **Nút thắt `ctx → mesh_cuoi` (đính chính giả thuyết trước)**: không chỉ lệch xoay toàn cục `root_6d`! Riêng ở **Crowd**, `PA` chỉ tăng `+1.77 mm` (`54.34 → 56.11`) trong khi `MPJPE` tăng `+5.01 mm` (`+5.65 mm` so `ctx`) → phần lớn (~`3.8 mm`) là lỗi cứng toàn cục (`root_6d` / tỉ lệ). Nhưng ở **3DPW và OC**, ngay cả **`PA-MPJPE` của mesh (`52.31 / 55.53`) cũng mất `+1.96 / +2.89 mm` so với `LIFT-PA` (`50.35 / 52.64`)**, rơi về gần mức PA của nhánh ảnh V10 (`52.56 / 56.86`).
+  3. **Nguyên nhân khả dĩ (giả thuyết)**: (a) `smpl_head` (`pose_tok`, `root_pose_head`, `vposer_head`, `shape_head`) chỉ train trên 4 bộ ngoài (0% 3DPW, 50% là pseudo-GT NeuralAnnot COCO/CrowdPose chưa lọc fit hỏng + có `smpl_pose_loss`), nên học tin vào `pose_tok` hơn `ctx` và kéo cả tư thế VPoser lẫn `root_6d` về phân bố pseudo-GT khi ra miền 3DPW; (b) chưa có ràng buộc khớp cứng hoặc loss nhất quán trực tiếp giữa `J_h36m @ smpl_mesh_cam` và `ctx` (`j3d`).
+- **Kết quả chẩn đoán `--drop3d` trên cùng `v11_clean5_64k` `last` ep20** (người dùng gửi 2026-11-27 00:17; tắt sạch 3D, chỉ còn Ảnh + 2D):
+  - **3DPW**: `ctx 83.22 → mesh` **`83.02 / 52.70 / 101.21`** (bật 3D giảm **`−3.32 / −0.39 / −3.79 mm`**)
+  - **3DPW-OC**: `ctx 84.54 → mesh` **`82.81 / 56.64 / 100.16`** (bật 3D giảm **`−5.28 / −1.11 / −5.44 mm`**)
+  - **3DPW-PC**: `ctx 94.49 → mesh` **`91.24 / 68.19 / 116.23`** (bật 3D giảm **`−0.68` / `+0.15` / `−1.11 mm`**)
+  - **3DPW-Crowd**: `ctx 87.52 → mesh` **`86.17 / 56.59 / 108.96`** (bật 3D giảm **`−3.70 / −0.48 / −3.70 mm`**)
+  - **Kết luận chắc chắn từ `--drop3d`**:
+    1. **Không bị Shortcut Learning & thay thế trọn vẹn khối Voxel `8×8×8`**: nhánh ảnh V11 khi tắt 3D ngang ngửa / tốt hơn `v10_cliff_64k` (train 100% thuần ảnh có Voxel `8×8×8`: PC `91.24 vs 91.35`, Crowd `86.17/56.59 vs 86.60/56.85`, OC PA `56.64 vs 56.86`) và vượt xa `v10_cliff_lift_64k --drop3d` (`−1.9` đến `−5.3 mm`).
+    2. **Bật 3D cải thiện cả MPJPE và MPVPE trên 4/4 tập** (`−0.7` đến `−5.3 mm`), trái ngược với V10 cũ (§59).
+    3. **Xác nhận nút thắt ở `vposer_head`**: `PA-MPJPE` khi bật 3D (`52.31 / 55.53 / 68.34 / 56.11`) chỉ nhích `0.4–1.1 mm` so với khi tắt 3D (`52.70 / 56.64 / 68.19 / 56.59`), dù `LIFT-PA` thấp hơn tới `1.5–4.0 mm` (`50.35 / 52.64 / 66.72 / 54.34`) → `vposer_head` đang dựa chủ yếu vào `pose_tok` (nhánh ảnh) và khai thác rất ít hình dạng tư thế từ `ctx_v` (`[j3d, bone_dir]`).
+
+## 64b. ImgLifter v2 `3dpw_cleanall_128k` — mọi sequence sạch của split train 3DPW (2026-11-27, người dùng duyệt; YAML xong, chưa chạy)
+- YAML `config/train_img_lifter_v2_3dpw_cleanall_128k.yaml` = `clean5_128k` (§63), chỉ đổi `pw3d_train_max_seqs: 5 → 0` (giữ tất cả sequence sạch của split train; vẫn loại seq trùng test / OC / PC / Crowd). Giữ: không dùng split validation, ratio 0.12, 128k/ep, 25 epoch, không lọc fit. Không sửa code.
+- So sánh 1 yếu tố với §63 (5 seq). Có dùng 3dpw-train → không so bảng chính JOTR / DPMesh.
+
+## 65. FuseKin v11.2 — Nâng cấp Thuần Mạng Nơ-ron (KHÔNG IK) cho mô hình Mesh (2026-11-27, người dùng duyệt; đã code, chờ chạy)
+- Mục tiêu: giữ cố định Lifter đa tập `img_lifter_v2_3dpw_clean5_128k` (không dùng `3dpw_clean` fine-tune riêng 3DPW để không giảm H36M) và giải quyết 3 nút thắt thuần mạng nơ-ron của `v11_clean5_64k` (§64: rơi `+1.3` đến `+5.65 mm` từ `ctx → mesh`, `PA` bị `pose_tok` lấn át, pha loãng `lift` ở lớp 0, nhiễu heatmap & nhãn giả COCO):
+  1. **`PerJointNeuralSMPLHead` (`MODEL.v11_res6d_head`, `v11_pose_tok_drop`, `v11_consist_w`)**:
+     - Bước thô: giữ `VPoser + Root 6D` để hội tụ êm nhưng thêm **Visual-Pose Dropout (`0.3`)** lên `pose_tok` ở mẫu có 3D lúc train → buộc nhánh `ctx_to_root` & `ctx_to_vposer` học ánh xạ từ `[j3d, bone_dir]` thay vì ỷ lại vào `pose_tok`.
+     - Bước tinh: tạo **24 token khớp SMPL** đọc cặp xương cha–con (`SMPL_BONE_PAIRS_H36M`: `joint_tok` + `[j_cha, j_con, vec, dir]` + `R_thô`), truyền tin trên siêu đồ thị **`HGraphBlockSMPL24`** (khóa `p_adj`/`b_adj`), dự đoán ma trận xoay phần dư 6D từng khớp $R_k^{\text{cuối}} = R_k^{\text{VPoser}} \cdot \Delta R_k$ (khởi tạo $I_3$, kèm điều hòa nhẹ `0.02 * ||dR - I||^2`).
+     - Loss tự nhất quán **`v11_consist_w: 1.0`**: phạt `SmoothL1(J_h36m @ Mesh, ctx_3d.detach())` qua cả 4 tầng decoder (`v3_refine_gamma`) để khóa sát Mesh vào `ctx_3d`.
+  2. **`LearnableAnchorGate` (`MODEL.v11_learn_gate`)**: cổng MLP học được ở lớp 0 (nhận `[joint_tok.detach(), r_rel, op_mask, lift - j3d_vis0, ||lift - j3d_vis0||]`, bias `+2.0` → khởi đầu `~0.88`, `j3d_vis0.detach()` trong phép trộn) thay cho `w3d = r3d` thô (`~0.61`) → chống pha loãng `lift` ở khớp tốt mà vẫn giữ nguyên đường học của `j3d_vis0`.
+  3. **`RefinerHeatmap` (`MODEL.v11_ref_heatmap`) + Lọc nhãn giả `fit_err_thr: 5.0`**: vẽ heatmap stride-4 cho `ResNet-50` từ `ref_xy` (kèm độ tin cậy `exp(-ref_logb)`) khi mẫu có 3D (`keep_s = 1`), tự về OpenPose `p2` trên 20% mẫu `drop3d_sample` và lúc test `--drop3d`; kết hợp `DATASET.fit_err_thr: 5.0` (§61b, §62b).
+- File sửa / tạo (backup `_to_delete/bak_v11_nkin_20261127/`): sửa `lib/core/config.py` (5 key mặc định tắt), `lib/models/fusekin_v11.py`, `lib/core/base.py`; tạo mới 2 YAML:
+  - `config/train_v11_res6d_clean5_64k.yml`: đối chứng tách riêng khối `(1)` (`PerJointNeuralSMPLHead + pose_tok_drop + consist_w`).
+  - `config/train_v11_nkin_clean5_fit5_64k.yml`: bật đầy đủ `(1) + (2) + (3) + fit_err_thr: 5.0`.
+- Trạng thái: đã code, chờ người dùng chạy trên GPU.

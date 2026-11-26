@@ -363,6 +363,18 @@ cfg.MODEL.v11_drop3d_joint = 0.1
 cfg.MODEL.v11_test_drop3d = False
 cfg.MODEL.v11_rr_corrupt_prob = 0.3
 cfg.MODEL.v11_bi_attn = False              # True: Cross-Attention 2 chieu Anh <-> Khop trong BiCrossFusionBlock
+# [V11.2 Neural-Kinematic Upgrade, 2026-11-27, nguoi dung duyet -- 100% thuan mang no-ron, KHONG IK]:
+#   - v11_res6d_head   : PerJointNeuralSMPLHead (VPoser tho + 24 token khop SMPL doc xuong 3D qua HGraphBlockSMPL24
+#                        du doan phan du xoay 6D tung khop R_cuoi = R_VPoser @ dR_k).
+#   - v11_pose_tok_drop: Xac suat dropout pose_tok luc train tren mau co 3D (vd 0.3) -> buoc head hoc tu khung xuong j3d.
+#   - v11_consist_w    : Trong so loss tu nhat quan SmoothL1(J_h36m @ Mesh, ctx_3d.detach()) o moi tang decoder.
+#   - v11_learn_gate   : Cong no-ron hoc duoc o lop 0 thay w3d = r3d tho (bias +2.0 -> chong pha loang lift o khop tot).
+#   - v11_ref_heatmap  : Ve heatmap stride-4 cho ResNet-50 tu ref_xy cua Refiner2D khi co 3D (tu ve OpenPose khi drop3d).
+cfg.MODEL.v11_res6d_head = False
+cfg.MODEL.v11_pose_tok_drop = 0.0
+cfg.MODEL.v11_consist_w = 0.0
+cfg.MODEL.v11_learn_gate = False
+cfg.MODEL.v11_ref_heatmap = False
 cfg.MODEL.imglift_K = 5                    # so gia thuyet, gop trung binh
 cfg.MODEL.imglift_S = 2                    # so buoc DDIM
 # True: 2D cho Student (heatmap [A], PE, [B], feedback [D]) = 17 khop 2D cua Refiner (mask = 1 moi khop) thay 2D detector

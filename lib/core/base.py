@@ -1102,6 +1102,39 @@ class Student_Trainer:
             if 'v10_jre_pred' in model_output:
                 jre_loss, jre_stats = _v10_jre_loss(model_output, gt_pose_input, valid_joint, targets, meta)
                 loss = loss + float(cfg.MODEL.get('v10_rr_loss_w', 0.2)) * jre_loss
+            # [V11.2] Loss tu nhat quan khung xuong - mesh (J_h36m @ Mesh vs ctx_3d.detach()) & dieu hoa phan du 6D
+            v11_stats = {}
+            cons_w = float(cfg.MODEL.get('v11_consist_w', 0.0))
+            if cons_w > 0.0 and 'ctx_3d' in model_output:
+                pred_j17 = torch.matmul(self.J_regressor[None, :, :], model_output['smpl_mesh_cam'])
+                pred_j17 = pred_j17 - pred_j17[:, 0:1, :]
+                tgt_ctx = model_output['ctx_3d'].detach()
+                cons_tot = F.smooth_l1_loss(pred_j17, tgt_ctx, beta=priv_beta)
+                cons_ws = 1.0
+                hist_m = model_output.get('refine_history') or []
+                j17_all = model_output.get('v10_j17_layers') or []
+                if hist_m and len(j17_all) == len(hist_m) + 2:
+                    gma_c, T_c = float(cfg.MODEL.v3_refine_gamma), len(hist_m)
+                    for li, (h_out, j_tgt) in enumerate(zip(hist_m, j17_all[1:-1])):
+                        wl_c = gma_c ** (T_c - li)
+                        pj_i = torch.matmul(self.J_regressor[None, :, :], h_out['smpl_mesh_cam'])
+                        pj_i = pj_i - pj_i[:, 0:1, :]
+                        cons_tot = cons_tot + wl_c * F.smooth_l1_loss(pj_i, j_tgt.detach(), beta=priv_beta)
+                        cons_ws += wl_c
+                cons_loss = cons_tot / cons_ws
+                loss = loss + cons_w * cons_loss
+                with torch.no_grad():
+                    cons_mm = float((pred_j17 - tgt_ctx).norm(dim=-1).mean().item() * 1000.0)
+                v11_stats['v11_cons'] = float(cons_loss.item())
+                v11_stats['v11_cons_mm'] = cons_mm
+            if 'v11_res6d_reg' in model_output:
+                res_reg = model_output['v11_res6d_reg'].mean()
+                hist_r = [h['v11_res6d_reg'].mean() for h in (model_output.get('refine_history') or [])
+                          if 'v11_res6d_reg' in h]
+                if hist_r:
+                    res_reg = (res_reg + sum(hist_r)) / (1.0 + len(hist_r))
+                loss = loss + 0.02 * res_reg
+                v11_stats['v11_res_reg'] = float(res_reg.item())
 
             # Do gradient tai tham so fusion (KD relation): feature gather cua DataParallel la cac nhanh rieng,
             # khong dung grad theo feature joint gather de tranh log nham bang 0.
@@ -1147,6 +1180,7 @@ class Student_Trainer:
                 **gate_stats,
                 **vis_stats,
                 **jre_stats,
+                **v11_stats,
             }
             if self.kd_joint_relation:
                 step_stats['kd_joint_relation'] = step_stats['kd_joint']
@@ -1197,7 +1231,8 @@ class Student_Trainer:
                        if gate_stats else '')
                     + (f'vis: {vis_stats["v9_vis"]:.3f} ' if vis_stats else '')
                     + (f'jre: {jre_stats["v10_jre"]:.3f} r3c {jre_stats["v10_r3d_corr"]:.2f} '
-                       f'w3d {jre_stats["v10_w3d"]:.2f} ' if jre_stats else '') +
+                       f'w3d {jre_stats["v10_w3d"]:.2f} ' if jre_stats else '')
+                    + (f'cons: {v11_stats["v11_cons_mm"]:.1f}mm ' if 'v11_cons_mm' in v11_stats else '') +
                     f'priv: {step_stats["privileged_3d"]:.3f} '
                     f'tl: {loss.detach().item():.3f}'
                 )
@@ -1214,7 +1249,10 @@ class Student_Trainer:
               + (f' | v7: TB dbeta^2 {avg["v7_dbeta"]:.4f}, |beta0| {avg["v7_beta0"]:.2f}' if 'v7_dbeta' in avg else '')
               + (f' | RR JRE: loss {avg["v10_jre"]:.4f}, corr3d {avg["v10_r3d_corr"]:.3f}, '
                  f'r3d/r2d/w3d {avg["v10_r3d"]:.2f}/{avg["v10_r2d"]:.2f}/{avg["v10_w3d"]:.2f}'
-                 if 'v10_jre' in avg else ''))
+                 if 'v10_jre' in avg else '')
+              + (f' | V11 cons(Mesh-ctx): {avg["v11_cons_mm"]:.2f} mm (loss {avg["v11_cons"]:.4f})'
+                 if 'v11_cons_mm' in avg else '')
+              + (f' | res6d_reg: {avg["v11_res_reg"]:.4f}' if 'v11_res_reg' in avg else ''))
         if 'v9_j29_all' in avg or 'v9_gate_bce' in avg or 'v9_vis' in avg:      # H1a / H2 / H2b (2026-11-17)
             print('  H1/H2:'
                   + (f' J29 29 diem: loss {avg["v9_j29_all"]:.4f}, loi lop cuoi {avg["v9_j29_all_mm"]:.1f} mm, '
