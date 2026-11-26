@@ -1209,41 +1209,27 @@ class Student_Trainer:
                 })
 
             if i % self.print_freq == 0:
-                gate_text = f'g: {step_stats["gate_mean"]:.3f}+/-{step_stats["gate_std"]:.3f} ' if gates else ''
+                kd_txt = f'kd {kd_loss.item():.2f} ' if self.use_kd else ''
+                w3d_txt = f' w3d {jre_stats["v10_w3d"]:.2f}' if jre_stats else ''
+                cons_txt = f' cons {v11_stats["v11_cons_mm"]:.0f}mm' if 'v11_cons_mm' in v11_stats else ''
+                j29_txt = f' j29 {j29_stats["v6_j29_mm"]:.0f}mm' if j29_stats else ''
                 batch_generator.set_description(
-                    f'Epoch{epoch}_({i}/{len(batch_generator)}) => '
-                    f'smpl3d: {loss_terms["smpl_joint_cam"].item():.3f} '
-                    f'smpl: {(loss_terms["smpl_pose"] + loss_terms["smpl_shape"]).item():.3f} '
-                    f'mesh: {loss_terms["mesh_loss"].item():.3f} '
-                    f'proj2d: {loss_terms["body_joint_proj"].item():.3f} '
-                    f'kd: {kd_loss.item():.3f} '
-                    f'[P {step_stats["kd_proj"]:.3f} J {step_stats["kd_joint"]:.3f} G {step_stats["kd_global"]:.3f}] '
-                    f'{gate_text}'
-                    f'lift: {lift_err_mm:.0f}mm '
-                    + (f'depth: {depth_stats["depth_err_mm"]:.0f}mm ' if depth_stats else '')
-                    + (f'j29: {j29_stats["v6_j29_mm"]:.0f}mm ' if j29_stats else '')
-                    + (f'rel: {rel_stats["v9_rel"]:.3f} r3d {rel_stats["v9_rel_corr3d"]:.2f} '
-                       f'g3 {rel_stats["v9_g3"]:.2f} g2 {rel_stats["v9_g2"]:.2f} ' if rel_stats else '')
-                    + (f'rp2d: {rp_stats["v9_rp_px_ref"]:.1f}->{rp_stats["v9_rp_px"]:.1f}px ' if rp_stats else '')
-                    + (f'j29all: {h1_stats["v9_j29_all_mm"]:.0f}mm ' if h1_stats else '')
-                    + (f'gate {gate_stats["v9_gate_mean"]:.2f} (g* {gate_stats["v9_gstar_mean"]:.2f}) mix '
-                       f'{gate_stats["v9_mix_mm"]:.0f} s {gate_stats["v9_js_mm"]:.0f} l {gate_stats["v9_lift_mm"]:.0f}mm '
-                       if gate_stats else '')
-                    + (f'vis: {vis_stats["v9_vis"]:.3f} ' if vis_stats else '')
-                    + (f'jre: {jre_stats["v10_jre"]:.3f} r3c {jre_stats["v10_r3d_corr"]:.2f} '
-                       f'w3d {jre_stats["v10_w3d"]:.2f} ' if jre_stats else '')
-                    + (f'cons: {v11_stats["v11_cons_mm"]:.1f}mm ' if 'v11_cons_mm' in v11_stats else '') +
-                    f'priv: {step_stats["privileged_3d"]:.3f} '
-                    f'tl: {loss.detach().item():.3f}'
+                    f'Ep{epoch} | tl {loss.detach().item():.2f} | '
+                    f'j3d {loss_terms["smpl_joint_cam"].item():.3f} '
+                    f'mesh {loss_terms["mesh_loss"].item():.3f} '
+                    f'p2d {loss_terms["body_joint_proj"].item():.2f} '
+                    f'{kd_txt}| lift {lift_err_mm:.0f}{w3d_txt}{cons_txt}{j29_txt}'
                 )
 
         n_batch = len(batch_generator)
         self.loss_history.append(running_loss / n_batch)
         avg = {k: v / n_batch for k, v in running.items()}
-        print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f} | '
-              f'KD dist proj: {avg["kd_proj"]:.4f} | joint: {avg["kd_joint"]:.4f} | global: {avg["kd_global"]:.4f}')
-        print(f'  Privileged 3D: {avg["privileged_3d"]:.4f} | ctx 3D (v5): {avg.get("ctx_3d", 0.0):.4f}'
+        kd_sum = (f' | KD dist proj: {avg["kd_proj"]:.4f} | joint: {avg["kd_joint"]:.4f} | global: {avg["kd_global"]:.4f}'
+                  if self.use_kd else '')
+        print(f'Epoch{epoch} Loss: {self.loss_history[-1]:.4f}{kd_sum}')
+        print(f'  ctx 3D: {avg.get("ctx_3d", avg["privileged_3d"]):.4f}'
               f' | loi joint dau vao (lifter): {avg["lift_err_mm"]:.1f} mm'
+              + (f' | rp2d: {avg["v9_rp_px_ref"]:.1f}->{avg["v9_rp_px"]:.1f} px' if 'v9_rp_px' in avg else '')
               + (f' | do sau [C]: loss {avg["depth_loss"]:.4f}, loi {avg["depth_err_mm"]:.1f} mm' if 'depth_loss' in avg else '')
               + (f' | J29 (v6/v7): loss {avg["v6_j29"]:.4f}, loi {avg["v6_j29_mm"]:.1f} mm' if 'v6_j29' in avg else '')
               + (f' | v7: TB dbeta^2 {avg["v7_dbeta"]:.4f}, |beta0| {avg["v7_beta0"]:.2f}' if 'v7_dbeta' in avg else '')
